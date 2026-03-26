@@ -24,14 +24,27 @@ def _build_mime_message(to: str, subject: str, html_body: str, from_email: str) 
 
 async def refresh_access_token(refresh_token: str) -> str:
     """Exchange a refresh token for a fresh access token."""
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env to refresh Gmail tokens"
+        )
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(GOOGLE_TOKEN_URL, data={
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
-            "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
-            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+            "client_id": client_id,
+            "client_secret": client_secret,
         })
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            error_detail = resp.json().get("error_description", resp.text[:200]) if resp.text else "unknown"
+            raise RuntimeError(
+                f"Google token refresh failed ({resp.status_code}): {error_detail}. "
+                "The user needs to reconnect Gmail in Settings > Integrations."
+            )
         return resp.json()["access_token"]
 
 

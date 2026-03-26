@@ -146,8 +146,12 @@ async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict
                 from_email=config.owner_email,
             )
 
-            # Token expired — refresh and retry
-            if result.get("error") == "token_expired" and refresh_token:
+            # Token expired — try refresh, or clear if no refresh token
+            if result.get("error") == "token_expired" and not refresh_token:
+                config.integrations.google_access_token = None
+                save_tenant_config(config)
+                result = {"error": "Gmail session expired (no refresh token). Please reconnect Gmail in Settings > Integrations."}
+            elif result.get("error") == "token_expired" and refresh_token:
                 try:
                     new_token = await gmail_tool.refresh_access_token(refresh_token)
                     access_token = new_token
@@ -161,7 +165,12 @@ async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict
                         from_email=config.owner_email,
                     )
                 except Exception as e:
-                    result = {"error": f"Token refresh failed: {e}"}
+                    # Refresh failed — clear stale tokens so status shows disconnected
+                    config.integrations.google_access_token = None
+                    config.integrations.google_refresh_token = None
+                    save_tenant_config(config)
+                    logger.warning("Cleared stale Gmail tokens for tenant %s", tenant_id)
+                    result = {"error": "Gmail session expired. Please reconnect Gmail in Settings > Integrations."}
         except Exception as e:
             logger.error("Gmail send exception to=%s: %s", email["to"], e)
             result = {"error": f"Send failed: {e}"}
