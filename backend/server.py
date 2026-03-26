@@ -996,6 +996,20 @@ async def ceo_chat(body: CEOChatMessage):
         except Exception:
             pass
 
+    # Check if Gmail is connected for this tenant
+    gmail_note = ""
+    if tenant_id:
+        try:
+            _tc = get_tenant_config(tenant_id)
+            if _tc.integrations.google_access_token:
+                gmail_note = f"""
+5. **Gmail is connected** ({_tc.owner_email}). When the user asks you to SEND an email (not just draft),
+   delegate to email_marketer with a task that starts with "SEND:" followed by the details including the
+   recipient email address. Example: "SEND: Send a welcome email to user@example.com introducing our product"
+   The Email Marketer will compose AND send it from {_tc.owner_email} automatically."""
+        except Exception:
+            pass
+
     system_prompt = f"""{_CEO_MD}
 {business_context}
 ## Sub-Agent Documentation
@@ -1017,6 +1031,7 @@ Based on the conversation, you should:
    - "done" — already completed in this response
 3. You can delegate to multiple agents by including multiple delegate blocks
 4. If no delegation is needed, just respond normally
+{gmail_note}
 
 Keep responses concise and actionable. You are their Chief Marketing Strategist."""
 
