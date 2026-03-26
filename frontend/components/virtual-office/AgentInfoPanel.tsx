@@ -94,7 +94,7 @@ export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) 
   }, [agent, onClose]);
 
   const isOpen = agent !== null;
-  const modelInfo = agent ? MODEL_DISPLAY[agent.model] : null;
+  const modelInfo = agent?.model ? MODEL_DISPLAY[agent.model] : null;
   const statusInfo = agent ? STATUS_CONFIG[agent.status] : null;
 
   return (
@@ -122,7 +122,7 @@ export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) 
           isOpen ? "translate-x-0" : "translate-x-full"
         )}
       >
-        {agent && modelInfo && statusInfo && (
+        {agent && statusInfo && (
           <>
             {/* Header with close button */}
             <div className="flex items-start justify-between p-5 pb-0">
@@ -171,19 +171,26 @@ export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) 
                 {agent.role}
               </p>
 
-              {/* Model badge */}
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 mt-3 px-2.5 py-1 rounded-full text-xs font-semibold",
-                  modelInfo.badgeBg,
-                  modelInfo.badgeText
-                )}
-              >
-                {agent.hasCrown && (
-                  <CrownIcon className="w-3.5 h-3.5" />
-                )}
-                {modelInfo.label}
-              </span>
+              {/* Model badge — only for AI agents */}
+              {modelInfo && (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 mt-3 px-2.5 py-1 rounded-full text-xs font-semibold",
+                    modelInfo.badgeBg,
+                    modelInfo.badgeText
+                  )}
+                >
+                  {agent.hasCrown && (
+                    <CrownIcon className="w-3.5 h-3.5" />
+                  )}
+                  {modelInfo.label}
+                </span>
+              )}
+              {agent.isNpc && (
+                <span className="inline-flex items-center mt-3 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-500">
+                  Office Staff
+                </span>
+              )}
             </div>
 
             {/* Divider */}

@@ -20,7 +20,7 @@ export interface OfficeAgent {
   id: string;
   name: string;
   role: string;
-  model: AgentDef["model"];
+  model?: AgentDef["model"];
   status: AgentStatus;
   department: string;
   currentTask: string;
@@ -183,21 +183,21 @@ const CORE_AGENTS: OfficeAgent[] = AGENT_DEFS.map((def) => {
 
 const NPC_STAFF: OfficeAgent[] = [
   // CEO Office
-  { id: "npc_exec_asst",    name: "Alex",    role: "Executive Assistant",  model: "haiku-4-5", color: "#8E7CC3", department: "ceo-office",     deskX: 5, deskY: 2, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_exec_asst",    name: "Alex",    role: "Executive Assistant",  color: "#8E7CC3", department: "ceo-office",     deskX: 5, deskY: 2, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
   // Meeting Room
-  { id: "npc_office_mgr",   name: "Jordan",  role: "Office Manager",       model: "haiku-4-5", color: "#A0845C", department: "meeting-room",   deskX: 14, deskY: 6, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_office_mgr",   name: "Jordan",  role: "Office Manager",       color: "#A0845C", department: "meeting-room",   deskX: 14, deskY: 6, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
   // Content Studio
-  { id: "npc_jr_writer",    name: "Sam",     role: "Junior Writer",        model: "haiku-4-5", color: "#45B39D", department: "content-studio", deskX: 18, deskY: 3, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
-  { id: "npc_designer",     name: "Riley",   role: "Graphic Designer",     model: "haiku-4-5", color: "#EC7063", department: "content-studio", deskX: 22, deskY: 6, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_jr_writer",    name: "Sam",     role: "Junior Writer",        color: "#45B39D", department: "content-studio", deskX: 18, deskY: 3, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_designer",     name: "Riley",   role: "Graphic Designer",     color: "#EC7063", department: "content-studio", deskX: 22, deskY: 6, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
   // Email Center
-  { id: "npc_analyst",      name: "Morgan",  role: "Campaign Analyst",     model: "haiku-4-5", color: "#F5B041", department: "email-room",     deskX: 5, deskY: 10, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
-  { id: "npc_copywriter",   name: "Casey",   role: "Copywriter",           model: "haiku-4-5", color: "#D4AC0D", department: "email-room",     deskX: 6, deskY: 14, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_analyst",      name: "Morgan",  role: "Campaign Analyst",     color: "#F5B041", department: "email-room",     deskX: 5, deskY: 10, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_copywriter",   name: "Casey",   role: "Copywriter",           color: "#D4AC0D", department: "email-room",     deskX: 6, deskY: 14, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
   // Social Hub
-  { id: "npc_community",    name: "Taylor",  role: "Community Manager",    model: "haiku-4-5", color: "#E67E22", department: "social-hub",     deskX: 10, deskY: 10, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
-  { id: "npc_video",        name: "Avery",   role: "Video Editor",         model: "haiku-4-5", color: "#CB4335", department: "social-hub",     deskX: 14, deskY: 14, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_community",    name: "Taylor",  role: "Community Manager",    color: "#E67E22", department: "social-hub",     deskX: 10, deskY: 10, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_video",        name: "Avery",   role: "Video Editor",         color: "#CB4335", department: "social-hub",     deskX: 14, deskY: 14, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
   // Ads Room
-  { id: "npc_media_buyer",  name: "Quinn",   role: "Media Buyer",          model: "haiku-4-5", color: "#7D3C98", department: "ads-room",       deskX: 18, deskY: 10, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
-  { id: "npc_data",         name: "Drew",    role: "Data Analyst",         model: "haiku-4-5", color: "#2E86C1", department: "ads-room",       deskX: 22, deskY: 14, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_media_buyer",  name: "Quinn",   role: "Media Buyer",          color: "#7D3C98", department: "ads-room",       deskX: 18, deskY: 10, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_data",         name: "Drew",    role: "Data Analyst",         color: "#2E86C1", department: "ads-room",       deskX: 22, deskY: 14, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
 ];
 
 export const AGENTS: OfficeAgent[] = [...CORE_AGENTS, ...NPC_STAFF];
