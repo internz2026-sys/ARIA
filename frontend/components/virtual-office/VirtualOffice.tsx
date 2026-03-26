@@ -37,7 +37,7 @@ interface AnimPos {
 }
 
 const T = TILE_SIZE;
-const WALK_SPEED = 2.8; // pixels per frame
+const WALK_SPEED = 0.65; // pixels per frame — ~10s to cross the office
 
 // Thought bubble icons (drawn as simple shapes/text, no emoji)
 const THOUGHT_ICONS = ["?", "!", "~", "*", "#"];
