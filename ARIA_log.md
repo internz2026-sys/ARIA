@@ -471,3 +471,124 @@ CREATE TABLE inbox_items (
 - **Kanban Board** controls when agents are working vs idle
 - **Socket.IO events** provide real-time visual transitions (walking, typing)
 - **Tasks table in Supabase** survives server restarts
+
+---
+
+## 2026-03-26 — Virtual Office Polish: NPCs, Decorations, Clock, Idle Wander, Widget UX
+
+### Features Added
+
+**NPC Office Staff (`frontend/lib/office-config.ts`):**
+- Added `isNpc?: boolean` flag to `OfficeAgent` interface
+- 10 NPC staff added (Receptionist, Office Manager, IT Support, HR Coordinator, Finance Analyst, Legal Counsel, Operations Lead, Product Manager, Data Analyst, Customer Success) — visual only, no AI model assigned, no tokens used
+- NPCs do not attend CEO chat meetings (filtered by `!a.isNpc`)
+
+**Virtual Office Canvas (`frontend/components/virtual-office/VirtualOffice.tsx`):**
+- Re-added idle wandering for all agents (removed earlier): agents stroll around their department rooms using `STROLL_SPEED = 0.18` (separate from `WALK_SPEED = 0.35` for meetings)
+- Thought bubbles appear when agents pause at idle spots (icons: `?`, `!`, `~`, `*`, `#`)
+- Wave animation on agent hover (`waveTimer`)
+- Name labels moved below feet; main agents get colored badge with white border
+- Office decorations added: printer, sofa, trash bin, picture frames, sticky notes, cactus, wall screen with animated chart, bean bags — moved away from room label zones
+- Real-time wall clock in top-left corner using browser timezone (analog face + digital readout)
+- `MEETING_CHAIRS` array: 6 specific pixel positions around the conference table so agents sit in chairs rather than stacking
+
+**Activity Ticker (`frontend/app/(dashboard)/office/page.tsx`):**
+- Slowed from 30s → 120s → 600s animation duration (comfortable reading speed ~250 WPM)
+
+**Floating Widget UX:**
+- `frontend/lib/use-draggable.ts` — Added `storageKey` param; widget positions persisted to `localStorage` under `aria_widget_pos_{key}` and restored on page load. Validates saved position is still within viewport before restoring
+- `frontend/components/shared/FloatingChat.tsx` — Passes `"ceo-chat"` storage key
+- `frontend/components/virtual-office/OfficeKanban.tsx` — Passes `"task-board"` storage key; moved to dashboard layout so it persists across all page navigations
+- Both widgets can be open simultaneously; closing one no longer closes the other (`data-floating-widget` attribute prevents mutual close-on-click-outside)
+- CEO Chat widget z-index raised to `z-[60]` to stay above navbar
+
+---
+
+## 2026-03-26 — Gmail Integration: Send Emails from Authenticated Google Account
+
+### Features Added
+
+**Google OAuth scope expansion:**
+- `frontend/app/(auth)/signup/page.tsx` and `login/page.tsx` — Added `scopes: "https://www.googleapis.com/auth/gmail.send"` and `queryParams: { access_type: "offline", prompt: "consent" }` to Google OAuth calls
+- Users see a one-time consent screen: "ARIA wants to send emails on your behalf"
+
+**Token capture and storage:**
+- `frontend/app/auth/callback/page.tsx` — Captures `provider_token` and `provider_refresh_token` from Supabase session after OAuth, sends to backend via `POST /api/integrations/{tenant_id}/google-tokens`
+- Tokens temporarily stored in `localStorage` for users who haven't completed onboarding yet
+
+**Backend (`backend/server.py`):**
+- `POST /api/integrations/{tenant_id}/google-tokens` — Stores Google OAuth tokens in `tenant_configs.integrations`
+- `POST /api/email/{tenant_id}/send` — Send email via user's Gmail; auto-refreshes expired tokens using `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`
+
+**`backend/tools/gmail_tool.py`** (new file):
+- `send_email(access_token, to, subject, html_body, from_email)` — Sends via Gmail API using RFC 2822 MIME encoding + base64url
+- `refresh_access_token(refresh_token)` — Exchanges refresh token for new access token
+- Uses Python stdlib `email.mime` + `httpx` (no new dependencies)
+
+**`backend/config/tenant_schema.py`:**
+- Added `google_access_token` and `google_refresh_token` optional fields to `IntegrationsConfig`
+
+**`backend/tools/__init__.py`:** — `gmail_tool` registered in `communication` category
+
+**`.env.example`:** — Added `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (same credentials as Supabase Google provider)
+
+---
+
+## 2026-03-26 — Email Marketer: Auto-Send via Gmail on Delegation
+
+### Problem
+- Email Marketer generated email copy but never actually sent it
+- Relied on LLM outputting structured `send_email` blocks — fragile and unreliable
+- `CONTEXT_KEY = "type"` but tasks arrived as `context={"action": "..."}` — task description never reached the agent properly
+
+### Changes
+
+**`backend/agents/email_marketer_agent.py`** (rewritten):
+- Changed `CONTEXT_KEY` from `"type"` to `"action"` — task description now correctly read from context
+- `_extract_recipient()` — regex scans task description for email addresses
+- `_extract_subject_and_body()` — parses agent output in multiple formats: `SUBJECT: ... --- <body>`, `Subject: ...`, or first-line-as-subject fallback
+- `_wrap_html()` — wraps plain text output in responsive HTML email template
+- `run()` — after generating content, if task contains a recipient email address, automatically extracts subject + body and sends via Gmail. No LLM-structured blocks required
+- System prompt explicitly tells agent to format output as `SUBJECT: ... --- <body>` when sending
+
+**`backend/server.py`:**
+- CEO system prompt detects if Gmail is connected and adds instruction: when user asks to send, delegate with "SEND:" prefix and recipient email in task description
+
+### Result
+- Tell CEO: "Send an email marketing strategy to user@example.com" → Email Marketer drafts it and sends automatically
+- No send blocks, no manual steps — recipient email in task description is the trigger
+
+---
+
+## 2026-03-26 — Fully Automated Agent Lifecycle: Real-Time Kanban + Office Sync
+
+### Problem
+- Kanban board only refreshed when the panel was manually opened — no real-time updates
+- New tasks from CEO chat delegation didn't appear on Kanban until user reopened the panel
+- Completed tasks didn't auto-move to Done column
+- Agent office status (idle/working) was not always in sync with actual task state
+
+### Changes
+
+**`backend/server.py`:**
+- Emits `task_updated` Socket.IO event when a task is **created** (status: `in_progress`) during CEO chat delegation
+- Emits `task_updated` Socket.IO event when a task is **completed** (status: `done`) in `_run_agent_to_inbox()` — both the content-produced and no-content branches
+- Agent emits `idle` after task completion if no other in_progress tasks remain
+
+**`frontend/lib/socket.ts`:**
+- New `useTaskUpdates(tenantId)` hook — subscribes to `task_updated` Socket.IO events, returns latest `TaskUpdatePayload`
+
+**`frontend/components/virtual-office/OfficeKanban.tsx`:**
+- Uses `useTaskUpdates()` hook — applies real-time task updates to local state:
+  - New task → added to Kanban immediately (appears in In Progress column)
+  - Task status change → card moves to correct column automatically
+- No longer requires panel re-open to see delegated tasks or completions
+
+### Full automated flow
+1. Tell CEO: "Send an email to user@example.com" → all agents walk to meeting room
+2. CEO delegates → task appears **instantly** in Kanban as "In Progress" (Socket.IO)
+3. Email Marketer walks to desk → status "Working" in virtual office
+4. Email Marketer drafts email + sends via Gmail
+5. Task moves to **"Done"** on Kanban automatically (Socket.IO)
+6. Agent returns to **"Idle"** in virtual office
+7. Content saved to Inbox
