@@ -268,7 +268,7 @@ export default function OfficePage() {
           100% { transform: translateX(-50%); }
         }
         .animate-marquee {
-          animation: marquee 30s linear infinite;
+          animation: marquee 120s linear infinite;
         }
         .animate-marquee:hover {
           animation-play-state: paused;
