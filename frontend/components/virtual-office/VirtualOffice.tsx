@@ -536,7 +536,7 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     plant(15 * T, 1 * T + 16);
     plant(9 * T + 16, 6 * T + 16);
     wallScreen(13 * T + 4, 0 * T + 20);
-    stickyNotes(15 * T + 8, 0 * T + 22);
+    stickyNotes(15 * T + 8, 1 * T + 4);
     bin(15 * T + 16, 7 * T);
     cactus(9 * T + 4, 7 * T);
 
@@ -550,7 +550,7 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     printer(17 * T + 4, 6 * T + 4);
     beanBag(23 * T, 3 * T + 8, "#66BB6A");
     cactus(17 * T + 4, 0 * T + 24);
-    picture(22 * T + 4, 0 * T + 6, "#C8E6C9");
+    picture(23 * T, 0 * T + 22, "#C8E6C9");
 
     // ── Email Center (0,8 8x8) ──
     rug(1 * T, 10 * T, 6 * T, 4 * T, "#BA7517");
@@ -561,7 +561,7 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     printer(0 * T + 4, 14 * T + 4);
     lamp(1 * T + 8, 14 * T + 16);
     bin(7 * T, 15 * T);
-    picture(5 * T, 8 * T + 6, "#FFF3E0");
+    picture(0 * T + 4, 8 * T + 22, "#FFF3E0");
     cactus(7 * T, 9 * T + 8);
     sofa(3 * T + 8, 14 * T + 10, "#F5A623");
 
@@ -570,11 +570,11 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     whiteboard(9 * T + 4, 9 * T + 4);
     plant(14 * T + 16, 14 * T + 16);
     lamp(9 * T + 16, 14 * T + 16);
-    wallScreen(13 * T + 4, 8 * T + 20);
+    wallScreen(13 * T + 4, 9 * T + 4);
     beanBag(15 * T, 11 * T, "#E67E22");
     beanBag(10 * T, 14 * T + 8, "#EC407A");
     coffee(14 * T + 8, 9 * T + 4);
-    stickyNotes(11 * T, 8 * T + 22);
+    stickyNotes(11 * T, 9 * T + 4);
     bin(9 * T + 4, 15 * T);
     cactus(15 * T + 16, 9 * T + 8);
 
@@ -586,8 +586,8 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     plant(17 * T + 16, 14 * T + 16);
     printer(22 * T + 4, 14 * T + 4);
     lamp(17 * T + 8, 9 * T + 16);
-    wallScreen(19 * T, 8 * T + 20);
-    picture(22 * T + 8, 8 * T + 6, "#EDE7F6");
+    wallScreen(19 * T, 9 * T + 4);
+    picture(23 * T, 8 * T + 22, "#EDE7F6");
     bin(23 * T, 15 * T);
     cactus(17 * T + 4, 15 * T);
     sofa(19 * T + 8, 14 * T + 10, "#9575CD");
