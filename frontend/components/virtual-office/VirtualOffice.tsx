@@ -368,15 +368,41 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       ctx.fillStyle = "#BDBDBD"; ctx.fillRect(x + 1, y + 1, 10, 5); ctx.fillRect(x + 1, y + 7, 10, 5); ctx.fillRect(x + 1, y + 13, 10, 5);
       ctx.fillStyle = "#666"; ctx.fillRect(x + 4, y + 3, 4, 1); ctx.fillRect(x + 4, y + 9, 4, 1); ctx.fillRect(x + 4, y + 15, 4, 1);
     }
-    // Helper: clock
-    function clock(x: number, y: number) {
-      ctx.fillStyle = "#FFF"; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = "#333"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
-      const h = (time * 0.1) % (Math.PI * 2), m = (time * 0.5) % (Math.PI * 2);
+    // Helper: wall clock (real timezone)
+    function wallClock(x: number, y: number) {
+      const now = new Date();
+      const hours = now.getHours() % 12;
+      const minutes = now.getMinutes();
+      const seconds = now.getSeconds();
+      // Analog face
+      ctx.fillStyle = "#FFF"; ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#333"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI * 2); ctx.stroke();
+      // Hour ticks
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
+        ctx.fillStyle = "#555";
+        ctx.fillRect(x + Math.cos(a) * 11 - 0.5, y + Math.sin(a) * 11 - 0.5, 1.5, 1.5);
+      }
+      // Hour hand
+      const hAngle = ((hours + minutes / 60) / 12) * Math.PI * 2 - Math.PI / 2;
+      ctx.strokeStyle = "#333"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(hAngle) * 7, y + Math.sin(hAngle) * 7); ctx.stroke();
+      // Minute hand
+      const mAngle = ((minutes + seconds / 60) / 60) * Math.PI * 2 - Math.PI / 2;
       ctx.strokeStyle = "#333"; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(h) * 3.5, y + Math.sin(h) * 3.5); ctx.stroke();
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(m) * 5, y + Math.sin(m) * 5); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(mAngle) * 10, y + Math.sin(mAngle) * 10); ctx.stroke();
+      // Second hand
+      const sAngle = (seconds / 60) * Math.PI * 2 - Math.PI / 2;
+      ctx.strokeStyle = "#D85A30"; ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(sAngle) * 10, y + Math.sin(sAngle) * 10); ctx.stroke();
+      // Center dot
+      ctx.fillStyle = "#333"; ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI * 2); ctx.fill();
+      // Digital time below
+      const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      ctx.font = "bold 7px 'Courier New', monospace";
+      ctx.fillStyle = "#333"; ctx.textAlign = "center";
+      ctx.fillText(timeStr, x, y + 22);
+      ctx.textAlign = "left";
     }
     // Helper: lamp
     function lamp(x: number, y: number) {
@@ -496,7 +522,7 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     bookshelf(1 * T + 4, 1 * T + 4);
     lamp(6 * T + 16, 1 * T + 16);
     plant(6 * T + 16, 6 * T + 16, 1.1);
-    clock(4 * T, 0 * T + 12);
+    // clock removed — single wallClock drawn globally
     picture(1 * T + 8, 0 * T + 6, "#E8EAF6");
     cabinet(0 * T + 4, 6 * T + 4);
     cactus(2 * T, 1 * T + 14);
@@ -509,7 +535,6 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     whiteboard(9 * T + 4, 0 * T + 20);
     plant(15 * T, 1 * T + 16);
     plant(9 * T + 16, 6 * T + 16);
-    clock(12 * T, 0 * T + 12);
     wallScreen(13 * T + 4, 0 * T + 20);
     stickyNotes(15 * T + 8, 0 * T + 22);
     bin(15 * T + 16, 7 * T);
@@ -521,7 +546,6 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     whiteboard(17 * T + 4, 1 * T + 4);
     plant(17 * T + 16, 6 * T + 16);
     lamp(22 * T + 16, 6 * T);
-    clock(20 * T, 0 * T + 12);
     stickyNotes(19 * T, 0 * T + 22);
     printer(17 * T + 4, 6 * T + 4);
     beanBag(23 * T, 3 * T + 8, "#66BB6A");
@@ -534,7 +558,6 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     cabinet(1 * T + 20, 9 * T + 4);
     coffee(5 * T + 8, 9 * T + 4);
     plant(6 * T + 16, 14 * T + 16);
-    clock(4 * T, 8 * T + 12);
     printer(0 * T + 4, 14 * T + 4);
     lamp(1 * T + 8, 14 * T + 16);
     bin(7 * T, 15 * T);
@@ -547,7 +570,6 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     whiteboard(9 * T + 4, 9 * T + 4);
     plant(14 * T + 16, 14 * T + 16);
     lamp(9 * T + 16, 14 * T + 16);
-    clock(12 * T, 8 * T + 12);
     wallScreen(13 * T + 4, 8 * T + 20);
     beanBag(15 * T, 11 * T, "#E67E22");
     beanBag(10 * T, 14 * T + 8, "#EC407A");
@@ -562,7 +584,6 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     cabinet(22 * T + 8, 9 * T + 4);
     cooler(22 * T + 16, 14 * T + 8);
     plant(17 * T + 16, 14 * T + 16);
-    clock(20 * T, 8 * T + 12);
     printer(22 * T + 4, 14 * T + 4);
     lamp(17 * T + 8, 9 * T + 16);
     wallScreen(19 * T, 8 * T + 20);
@@ -570,6 +591,9 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     bin(23 * T, 15 * T);
     cactus(17 * T + 4, 15 * T);
     sofa(19 * T + 8, 14 * T + 10, "#9575CD");
+
+    // ── Global wall clock — top-left corner, real timezone ──
+    wallClock(22, 22);
   }, []);
 
   // ── Main draw loop ──────────────────────────────────────────────────────
