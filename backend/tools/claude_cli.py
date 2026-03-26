@@ -2,13 +2,14 @@
 
 All ARIA agents use this as their LLM interface.
 Requires ANTHROPIC_API_KEY in environment.
+Usage is persisted to Supabase so limits survive server restarts.
 """
 from __future__ import annotations
 
 import logging
 import os
 import time
-from collections import defaultdict
+from datetime import datetime, timezone
 
 import anthropic
 
@@ -28,34 +29,84 @@ def _get_client() -> anthropic.AsyncAnthropic:
     return _client
 
 
-# ── Usage tracking ──────────────────────────────────────────────────────────
-# Simple in-memory tracker. Resets on restart.
-# For production, persist to Supabase.
+# ── Supabase helper ─────────────────────────────────────────────────────────
 
-_usage: dict[str, dict] = defaultdict(lambda: {
-    "input_tokens": 0,
-    "output_tokens": 0,
-    "requests": 0,
-    "last_reset": time.time(),
-})
+def _get_supabase():
+    from backend.config.loader import _get_supabase
+    return _get_supabase()
+
+
+# ── Usage tracking (persisted to Supabase) ──────────────────────────────────
 
 # Configurable limits (per tenant, per hour)
 HOURLY_REQUEST_LIMIT = int(os.getenv("ARIA_HOURLY_REQUEST_LIMIT", "60"))
 HOURLY_TOKEN_LIMIT = int(os.getenv("ARIA_HOURLY_TOKEN_LIMIT", "200000"))
 
+# Local cache to avoid hitting Supabase on every single check
+_usage_cache: dict[str, dict] = {}
+
+
+def _current_hour() -> str:
+    """Return current UTC hour as 'YYYY-MM-DD-HH' string for bucketing."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
+
+
+def _load_usage(tenant_id: str) -> dict:
+    """Load usage from Supabase for the current hour. Returns cached if fresh."""
+    hour = _current_hour()
+    cached = _usage_cache.get(tenant_id)
+    if cached and cached.get("hour") == hour:
+        return cached
+
+    try:
+        sb = _get_supabase()
+        result = (
+            sb.table("api_usage")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("hour", hour)
+            .maybe_single()
+            .execute()
+        )
+        if result.data:
+            usage = {
+                "hour": hour,
+                "input_tokens": result.data["input_tokens"],
+                "output_tokens": result.data["output_tokens"],
+                "requests": result.data["requests"],
+            }
+        else:
+            usage = {"hour": hour, "input_tokens": 0, "output_tokens": 0, "requests": 0}
+    except Exception as e:
+        logger.warning("Failed to load usage from Supabase: %s — using cache/defaults", e)
+        usage = cached or {"hour": hour, "input_tokens": 0, "output_tokens": 0, "requests": 0}
+
+    _usage_cache[tenant_id] = usage
+    return usage
+
+
+def _save_usage(tenant_id: str, usage: dict) -> None:
+    """Persist usage counters to Supabase (upsert by tenant_id + hour)."""
+    try:
+        sb = _get_supabase()
+        sb.table("api_usage").upsert(
+            {
+                "tenant_id": tenant_id,
+                "hour": usage["hour"],
+                "input_tokens": usage["input_tokens"],
+                "output_tokens": usage["output_tokens"],
+                "requests": usage["requests"],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="tenant_id,hour",
+        ).execute()
+    except Exception as e:
+        logger.warning("Failed to save usage to Supabase: %s", e)
+
 
 def _check_limits(tenant_id: str) -> None:
     """Raise if tenant has exceeded hourly limits."""
-    usage = _usage[tenant_id]
-    now = time.time()
-
-    # Reset counters every hour
-    if now - usage["last_reset"] > 3600:
-        usage["input_tokens"] = 0
-        usage["output_tokens"] = 0
-        usage["requests"] = 0
-        usage["last_reset"] = now
-        return
+    usage = _load_usage(tenant_id)
 
     if usage["requests"] >= HOURLY_REQUEST_LIMIT:
         raise RuntimeError(
@@ -73,7 +124,7 @@ def _check_limits(tenant_id: str) -> None:
 
 def get_usage(tenant_id: str = "global") -> dict:
     """Return current usage stats for a tenant."""
-    return dict(_usage[tenant_id])
+    return _load_usage(tenant_id)
 
 
 # ── Main API call ───────────────────────────────────────────────────────────
@@ -113,18 +164,24 @@ async def call_claude(
         logger.error("Anthropic API error: %s", e)
         raise RuntimeError(f"API error: {e.message}")
 
-    # Track usage
-    usage = _usage[tenant_id]
+    # Update local cache
+    usage = _load_usage(tenant_id)
     usage["input_tokens"] += response.usage.input_tokens
     usage["output_tokens"] += response.usage.output_tokens
     usage["requests"] += 1
+    _usage_cache[tenant_id] = usage
+
+    # Persist to Supabase
+    _save_usage(tenant_id, usage)
 
     # Also track global totals
     if tenant_id != "global":
-        global_usage = _usage["global"]
+        global_usage = _load_usage("global")
         global_usage["input_tokens"] += response.usage.input_tokens
         global_usage["output_tokens"] += response.usage.output_tokens
         global_usage["requests"] += 1
+        _usage_cache["global"] = global_usage
+        _save_usage("global", global_usage)
 
     result = response.content[0].text
     logger.info(
