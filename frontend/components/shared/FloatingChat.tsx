@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { AGENT_COLORS, AGENT_NAMES } from "@/lib/agent-config";
 import { useDraggable } from "@/lib/use-draggable";
 import { useCeoChat } from "@/lib/use-ceo-chat";
@@ -77,16 +77,40 @@ export default function FloatingChat() {
     setShowHistory(false);
   }
 
-  // Panel position
+  // Panel position — draggable by header
   const wH = typeof window !== "undefined" ? window.innerHeight : 800;
   const wW = typeof window !== "undefined" ? window.innerWidth : 1200;
   const pH = Math.min(520, wH - 80);
+  const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
+  const panelDragRef = useRef<{ startX: number; startY: number; elX: number; elY: number } | null>(null);
+
+  // Reset panel position when button moves or panel reopens
+  useEffect(() => { setPanelPos(null); }, [pos.x, pos.y, open]);
+
+  const defaultPanelX = Math.max(20, pos.x > wW * 0.4 ? pos.x + 170 - 420 : pos.x);
+  const defaultPanelY = pos.y > wH * 0.35 ? Math.max(20, pos.y - pH - 12) : pos.y + 56 + 12;
+
   const panelStyle: React.CSSProperties = {
     position: "fixed", width: 420, maxWidth: "calc(100vw - 40px)", height: pH,
-    left: Math.max(20, pos.x > wW * 0.4 ? pos.x + 170 - 420 : pos.x),
-    top: pos.y > wH * 0.35 ? Math.max(20, pos.y - pH - 12) : pos.y + 56 + 12,
+    left: panelPos ? panelPos.x : defaultPanelX,
+    top: panelPos ? panelPos.y : defaultPanelY,
     zIndex: 51,
   };
+
+  const onPanelHeaderDown = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return; // don't hijack button clicks
+    e.preventDefault();
+    const rect = panelRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    panelDragRef.current = { startX: e.clientX, startY: e.clientY, elX: rect.left, elY: rect.top };
+    function onMove(ev: MouseEvent) {
+      const d = panelDragRef.current!;
+      setPanelPos({ x: d.elX + ev.clientX - d.startX, y: d.elY + ev.clientY - d.startY });
+    }
+    function onUp() { panelDragRef.current = null; document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
 
   if (pos.x < 0) return null;
 
@@ -115,8 +139,8 @@ export default function FloatingChat() {
 
       {open && (
         <div ref={panelRef} style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
-          {/* Header */}
-          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0">
+          {/* Header — drag to move panel */}
+          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing" onMouseDown={onPanelHeaderDown}
             <button
               onClick={() => setShowHistory(v => !v)}
               className={`p-1.5 rounded-lg transition-colors ${showHistory ? "bg-[#EEEDFE] text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#2C2C2A] hover:bg-[#F8F8F6]"}`}

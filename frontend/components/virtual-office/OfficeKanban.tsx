@@ -54,17 +54,40 @@ export default function OfficeKanban() {
   const active = tasks.filter((t) => t.status !== "done").length;
   const inProgress = tasks.filter((t) => t.status === "in_progress").length;
 
-  // Panel position — opens toward screen center
+  // Panel position — draggable by header
   const wH = typeof window !== "undefined" ? window.innerHeight : 800;
   const wW = typeof window !== "undefined" ? window.innerWidth : 1200;
+  const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
+  const panelDragRef = useRef<{ startX: number; startY: number; elX: number; elY: number } | null>(null);
+
+  useEffect(() => { setPanelPos(null); }, [pos.x, pos.y, open]);
+
+  const defaultPanelX = Math.max(20, pos.x > wW * 0.4 ? pos.x + 180 - 700 : pos.x);
+  const defaultPanelY = pos.y > wH * 0.4 ? Math.max(20, pos.y - 440 - 12) : pos.y + 56 + 12;
+
   const panelStyle: React.CSSProperties = {
     position: "fixed",
     width: 700,
     maxWidth: "calc(100vw - 40px)",
-    left: Math.max(20, pos.x > wW * 0.4 ? pos.x + 180 - 700 : pos.x),
-    top: pos.y > wH * 0.4 ? Math.max(20, pos.y - 440 - 12) : pos.y + 56 + 12,
+    left: panelPos ? panelPos.x : defaultPanelX,
+    top: panelPos ? panelPos.y : defaultPanelY,
     zIndex: 51,
   };
+
+  const onPanelHeaderDown = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    e.preventDefault();
+    const rect = panelRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    panelDragRef.current = { startX: e.clientX, startY: e.clientY, elX: rect.left, elY: rect.top };
+    function onMove(ev: MouseEvent) {
+      const d = panelDragRef.current!;
+      setPanelPos({ x: d.elX + ev.clientX - d.startX, y: d.elY + ev.clientY - d.startY });
+    }
+    function onUp() { panelDragRef.current = null; document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
 
   if (pos.x < 0) return null;
 
@@ -101,7 +124,7 @@ export default function OfficeKanban() {
 
       {open && (
         <div ref={panelRef} style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8]">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8] cursor-grab active:cursor-grabbing" onMouseDown={onPanelHeaderDown}>
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full" style={{ background: "linear-gradient(135deg, #FF6B35, #F7418F)" }} />
               <h3 className="text-sm font-semibold text-[#2C2C2A]">Task Board</h3>
