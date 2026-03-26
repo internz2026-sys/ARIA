@@ -51,7 +51,7 @@ export default function OfficeKanban() {
     deleteTaskApi(id);
   }, []);
 
-  const total = tasks.length;
+  const active = tasks.filter((t) => t.status !== "done").length;
   const inProgress = tasks.filter((t) => t.status === "in_progress").length;
 
   // Panel position — opens toward screen center
@@ -89,9 +89,9 @@ export default function OfficeKanban() {
           <rect x="14" y="14" width="7" height="7" rx="1.5" />
         </svg>
         Task Board
-        {total > 0 && (
+        {active > 0 && (
           <span className="bg-white/25 text-white text-[11px] font-black px-2.5 py-0.5 rounded-full min-w-[24px] text-center">
-            {total}
+            {active}
           </span>
         )}
         {inProgress > 0 && (
