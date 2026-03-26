@@ -16,13 +16,10 @@ export default function OfficeKanban() {
   const [loading, setLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const { pos, btnRef, handleMouseDown, handleClick, onDragStart } = useDraggable(
+  const { pos, btnRef, handleMouseDown, handleClick } = useDraggable(
     typeof window !== "undefined" ? window.innerWidth - 200 : 1000,
     typeof window !== "undefined" ? window.innerHeight - 80 : 700,
   );
-
-  // Close panel when drag starts
-  onDragStart(() => setOpen(false));
 
   // Load tasks when dropdown opens
   useEffect(() => {

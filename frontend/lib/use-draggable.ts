@@ -12,9 +12,10 @@ interface DragState {
 /**
  * Makes a fixed-position element draggable with zero-lag GPU-accelerated movement.
  * Uses transform: translate3d() instead of left/top for compositor-level performance.
+ * Panel followers get position updates via RAF-throttled state sync during drag.
  *
  * Returns:
- *  - pos: current {x,y} (synced to state only on release)
+ *  - pos: current {x,y} (synced during drag via RAF + on release)
  *  - btnRef: attach to the draggable element
  *  - handleMouseDown: attach to onMouseDown
  *  - handleClick: attach to onClick (filters out drags)
@@ -26,6 +27,7 @@ export function useDraggable(initialX: number, initialY: number) {
   const dragRef = useRef<DragState>({ dragging: false, moved: false, startX: 0, startY: 0, elX: 0, elY: 0 });
   const btnRef = useRef<HTMLButtonElement>(null);
   const onDragStartRef = useRef<(() => void) | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   // Init position on mount
   useEffect(() => {
@@ -61,11 +63,22 @@ export function useDraggable(initialX: number, initialY: number) {
         const ny = Math.max(0, Math.min(window.innerHeight - 56, d.elY + dy));
         btn.style.transform = `translate3d(${nx}px, ${ny}px, 0)`;
         posRef.current = { x: nx, y: ny };
+        // Sync React state so panels follow (RAF-throttled)
+        if (rafRef.current === null) {
+          rafRef.current = requestAnimationFrame(() => {
+            setPos({ ...posRef.current });
+            rafRef.current = null;
+          });
+        }
       }
     }
 
     function onUp() {
       d.dragging = false;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       setPos({ ...posRef.current });

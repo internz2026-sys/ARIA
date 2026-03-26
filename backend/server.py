@@ -52,6 +52,24 @@ app.add_middleware(
 # Mount Socket.IO
 socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
+# In-memory live status store: tenant_id → agent_id → status payload
+_live_agent_status: dict[str, dict[str, dict]] = {}
+
+
+async def _emit_agent_status(tenant_id: str, agent_id: str, status: str,
+                              current_task: str = "", **extra):
+    """Update in-memory status store AND emit Socket.IO event."""
+    now_ts = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "agent_id": agent_id,
+        "status": status,
+        "current_task": current_task,
+        "last_updated": now_ts,
+        **extra,
+    }
+    _live_agent_status.setdefault(tenant_id, {})[agent_id] = payload
+    await sio.emit("agent_status_change", payload, room=tenant_id)
+
 
 # ─── Socket.IO Events ───
 @sio.event
@@ -257,26 +275,16 @@ async def list_agents(tenant_id: str):
 @app.post("/api/agents/{tenant_id}/{agent_name}/run")
 async def run_agent(tenant_id: str, agent_name: str):
     # Agent starts working at desk
-    now_ts = datetime.now(timezone.utc).isoformat()
-    await sio.emit("agent_status_change", {
-        "agent_id": agent_name,
-        "status": "working",
-        "current_task": f"Running {agent_name} task",
-        "action": "start_work",
-        "last_updated": now_ts,
-    }, room=tenant_id)
+    await _emit_agent_status(tenant_id, agent_name, "working",
+                             current_task=f"Running {agent_name} task",
+                             action="start_work")
 
     result = await dispatch_agent(tenant_id, agent_name)
     await sio.emit("agent_event", result, room=tenant_id)
 
     # Agent done — return to idle
-    await sio.emit("agent_status_change", {
-        "agent_id": agent_name,
-        "status": "idle",
-        "current_task": "",
-        "action": "task_complete",
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    }, room=tenant_id)
+    await _emit_agent_status(tenant_id, agent_name, "idle",
+                             action="task_complete")
 
     # Save output to inbox
     content = result.get("result", "")
@@ -330,16 +338,17 @@ async def resume_agent(tenant_id: str, agent_name: str):
 async def virtual_office_agents(tenant_id: str):
     """Return all 18 virtual office agents with their current status."""
     now = datetime.now(timezone.utc).isoformat()
+    live = _live_agent_status.get(tenant_id, {})
     agents = [
         {
             "agent_id": a["agent_id"],
             "name": a["name"],
             "role": a["role"],
             "model": a["model"],
-            "status": "idle",
-            "current_task": "",
+            "status": live.get(a["agent_id"], {}).get("status", "idle"),
+            "current_task": live.get(a["agent_id"], {}).get("current_task", ""),
             "department": a["department"],
-            "last_updated": now,
+            "last_updated": live.get(a["agent_id"], {}).get("last_updated", now),
         }
         for a in VIRTUAL_OFFICE_AGENTS
     ]
@@ -660,25 +669,14 @@ async def _run_agent_to_inbox(
         # Phase 1: Meeting (CEO + agent already walking to meeting room via caller)
         await asyncio.sleep(4)
 
-        now_ts = datetime.now(timezone.utc).isoformat()
         # Phase 2: CEO returns to desk
         if tenant_id:
-            await sio.emit("agent_status_change", {
-                "agent_id": "ceo",
-                "status": "idle",
-                "current_task": "",
-                "action": "return_to_desk",
-                "last_updated": now_ts,
-            }, room=tenant_id)
-
+            await _emit_agent_status(tenant_id, "ceo", "idle",
+                                     action="return_to_desk")
             # Agent returns to desk and starts working
-            await sio.emit("agent_status_change", {
-                "agent_id": agent_id,
-                "status": "working",
-                "current_task": task_desc,
-                "action": "return_and_work",
-                "last_updated": now_ts,
-            }, room=tenant_id)
+            await _emit_agent_status(tenant_id, agent_id, "working",
+                                     current_task=task_desc,
+                                     action="return_and_work")
 
         # Phase 3: Actually run the agent (this is where real time is spent)
         result = await agent_module.run(tenant_id, context={"action": task_desc})
@@ -686,13 +684,8 @@ async def _run_agent_to_inbox(
 
         # Phase 4: Agent done — return to idle
         if tenant_id:
-            await sio.emit("agent_status_change", {
-                "agent_id": agent_id,
-                "status": "idle",
-                "current_task": "",
-                "action": "task_complete",
-                "last_updated": datetime.now(timezone.utc).isoformat(),
-            }, room=tenant_id)
+            await _emit_agent_status(tenant_id, agent_id, "idle",
+                                     action="task_complete")
 
         if not content:
             return
@@ -740,13 +733,8 @@ async def _run_agent_to_inbox(
         # On failure, still return agent to idle so it doesn't get stuck
         if tenant_id:
             try:
-                await sio.emit("agent_status_change", {
-                    "agent_id": agent_id,
-                    "status": "idle",
-                    "current_task": "",
-                    "action": "task_failed",
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
-                }, room=tenant_id)
+                await _emit_agent_status(tenant_id, agent_id, "idle",
+                                         action="task_failed")
             except Exception:
                 pass
 
@@ -952,23 +940,14 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
 
         # Emit agent_status_change: CEO walks to meeting room, then agent does
         if tenant_id:
-            now_ts = datetime.now(timezone.utc).isoformat()
             # CEO starts moving to meeting room
-            await sio.emit("agent_status_change", {
-                "agent_id": "ceo",
-                "status": "busy",
-                "current_task": f"Briefing {agent_id} on: {task_desc[:60]}",
-                "action": "walk_to_meeting",
-                "last_updated": now_ts,
-            }, room=tenant_id)
+            await _emit_agent_status(tenant_id, "ceo", "running",
+                                     current_task=f"Briefing {agent_id} on: {task_desc[:60]}",
+                                     action="walk_to_meeting")
             # Target agent starts moving to meeting room
-            await sio.emit("agent_status_change", {
-                "agent_id": agent_id,
-                "status": "running",
-                "current_task": task_desc,
-                "action": "walk_to_meeting",
-                "last_updated": now_ts,
-            }, room=tenant_id)
+            await _emit_agent_status(tenant_id, agent_id, "running",
+                                     current_task=task_desc,
+                                     action="walk_to_meeting")
         # Execute agent in background — _run_agent_to_inbox handles the full
         # lifecycle: meeting delay → CEO returns → agent works → agent done
         try:

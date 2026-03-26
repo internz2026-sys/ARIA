@@ -35,12 +35,10 @@ export default function FloatingChat() {
 
   const { messages, sessions, sessionId, sending, send, switchSession, startNewChat } = useCeoChat();
 
-  const { pos, btnRef, handleMouseDown, handleClick, onDragStart } = useDraggable(
+  const { pos, btnRef, handleMouseDown, handleClick } = useDraggable(
     typeof window !== "undefined" ? window.innerWidth - 200 : 1000,
     typeof window !== "undefined" ? window.innerHeight - 140 : 660,
   );
-
-  onDragStart(() => setOpen(false));
 
   // Scroll to bottom on new messages
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);

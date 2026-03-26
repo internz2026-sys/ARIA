@@ -356,3 +356,52 @@ CREATE TABLE inbox_items (
 
 **`frontend/lib/office-config.ts`** + **`frontend/lib/socket.ts`**:
 - Added "working" to `AgentStatus` type union
+
+---
+
+## 2026-03-26 — Virtual Office: Persistent Agent Status + CEO Meeting Walk
+
+### Problem
+- Agents never visibly moved in the Virtual Office when chatting with the CEO, caused by three issues:
+  1. `/api/office/agents/` always returned hardcoded `"idle"` for all agents — no status persistence
+  2. CEO received `"busy"` status when delegating, but only `"running"` triggers the walk-to-meeting animation
+  3. Socket.IO events are ephemeral — if the user is on `/chat` page, the `/office` page component isn't mounted and misses all status change events. By the time the user navigates to `/office`, the lifecycle has completed
+
+### Changes
+
+**`backend/server.py`**:
+- Added `_live_agent_status` in-memory dict: `tenant_id → agent_id → status payload`
+- Added `_emit_agent_status()` helper that atomically updates the in-memory store AND emits the Socket.IO event
+- Replaced all 7 direct `sio.emit("agent_status_change", ...)` calls with `_emit_agent_status()`
+- `/api/office/agents/{tenant_id}` now merges live statuses from `_live_agent_status` — no more hardcoded `"idle"`
+- CEO delegation status changed from `"busy"` to `"running"` so the CEO visually walks to the meeting room alongside the delegated agent
+
+### Result
+- Navigate to `/office` during or after a CEO chat delegation → agents show correct status (running/working/idle)
+- Both CEO and delegated agent walk to meeting room when a task is delegated
+- Status persists across page navigations (in-memory, resets on server restart)
+
+---
+
+## 2026-03-26 — Draggable Widgets: Panel Follows During Drag
+
+### Problem
+- CEO Chat and Task Board floating widgets closed their dropdown panel as soon as dragging started (`onDragStart(() => setOpen(false))`)
+- Panel position only updated on mouse release, so even if the panel stayed open it wouldn't follow the button
+
+### Changes
+
+**`frontend/lib/use-draggable.ts`**:
+- Added RAF-throttled `setPos()` sync during drag — `pos` state now updates at ~60fps while dragging, allowing open panels to follow the button in real-time
+- Button still uses direct DOM `translate3d()` for zero-lag movement; panel repositions via React state
+- Cleanup: cancel pending RAF on mouseup
+
+**`frontend/components/shared/FloatingChat.tsx`**:
+- Removed `onDragStart(() => setOpen(false))` — panel stays open during drag and follows the button
+
+**`frontend/components/virtual-office/OfficeKanban.tsx`**:
+- Removed `onDragStart(() => setOpen(false))` — panel stays open during drag and follows the button
+
+### Result
+- Open either widget's dropdown → drag the button → panel follows smoothly
+- Click behavior unchanged (4px threshold distinguishes click from drag)
