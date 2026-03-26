@@ -1,4 +1,4 @@
-"""Email Marketer Agent — produces email campaigns and can send via Gmail."""
+"""Email Marketer Agent — produces email campaigns and sends via Gmail."""
 from __future__ import annotations
 
 import json
@@ -11,27 +11,31 @@ logger = logging.getLogger("aria.email_marketer")
 
 _agent = None
 
+# Regex to find email addresses in task descriptions
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+
 
 class EmailMarketerAgent(BaseAgent):
     AGENT_NAME = "email_marketer"
-    CONTEXT_KEY = "type"
-    DEFAULT_CONTEXT = "newsletter"
+    CONTEXT_KEY = "action"  # tasks come in via context={"action": "..."}
+    DEFAULT_CONTEXT = "draft a newsletter"
 
-    def build_system_prompt(self, config, campaign_type: str) -> str:
-        gmail_connected = bool(config.integrations.google_access_token)
-        send_instructions = ""
-        if gmail_connected:
-            send_instructions = f"""
+    def build_system_prompt(self, config, action: str) -> str:
+        # Detect if this is a send task with a recipient
+        recipient = _extract_recipient(action)
+        send_note = ""
+        if recipient:
+            send_note = f"""
 
-IMPORTANT — Gmail is connected for {config.owner_email}. When the task asks you to SEND an email
-(not just draft), you MUST include a ```send_email``` JSON block at the END of your response for each
-email that should actually be sent:
-```send_email
-{{"to": "recipient@example.com", "subject": "Subject line", "html_body": "<html email body>"}}
-```
-You can include multiple ```send_email``` blocks if sending to multiple recipients.
-The from address will automatically be {config.owner_email}.
-Only include send blocks when explicitly asked to send. For drafts/campaigns, just provide the copy."""
+IMPORTANT: This email will be SENT to {recipient} from {config.owner_email} after you draft it.
+Write a complete, professional, ready-to-send email. Include a clear subject line.
+
+Structure your response as:
+SUBJECT: <the subject line>
+---
+<the full HTML email body>
+
+Make the HTML body professional with proper formatting. Do NOT include placeholder text."""
 
         return f"""You are the Email Marketer for {config.business_name}, an AI marketing agent
 that creates complete email campaigns for developer-focused products.
@@ -54,13 +58,10 @@ For each email provide:
 - Segmentation notes (if applicable)
 
 Keep emails concise, value-driven, one clear CTA per email.
-Developer founders should be able to copy-paste directly into their ESP.
+{send_note}"""
 
-Return JSON: campaign_type, emails[] (each with subject_variants[], preview_text, body, send_time, segmentation_notes)
-{send_instructions}"""
-
-    def build_user_message(self, campaign_type: str, context: dict | None) -> str:
-        return f"Create {campaign_type} campaign. Context: {context}"
+    def build_user_message(self, action: str, context: dict | None) -> str:
+        return action or "Draft a newsletter campaign."
 
 
 def _get():
@@ -73,22 +74,56 @@ def _get():
 AGENT_NAME = EmailMarketerAgent.AGENT_NAME
 
 
-def parse_send_blocks(content: str) -> list[dict]:
-    """Extract ```send_email``` JSON blocks from agent output."""
-    blocks = re.findall(r"```send_email\s*\n(.*?)\n```", content, re.DOTALL)
-    emails = []
-    for block in blocks:
-        try:
-            d = json.loads(block.strip())
-            if d.get("to") and d.get("subject") and d.get("html_body"):
-                emails.append(d)
-        except json.JSONDecodeError:
-            pass
-    return emails
+def _extract_recipient(task: str) -> str | None:
+    """Pull the first email address from a task description."""
+    match = _EMAIL_RE.search(task or "")
+    return match.group(0) if match else None
+
+
+def _extract_subject_and_body(content: str) -> tuple[str, str]:
+    """Parse SUBJECT: ... --- <body> format from agent output.
+
+    Falls back to using the first line as subject and rest as body.
+    """
+    # Try SUBJECT: ... --- <body> format
+    m = re.match(r"(?:SUBJECT:\s*)(.+?)(?:\n---\n|\n\n)(.*)", content, re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+
+    # Try "Subject:" anywhere in the text
+    m = re.search(r"(?:Subject:\s*)(.+?)(?:\n)", content, re.IGNORECASE)
+    if m:
+        subject = m.group(1).strip().strip('"').strip("*")
+        # Body is everything after the subject line
+        body_start = m.end()
+        body = content[body_start:].strip()
+        # Remove leading --- or dashes
+        body = re.sub(r"^-{2,}\s*\n?", "", body).strip()
+        if body:
+            return subject, body
+
+    # Fallback: first line as subject, rest as body
+    lines = content.strip().split("\n", 1)
+    subject = lines[0].strip().strip("#").strip("*").strip()
+    body = lines[1].strip() if len(lines) > 1 else content
+    return subject, body
+
+
+def _wrap_html(body: str) -> str:
+    """Ensure body is wrapped in basic HTML if it isn't already."""
+    if "<html" in body.lower() or "<body" in body.lower():
+        return body
+    # Convert markdown-ish text to basic HTML
+    html_body = body.replace("\n\n", "</p><p>").replace("\n", "<br>")
+    return f"""<html><body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+<div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+<p>{html_body}</p>
+</div>
+</body></html>"""
 
 
 async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict]:
-    """Send parsed email blocks via Gmail. Returns results for each send."""
+    """Send email dicts via Gmail. Returns results for each send."""
     from backend.config.loader import get_tenant_config, save_tenant_config
     from backend.tools import gmail_tool
 
@@ -97,6 +132,7 @@ async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict
     refresh_token = config.integrations.google_refresh_token
 
     if not access_token:
+        logger.warning("Gmail not connected for tenant %s", tenant_id)
         return [{"error": "Gmail not connected"}]
 
     results = []
@@ -135,13 +171,26 @@ async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict
 async def run(tenant_id: str, context: dict | None = None) -> dict:
     result = await _get().run(tenant_id, context)
 
-    # Check if the agent produced send_email blocks
     content = result.get("result", "")
-    if isinstance(content, str):
-        emails_to_send = parse_send_blocks(content)
-        if emails_to_send:
-            send_results = await send_emails_via_gmail(tenant_id, emails_to_send)
-            result["emails_sent"] = send_results
-            result["send_count"] = len([r for r in send_results if "message_id" in r])
+    if not isinstance(content, str) or not content:
+        return result
+
+    # Extract recipient from the original task description
+    task_desc = (context or {}).get("action", "")
+    recipient = _extract_recipient(task_desc)
+
+    if recipient:
+        # Task has a recipient email — parse the draft and send it
+        subject, body = _extract_subject_and_body(content)
+        html_body = _wrap_html(body)
+
+        logger.info("Auto-sending email to %s (subject: %s)", recipient, subject)
+        send_results = await send_emails_via_gmail(tenant_id, [{
+            "to": recipient,
+            "subject": subject,
+            "html_body": html_body,
+        }])
+        result["emails_sent"] = send_results
+        result["send_count"] = len([r for r in send_results if "message_id" in r])
 
     return result
