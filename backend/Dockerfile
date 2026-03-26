@@ -6,8 +6,9 @@ WORKDIR /app
 COPY backend/requirements.txt backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
-# Copy backend source
+# Copy backend source + agent docs (CEO chat reads .md files)
 COPY backend/ backend/
+COPY docs/ docs/
 
 EXPOSE 8000
 

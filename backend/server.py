@@ -460,7 +460,7 @@ async def cron_trigger():
 # ─── CEO Chat ───
 import pathlib as _pathlib
 
-_AGENTS_DIR = _pathlib.Path(__file__).resolve().parent.parent / "agents"
+_AGENTS_DIR = _pathlib.Path(__file__).resolve().parent.parent / "docs" / "agents"
 _CEO_MD = (_AGENTS_DIR / "ceo.md").read_text(encoding="utf-8")
 _AGENT_MDS = {}
 for _f in _AGENTS_DIR.glob("*.md"):
