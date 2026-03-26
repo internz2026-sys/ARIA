@@ -1,0 +1,48 @@
+# ─── Secrets ───────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+frontend/.env.local
+frontend/.env.*.local
+
+# ─── Python ────────────────────────────────────────────────────────────────
+backend/venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Next.js / Node ────────────────────────────────────────────────────────
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+node_modules/
+.pnp
+.pnp.js
+*.tsbuildinfo
+frontend/next-env.d.ts
+
+# ─── Claude Code ───────────────────────────────────────────────────────────
+.claude/
+
+# ─── OS / Editor ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/settings.json
+*.log
+
+# ─── Misc ──────────────────────────────────────────────────────────────────
+*.tmp
+*.bak

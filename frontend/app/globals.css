@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary: #534AB7;
+  --primary-light: #EEEDFE;
+  --success: #1D9E75;
+  --warning: #BA7517;
+  --danger: #D85A30;
+  --bg: #FFFFFF;
+  --bg-secondary: #F8F8F6;
+  --text-primary: #2C2C2A;
+  --text-secondary: #5F5E5A;
+  --border: #E0DED8;
+}
+
+body {
+  font-family: "Inter", system-ui, sans-serif;
+  color: var(--text-primary);
+  background: var(--bg);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+}

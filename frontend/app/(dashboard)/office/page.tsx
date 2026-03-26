@@ -1,0 +1,166 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { AGENTS, type OfficeAgent } from "@/lib/office-config";
+import VirtualOffice from "@/components/virtual-office/VirtualOffice";
+import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
+import OfficeKanban from "@/components/virtual-office/OfficeKanban";
+import { useAgentStatus } from "@/lib/socket";
+import { API_URL } from "@/lib/api";
+
+const MOCK_ACTIVITY = [
+  { agent: "ARIA CEO", action: "Reviewed GTM playbook" },
+  { agent: "Content Writer", action: "Published blog post draft" },
+  { agent: "Email Marketer", action: "Drafted welcome sequence" },
+  { agent: "Social Manager", action: "Scheduled 3 LinkedIn posts" },
+  { agent: "Ad Strategist", action: "Created Facebook ad copy" },
+  { agent: "ARIA CEO", action: "Delegated task to Content Writer" },
+];
+
+export default function OfficePage() {
+  const [agents, setAgents] = useState<OfficeAgent[]>(AGENTS);
+  const [selectedAgent, setSelectedAgent] = useState<OfficeAgent | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tenantId, setTenantId] = useState<string>("");
+
+  useEffect(() => {
+    const tid = localStorage.getItem("aria_tenant_id");
+    setTenantId(tid || "");
+    if (!tid) {
+      setLoading(false);
+      return;
+    }
+    fetch(`${API_URL}/api/office/agents/${tid}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.agents) {
+          const merged = AGENTS.map((local) => {
+            const remote = data.agents.find(
+              (a: any) => a.agent_id === local.id
+            );
+            if (remote) {
+              return {
+                ...local,
+                status: remote.status || local.status,
+                currentTask: remote.current_task || "",
+                lastUpdated: remote.last_updated || local.lastUpdated,
+              };
+            }
+            return local;
+          });
+          setAgents(merged);
+        }
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const liveStatuses = useAgentStatus(tenantId);
+
+  const agentsWithLive = useMemo(() => {
+    if (Object.keys(liveStatuses).length === 0) return agents;
+    return agents.map((agent) => {
+      const live = liveStatuses[agent.id];
+      if (!live) return agent;
+      return {
+        ...agent,
+        status: live.status,
+        currentTask: live.current_task,
+        lastUpdated: live.last_updated,
+      };
+    });
+  }, [agents, liveStatuses]);
+
+  useEffect(() => {
+    if (!selectedAgent) return;
+    const updated = agentsWithLive.find((a) => a.id === selectedAgent.id);
+    if (updated) setSelectedAgent(updated);
+  }, [agentsWithLive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleAgentClick(agentId: string) {
+    const agent = agentsWithLive.find((a) => a.id === agentId) || null;
+    setSelectedAgent(agent);
+  }
+
+  return (
+    <>
+      {/*
+        Fixed overlay — positioned directly from sidebar edge to viewport edge.
+        Bypasses <main> padding entirely. No negative margin hacks.
+        Mobile: below the sticky h-14 header. Desktop: full height, after 240px sidebar.
+      */}
+      <div className="fixed top-14 lg:top-0 left-0 lg:left-[240px] right-0 bottom-0 flex flex-col z-20 bg-[#F8F8F6]">
+        {/* Header bar */}
+        <div className="flex items-center justify-between px-4 py-2 bg-[#F8F8F6] border-b border-[#E0DED8]/60 shrink-0">
+          <div>
+            <h1 className="text-base font-bold text-[#2C2C2A]">Virtual Office</h1>
+            <p className="text-[10px] text-[#5F5E5A]">
+              {agents.length} agents working across {new Set(agents.map((a) => a.department)).size} departments
+            </p>
+          </div>
+          <div className="flex items-center gap-3 text-[10px] text-[#5F5E5A]">
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-[#1D9E75]" /> Idle
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-[#3B82F6]" /> Running
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-[#EAB308]" /> Busy
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="text-[#FFD700] text-xs">♛</span> Opus 4.6
+            </span>
+          </div>
+        </div>
+
+        {/* Activity ticker */}
+        <div className="relative overflow-hidden h-6 bg-[#F8F8F6] border-b border-[#E0DED8]/60 flex items-center shrink-0">
+          <span className="shrink-0 px-2 text-[10px] font-semibold text-[#5F5E5A] uppercase tracking-wide bg-[#F8F8F6] z-10">
+            Activity
+          </span>
+          <div className="flex animate-marquee whitespace-nowrap">
+            {[...MOCK_ACTIVITY, ...MOCK_ACTIVITY].map((a, i) => (
+              <span key={i} className="text-[11px] text-[#5F5E5A] mx-4">
+                <strong className="text-[#2C2C2A]">{a.agent}</strong>
+                {" — "}
+                {a.action}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Canvas area */}
+        <div className="flex-1 min-h-0 relative">
+          {loading ? (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : (
+            <VirtualOffice agents={agentsWithLive} onAgentClick={handleAgentClick} />
+          )}
+        </div>
+      </div>
+
+      {/* These use fixed positioning internally — render outside the office div */}
+      <OfficeKanban />
+      <AgentInfoPanel
+        agent={selectedAgent}
+        onClose={() => setSelectedAgent(null)}
+      />
+
+      <style jsx>{`
+        @keyframes marquee {
+          0% { transform: translateX(0); }
+          100% { transform: translateX(-50%); }
+        }
+        .animate-marquee {
+          animation: marquee 30s linear infinite;
+        }
+        .animate-marquee:hover {
+          animation-play-state: paused;
+        }
+      `}</style>
+    </>
+  );
+}

@@ -1,0 +1,93 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+
+interface DragState {
+  dragging: boolean;
+  moved: boolean;
+  startX: number;
+  startY: number;
+  elX: number;
+  elY: number;
+}
+
+/**
+ * Makes a fixed-position element draggable with zero-lag GPU-accelerated movement.
+ * Uses transform: translate3d() instead of left/top for compositor-level performance.
+ *
+ * Returns:
+ *  - pos: current {x,y} (synced to state only on release)
+ *  - btnRef: attach to the draggable element
+ *  - handleMouseDown: attach to onMouseDown
+ *  - handleClick: attach to onClick (filters out drags)
+ *  - dragging: true during active drag
+ */
+export function useDraggable(initialX: number, initialY: number) {
+  const [pos, setPos] = useState({ x: -1, y: -1 });
+  const posRef = useRef({ x: -1, y: -1 });
+  const dragRef = useRef<DragState>({ dragging: false, moved: false, startX: 0, startY: 0, elX: 0, elY: 0 });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const onDragStartRef = useRef<(() => void) | null>(null);
+
+  // Init position on mount
+  useEffect(() => {
+    const p = { x: initialX, y: initialY };
+    setPos(p);
+    posRef.current = p;
+    // Apply initial position immediately
+    if (btnRef.current) {
+      btnRef.current.style.transform = `translate3d(${p.x}px, ${p.y}px, 0)`;
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const d = dragRef.current;
+    d.dragging = true;
+    d.moved = false;
+    d.startX = e.clientX;
+    d.startY = e.clientY;
+    d.elX = posRef.current.x;
+    d.elY = posRef.current.y;
+    const btn = btnRef.current;
+
+    function onMove(ev: MouseEvent) {
+      const dx = ev.clientX - d.startX;
+      const dy = ev.clientY - d.startY;
+      if (!d.moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+        d.moved = true;
+        onDragStartRef.current?.();
+      }
+      if (d.moved && btn) {
+        const nx = Math.max(0, Math.min(window.innerWidth - 180, d.elX + dx));
+        const ny = Math.max(0, Math.min(window.innerHeight - 56, d.elY + dy));
+        btn.style.transform = `translate3d(${nx}px, ${ny}px, 0)`;
+        posRef.current = { x: nx, y: ny };
+      }
+    }
+
+    function onUp() {
+      d.dragging = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      setPos({ ...posRef.current });
+    }
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
+  const handleClick = useCallback(() => {
+    // Only fire if it wasn't a drag
+    return !dragRef.current.moved;
+  }, []);
+
+  return {
+    pos,
+    posRef,
+    btnRef,
+    handleMouseDown,
+    handleClick,
+    /** Register a callback that fires when drag starts (e.g. close panel) */
+    onDragStart: (fn: () => void) => { onDragStartRef.current = fn; },
+    dragging: dragRef.current.dragging,
+  };
+}
