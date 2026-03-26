@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useMemo, useState, useCallback } from "react";
-import { AGENTS, type OfficeAgent } from "@/lib/office-config";
+import { AGENTS, type OfficeAgent, type AgentStatus } from "@/lib/office-config";
 import VirtualOffice from "@/components/virtual-office/VirtualOffice";
 import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
 import OfficeKanban from "@/components/virtual-office/OfficeKanban";
 import { useAgentStatus } from "@/lib/socket";
+import { useCeoChat } from "@/lib/use-ceo-chat";
 import { API_URL } from "@/lib/api";
 import { AGENT_NAMES } from "@/lib/agent-config";
 
@@ -18,7 +19,7 @@ const EMPTY_ACTIVITY: ActivityItem[] = [
   { agent: "ARIA", action: "No recent activity — ask the CEO to assign tasks to get started" },
 ];
 
-const POLL_INTERVAL = 3000; // Poll every 3s for live updates
+const POLL_INTERVAL = 5000; // Poll every 5s for task-based status
 
 function mergeAgents(remoteAgents: any[]): OfficeAgent[] {
   return AGENTS.map((local) => {
@@ -43,7 +44,56 @@ export default function OfficePage() {
   const [activity, setActivity] = useState<ActivityItem[]>(EMPTY_ACTIVITY);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Fetch agent statuses from REST API
+  // ── Direct chat-to-office link (instant, no backend round-trip) ──
+  const { sending, messages } = useCeoChat();
+  const [chatOverrides, setChatOverrides] = useState<Record<string, AgentStatus>>({});
+  const prevMsgCount = useRef(0);
+
+  // CEO walks to meeting room the instant a message is sent
+  useEffect(() => {
+    if (sending) {
+      setChatOverrides((prev) => ({ ...prev, ceo: "running" }));
+    }
+  }, [sending]);
+
+  // When CEO responds: detect delegations → move agents instantly
+  useEffect(() => {
+    if (messages.length <= prevMsgCount.current) {
+      prevMsgCount.current = messages.length;
+      return;
+    }
+    prevMsgCount.current = messages.length;
+    const last = messages[messages.length - 1];
+
+    if (last?.role === "assistant") {
+      if (last.delegations && last.delegations.length > 0) {
+        // CEO + delegated agents walk to meeting room
+        const overrides: Record<string, AgentStatus> = { ceo: "running" };
+        for (const d of last.delegations) overrides[d.agent] = "running";
+        setChatOverrides((prev) => ({ ...prev, ...overrides }));
+
+        // After 4s meeting: CEO idle, agents start working
+        setTimeout(() => {
+          setChatOverrides((prev) => {
+            const next: Record<string, AgentStatus> = {};
+            for (const d of last.delegations!) {
+              next[d.agent] = "working";
+            }
+            // Remove CEO override — let polling handle it
+            return next;
+          });
+        }, 4000);
+      } else {
+        // No delegation — CEO returns to desk
+        setChatOverrides((prev) => {
+          const { ceo, ...rest } = prev;
+          return rest;
+        });
+      }
+    }
+  }, [messages]);
+
+  // ── REST polling for task-based statuses (in_progress tasks) ──
   const fetchAgents = useCallback((tid: string) => {
     fetch(`${API_URL}/api/office/agents/${tid}`)
       .then((r) => r.json())
@@ -70,10 +120,10 @@ export default function OfficePage() {
       })
       .catch(() => setLoading(false));
 
-    // Poll for live updates (reliable fallback — works even if Socket.IO fails)
+    // Poll for task-based status updates
     pollRef.current = setInterval(() => fetchAgents(tid), POLL_INTERVAL);
 
-    // Fetch real activity from tasks + inbox
+    // Fetch real activity
     fetch(`${API_URL}/api/dashboard/${tid}/activity`)
       .then((r) => r.json())
       .then((data) => {
@@ -93,41 +143,45 @@ export default function OfficePage() {
     };
   }, [fetchAgents]);
 
-  // Socket.IO for instant updates (optimization on top of polling)
+  // Socket.IO as bonus instant layer (may not work on Railway)
   const liveStatuses = useAgentStatus(tenantId);
 
-  const agentsWithLive = useMemo(() => {
-    if (Object.keys(liveStatuses).length === 0) return agents;
+  // Merge: chat overrides > socket > polled REST > defaults
+  const finalAgents = useMemo(() => {
     return agents.map((agent) => {
+      // 1. Chat-driven overrides (highest priority — instant)
+      const chatStatus = chatOverrides[agent.id];
+      if (chatStatus) {
+        return { ...agent, status: chatStatus };
+      }
+      // 2. Socket.IO live status
       const live = liveStatuses[agent.id];
-      if (!live) return agent;
-      return {
-        ...agent,
-        status: live.status,
-        currentTask: live.current_task,
-        lastUpdated: live.last_updated,
-      };
+      if (live) {
+        return {
+          ...agent,
+          status: live.status,
+          currentTask: live.current_task,
+          lastUpdated: live.last_updated,
+        };
+      }
+      // 3. Polled REST status (already in agents)
+      return agent;
     });
-  }, [agents, liveStatuses]);
+  }, [agents, chatOverrides, liveStatuses]);
 
   useEffect(() => {
     if (!selectedAgent) return;
-    const updated = agentsWithLive.find((a) => a.id === selectedAgent.id);
+    const updated = finalAgents.find((a) => a.id === selectedAgent.id);
     if (updated) setSelectedAgent(updated);
-  }, [agentsWithLive]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [finalAgents]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleAgentClick(agentId: string) {
-    const agent = agentsWithLive.find((a) => a.id === agentId) || null;
+    const agent = finalAgents.find((a) => a.id === agentId) || null;
     setSelectedAgent(agent);
   }
 
   return (
     <>
-      {/*
-        Fixed overlay — positioned directly from sidebar edge to viewport edge.
-        Bypasses <main> padding entirely. No negative margin hacks.
-        Mobile: below the sticky h-14 header. Desktop: full height, after 240px sidebar.
-      */}
       <div className="fixed top-14 lg:top-0 left-0 lg:left-[240px] right-0 bottom-0 flex flex-col z-20 bg-[#F8F8F6]">
         {/* Header bar */}
         <div className="flex items-center justify-between px-4 py-2 bg-[#F8F8F6] border-b border-[#E0DED8]/60 shrink-0">
@@ -145,7 +199,7 @@ export default function OfficePage() {
               <span className="w-2 h-2 rounded-full bg-[#3B82F6]" /> Working
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-[#EAB308]" /> In Meeting
+              <span className="w-2 h-2 rounded-full bg-[#534AB7]" /> In Meeting
             </span>
             <span className="flex items-center gap-1">
               <span className="text-[#FFD700] text-xs">♛</span> Opus 4.6
@@ -176,7 +230,7 @@ export default function OfficePage() {
               <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
             </div>
           ) : (
-            <VirtualOffice agents={agentsWithLive} onAgentClick={handleAgentClick} />
+            <VirtualOffice agents={finalAgents} onAgentClick={handleAgentClick} />
           )}
         </div>
       </div>
