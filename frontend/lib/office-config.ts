@@ -14,7 +14,7 @@ export const OFFICE_PIXEL_HEIGHT = OFFICE_HEIGHT * TILE_SIZE; // 512
 
 // ---- Types ----------------------------------------------------------------
 
-export type AgentStatus = "running" | "busy" | "idle";
+export type AgentStatus = "running" | "busy" | "idle" | "working";
 
 export interface OfficeAgent {
   id: string;

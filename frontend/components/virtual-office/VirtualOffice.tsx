@@ -26,24 +26,12 @@ interface AnimPos {
   walking: boolean;
   facingRight: boolean;
   walkFrame: number;
-  idleTimer: number;   // frames until next idle wander
-  waitTimer: number;   // frames to wait at wander destination
-  wandering: boolean;  // currently heading to a wander spot
-  waiting: boolean;    // arrived at wander spot, counting down waitTimer
 }
 
 const T = TILE_SIZE;
 const WALK_SPEED = 1.2; // pixels per frame
 
-// Idle wander destinations per department (pixel coords)
-const IDLE_SPOTS: Record<string, Array<{ x: number; y: number }>> = {
-  "ceo-office":     [{ x: 5*T+16, y: 6*T }, { x: 2*T, y: 5*T }, { x: 6*T+8, y: 2*T }],
-  "meeting-room":   [{ x: 10*T, y: 3*T }, { x: 14*T, y: 5*T }, { x: 11*T, y: 6*T }],
-  "content-studio": [{ x: 22*T, y: 5*T }, { x: 18*T, y: 6*T }, { x: 20*T, y: 2*T }],
-  "email-room":     [{ x: 5*T+16, y: 10*T }, { x: 2*T+8, y: 14*T }, { x: 6*T, y: 13*T }],
-  "social-hub":     [{ x: 14*T, y: 14*T }, { x: 10*T, y: 13*T }, { x: 9*T+16, y: 14*T }],
-  "ads-room":       [{ x: 22*T+8, y: 14*T }, { x: 18*T, y: 14*T }, { x: 20*T, y: 12*T }],
-};
+// No idle wandering — agents only move when driven by real tasks
 
 export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -71,33 +59,30 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
           x: deskPx.x, y: deskPx.y,
           targetX: deskPx.x, targetY: deskPx.y,
           walking: false, facingRight: true, walkFrame: 0,
-          idleTimer: Math.floor(Math.random() * 300 + 180),
-          waitTimer: 0, wandering: false, waiting: false,
         };
         prevStatus[agent.id] = agent.status;
         continue;
       }
 
-      // Skip if status hasn't changed (don't interrupt wandering)
+      // Skip if status hasn't changed
       if (prevStatus[agent.id] === agent.status) continue;
       prevStatus[agent.id] = agent.status;
 
       const p = pos[agent.id];
-      p.wandering = false;
-      p.waiting = false;
 
       if (agent.status === "running") {
+        // Walk to meeting room
         const idx = agentList.indexOf(agent);
         const offsetX = (idx - 2) * 24;
         const offsetY = (idx % 2) * 20;
         p.targetX = meetPx.x + offsetX;
         p.targetY = meetPx.y + offsetY;
-      } else if (agent.status === "idle") {
+      } else if (agent.status === "working") {
+        // Return to desk and work (typing animation handled in draw)
         p.targetX = deskPx.x;
         p.targetY = deskPx.y;
-        p.idleTimer = Math.floor(Math.random() * 240 + 120);
       } else {
-        // busy — stay at desk
+        // idle or busy — sit at desk
         p.targetX = deskPx.x;
         p.targetY = deskPx.y;
       }
@@ -189,12 +174,21 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     // Breathing bob
     let bobY = 0;
     if (!walking) {
-      bobY = agent.status === "running" ? Math.sin(time * 4) * 1.5 : Math.sin(time * 1.5) * 0.6;
+      bobY = (agent.status === "running" || agent.status === "working")
+        ? Math.sin(time * 4) * 1.5
+        : Math.sin(time * 1.5) * 0.6;
     }
     const y = baseY + bobY;
 
     // Walk animation — legs
     const legOffset = walking ? Math.sin(walkFrame * 0.3) * 3 : 0;
+
+    // Working glow (at desk, executing a task)
+    if (agent.status === "working") {
+      const pulse = 0.25 + Math.sin(time * 2.5) * 0.15;
+      ctx.beginPath(); ctx.arc(cx, y - 8, 16, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(59,130,246,${pulse})`; ctx.fill();
+    }
 
     // Busy glow
     if (agent.status === "busy") {
@@ -231,9 +225,9 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       ctx.fillStyle = agent.color;
       ctx.fillRect(cx - 8, y - 10 + armSwing, 2, 8);
       ctx.fillRect(cx + 6, y - 10 - armSwing, 2, 8);
-    } else if (agent.status === "running") {
-      // Typing
-      const armOff = Math.sin(time * 6) * 2;
+    } else if (agent.status === "working") {
+      // Typing at desk — fast arm movement
+      const armOff = Math.sin(time * 8) * 2;
       ctx.fillStyle = agent.color;
       ctx.fillRect(cx - 8, y - 10 + armOff, 2, 8);
       ctx.fillRect(cx + 6, y - 10 - armOff, 2, 8);
@@ -278,7 +272,7 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     }
 
     // Status dot
-    const dotColors: Record<string, string> = { idle: "#1D9E75", running: "#3B82F6", busy: "#EAB308" };
+    const dotColors: Record<string, string> = { idle: "#1D9E75", running: "#3B82F6", working: "#3B82F6", busy: "#EAB308" };
     ctx.beginPath(); ctx.arc(cx + 9, y - 24, 3, 0, Math.PI * 2);
     ctx.fillStyle = dotColors[agent.status] || "#1D9E75"; ctx.fill();
     ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
@@ -465,41 +459,8 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       } else {
         p.x = p.targetX;
         p.y = p.targetY;
-        const wasWalking = p.walking;
         p.walking = false;
         p.walkFrame = 0;
-        // Arrived at a wander spot → start waiting
-        if (p.wandering && wasWalking) {
-          p.wandering = false;
-          p.waiting = true;
-          p.waitTimer = 80 + Math.floor(Math.random() * 80);
-        }
-      }
-
-      // Idle life — wander around when not busy/running
-      if (agent.status === "idle") {
-        if (p.waiting) {
-          p.waitTimer--;
-          if (p.waitTimer <= 0) {
-            p.waiting = false;
-            p.targetX = agent.deskX * T + T / 2;
-            p.targetY = agent.deskY * T + T / 2;
-            p.idleTimer = 240 + Math.floor(Math.random() * 360);
-          }
-        } else if (!p.wandering && !p.walking) {
-          p.idleTimer--;
-          if (p.idleTimer <= 0) {
-            const spots = IDLE_SPOTS[agent.department];
-            if (spots && spots.length > 0) {
-              const spot = spots[Math.floor(Math.random() * spots.length)];
-              p.targetX = spot.x;
-              p.targetY = spot.y;
-              p.wandering = true;
-            } else {
-              p.idleTimer = 300;
-            }
-          }
-        }
       }
     }
 

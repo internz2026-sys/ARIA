@@ -1,20 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { AGENTS, type OfficeAgent } from "@/lib/office-config";
 import VirtualOffice from "@/components/virtual-office/VirtualOffice";
 import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
 import OfficeKanban from "@/components/virtual-office/OfficeKanban";
 import { useAgentStatus } from "@/lib/socket";
 import { API_URL } from "@/lib/api";
+import { AGENT_NAMES } from "@/lib/agent-config";
 
-const MOCK_ACTIVITY = [
-  { agent: "ARIA CEO", action: "Reviewed GTM playbook" },
-  { agent: "Content Writer", action: "Published blog post draft" },
-  { agent: "Email Marketer", action: "Drafted welcome sequence" },
-  { agent: "Social Manager", action: "Scheduled 3 LinkedIn posts" },
-  { agent: "Ad Strategist", action: "Created Facebook ad copy" },
-  { agent: "ARIA CEO", action: "Delegated task to Content Writer" },
+interface ActivityItem {
+  agent: string;
+  action: string;
+}
+
+const EMPTY_ACTIVITY: ActivityItem[] = [
+  { agent: "ARIA", action: "No recent activity — ask the CEO to assign tasks to get started" },
 ];
 
 export default function OfficePage() {
@@ -22,6 +23,7 @@ export default function OfficePage() {
   const [selectedAgent, setSelectedAgent] = useState<OfficeAgent | null>(null);
   const [loading, setLoading] = useState(true);
   const [tenantId, setTenantId] = useState<string>("");
+  const [activity, setActivity] = useState<ActivityItem[]>(EMPTY_ACTIVITY);
 
   useEffect(() => {
     const tid = localStorage.getItem("aria_tenant_id");
@@ -53,6 +55,21 @@ export default function OfficePage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
+
+    // Fetch real activity from tasks + inbox
+    fetch(`${API_URL}/api/dashboard/${tid}/activity`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.activity && data.activity.length > 0) {
+          setActivity(
+            data.activity.map((a: any) => ({
+              agent: AGENT_NAMES[a.agent] || a.agent,
+              action: a.action,
+            }))
+          );
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const liveStatuses = useAgentStatus(tenantId);
@@ -103,10 +120,10 @@ export default function OfficePage() {
               <span className="w-2 h-2 rounded-full bg-[#1D9E75]" /> Idle
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-[#3B82F6]" /> Running
+              <span className="w-2 h-2 rounded-full bg-[#3B82F6]" /> Working
             </span>
             <span className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-[#EAB308]" /> Busy
+              <span className="w-2 h-2 rounded-full bg-[#EAB308]" /> In Meeting
             </span>
             <span className="flex items-center gap-1">
               <span className="text-[#FFD700] text-xs">♛</span> Opus 4.6
@@ -120,7 +137,7 @@ export default function OfficePage() {
             Activity
           </span>
           <div className="flex animate-marquee whitespace-nowrap">
-            {[...MOCK_ACTIVITY, ...MOCK_ACTIVITY].map((a, i) => (
+            {[...activity, ...activity].map((a, i) => (
               <span key={i} className="text-[11px] text-[#5F5E5A] mx-4">
                 <strong className="text-[#2C2C2A]">{a.agent}</strong>
                 {" — "}

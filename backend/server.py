@@ -256,8 +256,27 @@ async def list_agents(tenant_id: str):
 
 @app.post("/api/agents/{tenant_id}/{agent_name}/run")
 async def run_agent(tenant_id: str, agent_name: str):
+    # Agent starts working at desk
+    now_ts = datetime.now(timezone.utc).isoformat()
+    await sio.emit("agent_status_change", {
+        "agent_id": agent_name,
+        "status": "working",
+        "current_task": f"Running {agent_name} task",
+        "action": "start_work",
+        "last_updated": now_ts,
+    }, room=tenant_id)
+
     result = await dispatch_agent(tenant_id, agent_name)
     await sio.emit("agent_event", result, room=tenant_id)
+
+    # Agent done — return to idle
+    await sio.emit("agent_status_change", {
+        "agent_id": agent_name,
+        "status": "idle",
+        "current_task": "",
+        "action": "task_complete",
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }, room=tenant_id)
 
     # Save output to inbox
     content = result.get("result", "")
@@ -366,10 +385,42 @@ async def dashboard_stats(tenant_id: str):
 
 @app.get("/api/dashboard/{tenant_id}/activity")
 async def dashboard_activity(tenant_id: str):
+    """Return recent activity from inbox items and tasks."""
     from backend.config.loader import _get_supabase
     sb = _get_supabase()
-    result = sb.table("agent_logs").select("*").eq("tenant_id", tenant_id).order("timestamp", desc=True).limit(50).execute()
-    return {"tenant_id": tenant_id, "activity": result.data}
+    activity = []
+    try:
+        # Recent inbox deliverables
+        inbox_result = sb.table("inbox_items").select("agent,type,title,created_at").eq(
+            "tenant_id", tenant_id
+        ).order("created_at", desc=True).limit(20).execute()
+        for item in (inbox_result.data or []):
+            activity.append({
+                "agent": item["agent"],
+                "action": f"Delivered: {item['title'][:60]}",
+                "type": item["type"],
+                "timestamp": item["created_at"],
+            })
+    except Exception:
+        pass
+    try:
+        # Recent completed tasks
+        task_result = sb.table("tasks").select("agent,task,status,created_at").eq(
+            "tenant_id", tenant_id
+        ).order("created_at", desc=True).limit(20).execute()
+        for task in (task_result.data or []):
+            status_verb = "Completed" if task["status"] == "done" else "Working on"
+            activity.append({
+                "agent": task["agent"],
+                "action": f"{status_verb}: {task['task'][:60]}",
+                "type": "task",
+                "timestamp": task["created_at"],
+            })
+    except Exception:
+        pass
+    # Sort by timestamp, newest first
+    activity.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    return {"tenant_id": tenant_id, "activity": activity[:30]}
 
 
 @app.get("/api/dashboard/{tenant_id}/inbox")
@@ -595,10 +646,54 @@ async def _run_agent_to_inbox(
     session_id: str | None = None, task_id: str | None = None,
     priority: str = "medium",
 ):
-    """Run an agent in background and save the result to the inbox."""
+    """Run an agent in background, drive office movement from real execution.
+
+    Lifecycle:
+      1. Brief meeting phase (4s) — CEO + agent are at meeting room
+      2. CEO returns to desk (idle), agent returns to desk (working)
+      3. Agent executes for real — stays in "working" until done
+      4. Agent finishes → idle, result saved to inbox
+    """
+    import asyncio
+
     try:
+        # Phase 1: Meeting (CEO + agent already walking to meeting room via caller)
+        await asyncio.sleep(4)
+
+        now_ts = datetime.now(timezone.utc).isoformat()
+        # Phase 2: CEO returns to desk
+        if tenant_id:
+            await sio.emit("agent_status_change", {
+                "agent_id": "ceo",
+                "status": "idle",
+                "current_task": "",
+                "action": "return_to_desk",
+                "last_updated": now_ts,
+            }, room=tenant_id)
+
+            # Agent returns to desk and starts working
+            await sio.emit("agent_status_change", {
+                "agent_id": agent_id,
+                "status": "working",
+                "current_task": task_desc,
+                "action": "return_and_work",
+                "last_updated": now_ts,
+            }, room=tenant_id)
+
+        # Phase 3: Actually run the agent (this is where real time is spent)
         result = await agent_module.run(tenant_id, context={"action": task_desc})
         content = result.get("result", "")
+
+        # Phase 4: Agent done — return to idle
+        if tenant_id:
+            await sio.emit("agent_status_change", {
+                "agent_id": agent_id,
+                "status": "idle",
+                "current_task": "",
+                "action": "task_complete",
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }, room=tenant_id)
+
         if not content:
             return
 
@@ -642,6 +737,18 @@ async def _run_agent_to_inbox(
 
     except Exception as e:
         logging.getLogger("aria.inbox").error("Agent %s failed for tenant %s: %s", agent_id, tenant_id, e)
+        # On failure, still return agent to idle so it doesn't get stuck
+        if tenant_id:
+            try:
+                await sio.emit("agent_status_change", {
+                    "agent_id": agent_id,
+                    "status": "idle",
+                    "current_task": "",
+                    "action": "task_failed",
+                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                }, room=tenant_id)
+            except Exception:
+                pass
 
 
 # ─── CEO Chat ───
@@ -862,37 +969,8 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 "action": "walk_to_meeting",
                 "last_updated": now_ts,
             }, room=tenant_id)
-            # After a delay, agents return to desks and start working
-            async def _return_to_desk(aid: str, tid: str, task: str):
-                import asyncio
-                await asyncio.sleep(8)  # 8 seconds in meeting
-                await sio.emit("agent_status_change", {
-                    "agent_id": "ceo",
-                    "status": "idle",
-                    "current_task": "",
-                    "action": "return_to_desk",
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
-                }, room=tid)
-                await sio.emit("agent_status_change", {
-                    "agent_id": aid,
-                    "status": "running",
-                    "current_task": task,
-                    "action": "return_and_work",
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
-                }, room=tid)
-                # After working for 20 seconds, go idle
-                await asyncio.sleep(20)
-                await sio.emit("agent_status_change", {
-                    "agent_id": aid,
-                    "status": "idle",
-                    "current_task": "",
-                    "action": "task_complete",
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
-                }, room=tid)
-            import asyncio
-            asyncio.create_task(_return_to_desk(agent_id, tenant_id, task_desc))
-
-        # Execute agent in background and save output to inbox
+        # Execute agent in background — _run_agent_to_inbox handles the full
+        # lifecycle: meeting delay → CEO returns → agent works → agent done
         try:
             from backend.agents import AGENT_REGISTRY
             agent_module = AGENT_REGISTRY.get(agent_id)

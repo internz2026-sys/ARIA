@@ -315,3 +315,44 @@ CREATE TABLE inbox_items (
 3. Content Writer runs in background → generates blog post
 4. Output saved to `inbox_items` → Socket.IO notifies frontend
 5. Inbox page shows the deliverable → user can copy, review, or mark complete
+
+---
+
+## 2026-03-26 — Task-Synced Virtual Office Movement
+
+### Problem
+- Agent movement was driven by hardcoded timers (8s meeting, 20s fake "working") completely disconnected from real task execution
+- Agents wandered randomly around their rooms even when no tasks existed — made the office feel dishonest
+- Activity ticker used hardcoded `MOCK_ACTIVITY` strings instead of real data
+- No "working" state — agents were either "running" (walking to meeting) or "idle" (at desk), nothing in between
+
+### Changes
+
+**New status: `working`** — agent is at their desk executing a real task (typing animation + blue glow)
+
+**Status lifecycle (now reflects real execution):**
+1. CEO delegates task → CEO "busy" + agent "running" (both walk to meeting room)
+2. After 4s meeting → CEO "idle" (returns to desk), agent "working" (returns to desk, starts typing)
+3. Agent actually executes via Claude API → stays in "working" for the real duration
+4. Agent finishes → "idle" (stops typing), output saved to inbox
+5. On failure → agent returns to "idle" so it doesn't get stuck
+
+**`backend/server.py`**:
+- Removed `_return_to_desk()` function (was hardcoded 8s+20s timers)
+- `_run_agent_to_inbox()` now drives the full lifecycle: meeting delay → CEO returns → agent works → agent done
+- Direct `run_agent` endpoint also emits "working" → "idle" status events
+- `GET /api/dashboard/{tenant_id}/activity` now returns real data from `inbox_items` + `tasks` tables (no more hardcoded mock)
+
+**`frontend/components/virtual-office/VirtualOffice.tsx`**:
+- Removed all idle wandering: `IDLE_SPOTS`, `idleTimer`, `waitTimer`, `wandering`, `waiting` — agents only move when a real task triggers them
+- Added "working" status handler: agent walks back to desk, shows typing animation (fast arm movement) with blue pulsing glow
+- Simplified `AnimPos` interface (removed 5 wandering-related fields)
+- No tasks = no movement (office is "quiet")
+
+**`frontend/app/(dashboard)/office/page.tsx`**:
+- Replaced `MOCK_ACTIVITY` with real data fetched from `/api/dashboard/{tenant_id}/activity`
+- Falls back to "No recent activity" message when empty
+- Updated status legend: "Running" → "Working", "Busy" → "In Meeting"
+
+**`frontend/lib/office-config.ts`** + **`frontend/lib/socket.ts`**:
+- Added "working" to `AgentStatus` type union

@@ -31,7 +31,7 @@ export function getSocket(): Socket {
 
 export interface AgentStatusPayload {
   agent_id: string;
-  status: "running" | "busy" | "idle";
+  status: "running" | "busy" | "idle" | "working";
   current_task: string;
   last_updated: string;
 }
