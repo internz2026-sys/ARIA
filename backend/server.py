@@ -431,7 +431,7 @@ async def ceo_triage(body: TriageRequest):
         "Return ONLY valid JSON, no markdown, no explanation outside the JSON."
     )
     try:
-        raw = await call_claude(system, f"Triage this task: {body.title}")
+        raw = await call_claude(system, f"Triage this task: {body.title}", tenant_id="global")
         # Extract JSON from response
         start = raw.find("{")
         end = raw.rfind("}") + 1
@@ -605,7 +605,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     )
 
     try:
-        raw = await call_claude(system_prompt, conversation)
+        raw = await call_claude(system_prompt, conversation, tenant_id=tenant_id or "global")
     except Exception as exc:
         import traceback
         logger = logging.getLogger("aria.ceo_chat")
@@ -809,6 +809,14 @@ async def websocket_chat(websocket: WebSocket, tenant_id: str):
             await websocket.send_json({"type": "message", "content": f"Received: {data}"})
     except WebSocketDisconnect:
         pass
+
+
+# ─── API Usage tracking endpoint ───
+@app.get("/api/usage")
+async def api_usage(tenant_id: str = "global"):
+    """Return current API usage stats (tokens, requests) for a tenant."""
+    from backend.tools.claude_cli import get_usage
+    return get_usage(tenant_id)
 
 
 if __name__ == "__main__":

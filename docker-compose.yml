@@ -1,6 +1,6 @@
 services:
 
-  # ── Backend (FastAPI + Claude Code CLI) ─────────────────────────────────
+  # ── Backend (FastAPI + Anthropic API) ─────────────────────────────────
   backend:
     build:
       context: .
@@ -8,9 +8,6 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
-    volumes:
-      # Mount host Claude Code auth so agents use your Max plan session
-      - ${HOME}/.claude:/root/.claude:ro
     restart: unless-stopped
 
   # ── Frontend (Next.js) ──────────────────────────────────────────────────
@@ -25,21 +22,6 @@ services:
         NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
     ports:
       - "3000:3000"
-    depends_on:
-      - backend
-    restart: unless-stopped
-
-  # ── ngrok tunnel (optional — run with: docker compose --profile tunnel up) ──
-  ngrok:
-    profiles: ["tunnel"]
-    image: ngrok/ngrok:latest
-    entrypoint: /bin/sh
-    # Uses static domain if NGROK_DOMAIN is set, otherwise gets a random URL
-    command: -c "ngrok http $${NGROK_DOMAIN:+--domain=$$NGROK_DOMAIN} backend:8000"
-    environment:
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
-    ports:
-      - "4040:4040"   # ngrok web UI — inspect requests at http://localhost:4040
     depends_on:
       - backend
     restart: unless-stopped
