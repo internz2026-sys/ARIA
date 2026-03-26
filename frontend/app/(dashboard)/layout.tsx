@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import Sidebar from "@/components/shared/sidebar";
 import FloatingChat from "@/components/shared/FloatingChat";
+import OfficeKanban from "@/components/virtual-office/OfficeKanban";
 import { CeoChatProvider } from "@/lib/use-ceo-chat";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -118,8 +119,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <main className="p-6 lg:p-8 pt-6">{children}</main>
         </div>
 
-        {/* Floating CEO chat — available on every dashboard page */}
+        {/* Floating widgets — available on every dashboard page */}
         <FloatingChat />
+        <OfficeKanban />
       </div>
     </CeoChatProvider>
   );

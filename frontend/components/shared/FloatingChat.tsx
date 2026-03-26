@@ -96,7 +96,7 @@ export default function FloatingChat() {
     position: "fixed", width: 420, maxWidth: "calc(100vw - 40px)", height: pH,
     left: basePanelX + panelOffset.dx,
     top: basePanelY + panelOffset.dy,
-    zIndex: 51,
+    zIndex: 61,
   };
 
   const onPanelHeaderDown = useCallback((e: React.MouseEvent) => {
@@ -121,7 +121,7 @@ export default function FloatingChat() {
         data-floating-widget="ceo-chat"
         onMouseDown={handleMouseDown}
         onClick={() => handleClick() && setOpen(v => !v)}
-        className="fixed left-0 top-0 z-40 flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform"
+        className="fixed left-0 top-0 z-[60] flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform"
         style={{
           transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
           background: "linear-gradient(135deg, #534AB7 0%, #7C3AED 100%)",

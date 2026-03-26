@@ -73,7 +73,7 @@ export default function OfficeKanban() {
     maxWidth: "calc(100vw - 40px)",
     left: basePanelX + panelOffset.dx,
     top: basePanelY + panelOffset.dy,
-    zIndex: 51,
+    zIndex: 61,
   };
 
   const onPanelHeaderDown = useCallback((e: React.MouseEvent) => {
@@ -98,7 +98,7 @@ export default function OfficeKanban() {
         data-floating-widget="task-board"
         onMouseDown={handleMouseDown}
         onClick={() => handleClick() && setOpen((v) => !v)}
-        className="fixed left-0 top-0 z-40 flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform"
+        className="fixed left-0 top-0 z-[60] flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform"
         style={{
           transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
           background: "linear-gradient(135deg, #FF6B35 0%, #F7418F 100%)",

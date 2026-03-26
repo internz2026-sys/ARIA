@@ -4,7 +4,7 @@ import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import { AGENTS, type OfficeAgent, type AgentStatus } from "@/lib/office-config";
 import VirtualOffice from "@/components/virtual-office/VirtualOffice";
 import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
-import OfficeKanban from "@/components/virtual-office/OfficeKanban";
+
 import { useAgentStatus } from "@/lib/socket";
 import { useCeoChat } from "@/lib/use-ceo-chat";
 import { API_URL } from "@/lib/api";
@@ -257,8 +257,6 @@ export default function OfficePage() {
         </div>
       </div>
 
-      {/* These use fixed positioning internally — render outside the office div */}
-      <OfficeKanban />
       <AgentInfoPanel
         agent={selectedAgent}
         onClose={() => setSelectedAgent(null)}
