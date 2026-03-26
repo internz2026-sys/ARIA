@@ -2,20 +2,10 @@
 
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
+import type { OfficeAgent, AgentStatus } from "@/lib/office-config";
 
 interface AgentInfoPanelProps {
-  agent: {
-    id: string;
-    name: string;
-    role: string;
-    model: "opus-4-6" | "sonnet-4-6" | "haiku-4-5";
-    status: "running" | "busy" | "idle";
-    department: string;
-    currentTask: string;
-    lastUpdated: string;
-    color: string;
-    hasCrown: boolean;
-  } | null;
+  agent: OfficeAgent | null;
   onClose: () => void;
 }
 
@@ -43,10 +33,11 @@ const MODEL_DISPLAY: Record<
 };
 
 const STATUS_CONFIG: Record<
-  "running" | "busy" | "idle",
+  AgentStatus,
   { label: string; dotColor: string; pulse: boolean }
 > = {
-  running: { label: "Running", dotColor: "bg-[#534AB7]", pulse: true },
+  running: { label: "In Meeting", dotColor: "bg-[#534AB7]", pulse: true },
+  working: { label: "Working", dotColor: "bg-[#3B82F6]", pulse: true },
   busy: { label: "Busy", dotColor: "bg-[#BA7517]", pulse: false },
   idle: { label: "Idle", dotColor: "bg-[#1D9E75]", pulse: false },
 };
