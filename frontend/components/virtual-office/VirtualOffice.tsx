@@ -37,7 +37,8 @@ interface AnimPos {
 }
 
 const T = TILE_SIZE;
-const WALK_SPEED = 0.35; // pixels per frame — casual human walking pace
+const WALK_SPEED = 0.35; // pixels per frame — walking to meeting / back to desk
+const STROLL_SPEED = 0.18; // pixels per frame — slow idle wander around office
 
 // Thought bubble icons (drawn as simple shapes/text, no emoji)
 const THOUGHT_ICONS = ["?", "!", "~", "*", "#"];
@@ -478,13 +479,14 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       const p = pos[agent.id];
       if (!p) continue;
 
-      // Movement toward target
+      // Movement toward target — idle agents stroll, others walk
+      const speed = agent.status === "idle" ? STROLL_SPEED : WALK_SPEED;
       const dx = p.targetX - p.x;
       const dy = p.targetY - p.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > 2) {
-        p.x += (dx / dist) * WALK_SPEED;
-        p.y += (dy / dist) * WALK_SPEED;
+        p.x += (dx / dist) * speed;
+        p.y += (dy / dist) * speed;
         p.walking = true;
         p.walkFrame++;
         p.facingRight = dx > 0;
