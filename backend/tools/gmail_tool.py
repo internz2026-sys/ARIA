@@ -52,6 +52,12 @@ async def send_email(
         )
         if resp.status_code == 401:
             return {"error": "token_expired", "status_code": 401}
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # Return error details instead of crashing — caller handles the failure
+            try:
+                detail = resp.json().get("error", {}).get("message", resp.text[:200])
+            except Exception:
+                detail = resp.text[:200]
+            return {"error": f"gmail_api_error", "detail": detail, "status_code": resp.status_code}
         data = resp.json()
         return {"status_code": resp.status_code, "message_id": data.get("id", "")}

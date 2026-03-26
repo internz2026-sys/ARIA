@@ -898,7 +898,37 @@ async def _run_agent_to_inbox(
 
     except Exception as e:
         logging.getLogger("aria.inbox").error("Agent %s failed for tenant %s: %s", agent_id, tenant_id, e)
-        # On failure, still return agent to idle so it doesn't get stuck
+        # Save error to inbox so user can see what went wrong
+        _save_inbox_item(
+            tenant_id=tenant_id,
+            agent=agent_id,
+            title=f"Failed: {task_desc[:60]}",
+            content=f"The {agent_id} agent encountered an error while processing this task:\n\n"
+                    f"**Task:** {task_desc}\n\n"
+                    f"**Error:** {e}\n\n"
+                    "Please try again. If this persists, check Settings > Integrations to ensure Gmail is connected.",
+            content_type="error",
+            priority=priority,
+            task_id=task_id,
+            chat_session_id=session_id,
+        )
+        # Mark task as done so it doesn't stay stuck in_progress
+        if task_id:
+            try:
+                from backend.config.loader import _get_supabase
+                sb = _get_supabase()
+                sb.table("tasks").update({
+                    "status": "done",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", task_id).execute()
+                if tenant_id:
+                    await sio.emit("task_updated", {
+                        "id": task_id, "agent": agent_id,
+                        "status": "done", "task": task_desc,
+                    }, room=tenant_id)
+            except Exception:
+                pass
+        # Return agent to idle so it doesn't get stuck
         if tenant_id:
             try:
                 await _emit_agent_status(tenant_id, agent_id, "idle",

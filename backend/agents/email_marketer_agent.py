@@ -137,30 +137,34 @@ async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict
 
     results = []
     for email in emails:
-        result = await gmail_tool.send_email(
-            access_token=access_token,
-            to=email["to"],
-            subject=email["subject"],
-            html_body=email["html_body"],
-            from_email=config.owner_email,
-        )
+        try:
+            result = await gmail_tool.send_email(
+                access_token=access_token,
+                to=email["to"],
+                subject=email["subject"],
+                html_body=email["html_body"],
+                from_email=config.owner_email,
+            )
 
-        # Token expired — refresh and retry
-        if result.get("error") == "token_expired" and refresh_token:
-            try:
-                new_token = await gmail_tool.refresh_access_token(refresh_token)
-                access_token = new_token
-                config.integrations.google_access_token = new_token
-                save_tenant_config(config)
-                result = await gmail_tool.send_email(
-                    access_token=new_token,
-                    to=email["to"],
-                    subject=email["subject"],
-                    html_body=email["html_body"],
-                    from_email=config.owner_email,
-                )
-            except Exception as e:
-                result = {"error": f"Token refresh failed: {e}"}
+            # Token expired — refresh and retry
+            if result.get("error") == "token_expired" and refresh_token:
+                try:
+                    new_token = await gmail_tool.refresh_access_token(refresh_token)
+                    access_token = new_token
+                    config.integrations.google_access_token = new_token
+                    save_tenant_config(config)
+                    result = await gmail_tool.send_email(
+                        access_token=new_token,
+                        to=email["to"],
+                        subject=email["subject"],
+                        html_body=email["html_body"],
+                        from_email=config.owner_email,
+                    )
+                except Exception as e:
+                    result = {"error": f"Token refresh failed: {e}"}
+        except Exception as e:
+            logger.error("Gmail send exception to=%s: %s", email["to"], e)
+            result = {"error": f"Send failed: {e}"}
 
         results.append({"to": email["to"], "subject": email["subject"], **result})
         logger.info("Gmail send to=%s subject=%s result=%s", email["to"], email["subject"], result)
