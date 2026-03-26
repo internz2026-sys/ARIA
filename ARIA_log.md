@@ -432,3 +432,42 @@ CREATE TABLE inbox_items (
 - Delete in-progress task → agent returns to idle
 - Multiple in_progress tasks for same agent: stays "working" until ALL are moved out of in_progress
 - Survives Railway redeploys (reads from Supabase tasks table, not just in-memory store)
+
+---
+
+## 2026-03-26 — CEO Active While Chatting + Kanban-Driven Agent Lifecycle
+
+### Problem
+- CEO agent showed no visual activity when the user was chatting with it — sprite stayed idle the whole time
+- Delegated agents went "idle" after the Claude API call finished (~30s), even though the task still existed in the Kanban board
+- Tasks were created with status "to_do" during delegation, but the task-to-office sync only activated for "in_progress" — agents never appeared to be working
+- If an agent produced no content, the task was left as "in_progress" forever (agent stuck working)
+
+### Changes
+
+**`backend/server.py`**:
+
+*CEO activity:*
+- `POST /api/ceo/chat` now emits CEO status "running" (walks to meeting room) when a message is received — the CEO is "in a meeting with the user"
+- If CEO responds without delegating → emits "idle" (meeting over, returns to desk)
+- If CEO delegates → CEO stays in meeting room, then the delegation flow takes over (meeting with agent, then CEO idle)
+
+*Task lifecycle — Kanban is the source of truth:*
+- Delegated tasks are now created with status `"in_progress"` (was `"to_do"`) — agents immediately show as working
+- `_run_agent_to_inbox()` no longer emits "idle" when the Claude API call finishes
+- Instead: task is marked "done" in DB → checks if agent has OTHER in_progress tasks → only goes idle if none remain
+- Empty content edge case handled: task still marked done and agent goes idle if no other work
+
+### New lifecycle
+1. User sends chat message → CEO walks to meeting room ("running")
+2. CEO responds without delegating → CEO returns to desk ("idle")
+3. CEO delegates → CEO stays at meeting room, agent walks to meeting room ("running")
+4. After 4s briefing → CEO returns to desk ("idle"), agent returns to desk ("working")
+5. Agent executes Claude API call → task marked "done" in DB → result saved to Inbox
+6. Agent checks for remaining in_progress tasks → goes "idle" only if none remain
+7. If user creates new tasks on Kanban → "In Progress" tasks keep agents working
+
+### Source of truth
+- **Kanban Board** controls when agents are working vs idle
+- **Socket.IO events** provide real-time visual transitions (walking, typing)
+- **Tasks table in Supabase** survives server restarts

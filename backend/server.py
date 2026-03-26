@@ -689,10 +689,11 @@ async def _run_agent_to_inbox(
     """Run an agent in background, drive office movement from real execution.
 
     Lifecycle:
-      1. Brief meeting phase (4s) — CEO + agent are at meeting room
+      1. Brief meeting phase (4s) — CEO + agent walk to meeting room
       2. CEO returns to desk (idle), agent returns to desk (working)
-      3. Agent executes for real — stays in "working" until done
-      4. Agent finishes → idle, result saved to inbox
+      3. Agent executes for real — stays in "working"
+      4. Agent stays "working" until task is moved to "done" on Kanban board
+         (no auto-idle — task board is the source of truth)
     """
     import asyncio
 
@@ -713,12 +714,29 @@ async def _run_agent_to_inbox(
         result = await agent_module.run(tenant_id, context={"action": task_desc})
         content = result.get("result", "")
 
-        # Phase 4: Agent done — return to idle
-        if tenant_id:
-            await _emit_agent_status(tenant_id, agent_id, "idle",
-                                     action="task_complete")
-
         if not content:
+            # No content but task should still be marked done
+            if task_id:
+                try:
+                    from backend.config.loader import _get_supabase
+                    sb = _get_supabase()
+                    sb.table("tasks").update({
+                        "status": "done",
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", task_id).execute()
+                except Exception:
+                    pass
+                if tenant_id:
+                    try:
+                        sb2 = _get_supabase()
+                        other = sb2.table("tasks").select("id").eq(
+                            "tenant_id", tenant_id
+                        ).eq("agent", agent_id).eq("status", "in_progress").limit(1).execute()
+                        if not other.data:
+                            await _emit_agent_status(tenant_id, agent_id, "idle",
+                                                     action="all_tasks_complete")
+                    except Exception:
+                        pass
             return
 
         content_type = _infer_content_type(agent_id, content)
@@ -747,7 +765,9 @@ async def _run_agent_to_inbox(
                 "created_at": saved.get("created_at", ""),
             }, room=tenant_id)
 
-        # Update the task status to done
+        # Mark task as done in DB — agent stays "working" visually until
+        # the user moves the task to "done" on the Kanban board (which triggers idle).
+        # But we DO mark it done in DB so the Kanban reflects completion.
         if task_id:
             try:
                 from backend.config.loader import _get_supabase
@@ -758,6 +778,20 @@ async def _run_agent_to_inbox(
                 }).eq("id", task_id).execute()
             except Exception:
                 pass
+
+            # Now that task is done, check if agent has other in_progress tasks
+            # If not, return agent to idle
+            if tenant_id:
+                try:
+                    sb2 = _get_supabase()
+                    other = sb2.table("tasks").select("id").eq(
+                        "tenant_id", tenant_id
+                    ).eq("agent", agent_id).eq("status", "in_progress").limit(1).execute()
+                    if not other.data:
+                        await _emit_agent_status(tenant_id, agent_id, "idle",
+                                                 action="all_tasks_complete")
+                except Exception:
+                    pass
 
     except Exception as e:
         logging.getLogger("aria.inbox").error("Agent %s failed for tenant %s: %s", agent_id, tenant_id, e)
@@ -845,6 +879,12 @@ async def ceo_chat(body: CEOChatMessage):
     _save_chat_message(body.session_id, tenant_id, "user", body.message)
     if is_first_message:
         _auto_title(body.session_id, body.message)
+
+    # CEO is now in a meeting (processing the user's message)
+    if tenant_id:
+        await _emit_agent_status(tenant_id, "ceo", "running",
+                                 current_task="In meeting with user",
+                                 action="meeting_with_user")
 
     # Build system prompt from agent .md files only (not skill files — too large for chat context)
     sub_agent_context = "\n\n".join(
@@ -945,13 +985,18 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     # Persist assistant message to DB
     _save_chat_message(body.session_id, tenant_id, "assistant", clean_response, delegations)
 
+    # No delegations — CEO meeting is over, return to idle
+    if not delegations and tenant_id:
+        await _emit_agent_status(tenant_id, "ceo", "idle",
+                                 action="chat_response_sent")
+
     # Save delegations as tasks, emit status events, and execute in background
     saved_tasks = []
     for d in delegations:
         agent_id = d["agent"]
         task_desc = d.get("task", "")
 
-        # Save to Supabase tasks table
+        # Save to Supabase tasks table — always start as in_progress
         if tenant_id:
             try:
                 from backend.config.loader import _get_supabase
@@ -961,7 +1006,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                     "agent": agent_id,
                     "task": task_desc,
                     "priority": d.get("priority", "medium"),
-                    "status": d.get("status", "to_do"),
+                    "status": "in_progress",
                 }
                 result = sb.table("tasks").insert(task_row).execute()
                 if result.data:
