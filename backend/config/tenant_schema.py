@@ -63,6 +63,9 @@ class IntegrationsConfig(BaseModel):
     instagram_access_token: Optional[str] = None
     # Ads
     facebook_ad_account_id: Optional[str] = None
+    # Google OAuth (Gmail sending)
+    google_access_token: Optional[str] = None
+    google_refresh_token: Optional[str] = None
     # Payments
     stripe_customer_id: Optional[str] = None
 

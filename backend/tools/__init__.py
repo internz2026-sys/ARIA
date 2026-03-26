@@ -4,6 +4,7 @@ from . import (
     apollo_tool,
     hunter_tool,
     sendgrid_tool,
+    gmail_tool,
     hubspot_tool,
     twilio_tool,
     calendly_tool,
@@ -17,7 +18,7 @@ from . import (
 
 TOOLS_BY_CATEGORY = {
     "lead_data": [apollo_tool, hunter_tool],
-    "communication": [sendgrid_tool, twilio_tool, slack_tool],
+    "communication": [sendgrid_tool, gmail_tool, twilio_tool, slack_tool],
     "crm": [hubspot_tool],
     "scheduling": [calendly_tool],
     "payments": [stripe_tool],

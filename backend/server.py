@@ -232,6 +232,75 @@ async def save_config_direct(body: SaveConfigDirect):
     return {"tenant_id": tenant_id, "config": config.model_dump(mode="json")}
 
 
+# ─── Google OAuth Token Storage ───
+class GoogleTokens(BaseModel):
+    google_access_token: str
+    google_refresh_token: str | None = None
+
+
+@app.post("/api/integrations/{tenant_id}/google-tokens")
+async def save_google_tokens(tenant_id: str, body: GoogleTokens):
+    """Store Google OAuth tokens for Gmail sending."""
+    try:
+        config = get_tenant_config(tenant_id)
+        config.integrations.google_access_token = body.google_access_token
+        if body.google_refresh_token:
+            config.integrations.google_refresh_token = body.google_refresh_token
+        save_tenant_config(config)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─── Gmail Send API ───
+class GmailSendRequest(BaseModel):
+    to: str
+    subject: str
+    html_body: str
+
+
+@app.post("/api/email/{tenant_id}/send")
+async def send_gmail_email(tenant_id: str, body: GmailSendRequest):
+    """Send an email via the user's authenticated Gmail account."""
+    from backend.tools import gmail_tool
+
+    config = get_tenant_config(tenant_id)
+    access_token = config.integrations.google_access_token
+    refresh_token = config.integrations.google_refresh_token
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Gmail not connected. Please log in with Google to grant email access.")
+
+    result = await gmail_tool.send_email(
+        access_token=access_token,
+        to=body.to,
+        subject=body.subject,
+        html_body=body.html_body,
+        from_email=config.owner_email,
+    )
+
+    # Token expired — refresh and retry
+    if result.get("error") == "token_expired" and refresh_token:
+        try:
+            new_token = await gmail_tool.refresh_access_token(refresh_token)
+            config.integrations.google_access_token = new_token
+            save_tenant_config(config)
+            result = await gmail_tool.send_email(
+                access_token=new_token,
+                to=body.to,
+                subject=body.subject,
+                html_body=body.html_body,
+                from_email=config.owner_email,
+            )
+        except Exception:
+            raise HTTPException(status_code=401, detail="Gmail token expired. Please log in again to reconnect.")
+
+    if result.get("error"):
+        raise HTTPException(status_code=401, detail="Gmail token expired. Please log in again to reconnect.")
+
+    return {"status": "sent", "message_id": result.get("message_id", "")}
+
+
 # ─── Webhook Endpoints ───
 @app.post("/api/webhooks/sendgrid")
 async def sendgrid_webhook(request: Request):

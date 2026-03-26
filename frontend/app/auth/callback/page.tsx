@@ -26,7 +26,31 @@ export default function AuthCallbackPage() {
       );
     }
 
-    async function processSession(session: { user: { created_at: string; email?: string } }) {
+    async function storeGoogleTokens(
+      tenantId: string,
+      providerToken: string | null | undefined,
+      providerRefreshToken: string | null | undefined,
+    ) {
+      if (!providerToken) return;
+      try {
+        await fetch(`${API_URL}/api/integrations/${tenantId}/google-tokens`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            google_access_token: providerToken,
+            google_refresh_token: providerRefreshToken || null,
+          }),
+        });
+      } catch {
+        // Non-blocking — tokens will be captured on next login
+      }
+    }
+
+    async function processSession(session: {
+      user: { created_at: string; email?: string };
+      provider_token?: string | null;
+      provider_refresh_token?: string | null;
+    }) {
       const params = new URLSearchParams(window.location.search);
       const mode = params.get("mode");
 
@@ -49,6 +73,8 @@ export default function AuthCallbackPage() {
           if (data.tenant_id) {
             // Restore tenant_id — user already completed onboarding
             localStorage.setItem("aria_tenant_id", data.tenant_id);
+            // Store Google OAuth tokens for Gmail sending
+            await storeGoogleTokens(data.tenant_id, session.provider_token, session.provider_refresh_token);
             router.replace("/dashboard");
             return;
           }
@@ -60,11 +86,20 @@ export default function AuthCallbackPage() {
       // No server-side config found — check localStorage as fallback
       const tenantId = localStorage.getItem("aria_tenant_id");
       if (tenantId) {
+        // Store Google OAuth tokens for Gmail sending
+        await storeGoogleTokens(tenantId, session.provider_token, session.provider_refresh_token);
         router.replace("/dashboard");
         return;
       }
 
-      // No config anywhere — go to onboarding
+      // No config anywhere — go to onboarding (tokens will be stored on first login after onboarding)
+      // Save tokens temporarily so they can be stored after onboarding completes
+      if (session.provider_token) {
+        localStorage.setItem("aria_google_token", session.provider_token);
+        if (session.provider_refresh_token) {
+          localStorage.setItem("aria_google_refresh_token", session.provider_refresh_token);
+        }
+      }
       router.replace("/welcome");
     }
 
