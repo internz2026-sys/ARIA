@@ -190,3 +190,128 @@
 ### Folder Cleanup
 - `docs/` — Created; moved `aria-landing.jsx.pdf`, `aria-prd-v1.pdf`, root `agents/` folder → `docs/agents/`
 - Deleted: stale `/.next/` at project root, orphaned `frontend/components/aria-chat/`
+
+---
+
+## 2026-03-26 — Cloud Backend: Anthropic API + Railway Deployment
+
+### Problem
+- Backend used local Claude Code CLI (subprocess) — required user's PC to be on for agents to function
+- No API key meant the system could not run on any cloud host
+- No rate limiting — uncapped API usage risked runaway costs
+- Usage tracking was in-memory only — limits reset on every server restart
+
+### Changes
+
+**`backend/tools/claude_cli.py`** (fully rewritten):
+- Replaced subprocess/CLI with `anthropic.AsyncAnthropic` SDK — uses `ANTHROPIC_API_KEY`
+- Per-tenant hourly rate limiting: `ARIA_HOURLY_REQUEST_LIMIT` (default 60 req/hr), `ARIA_HOURLY_TOKEN_LIMIT` (default 200k tokens/hr)
+- Usage persisted to Supabase `api_usage` table (upsert on `tenant_id, hour`) — survives server restarts
+- Local cache avoids hitting Supabase on every request; syncs global totals alongside per-tenant totals
+- Model configurable via `ARIA_MODEL` env var (default `claude-sonnet-4-20250514`)
+
+**`backend/server.py`**:
+- Added `tenant_id` param to all `call_claude()` calls in triage and CEO chat endpoints
+- Added `GET /api/usage?tenant_id=` endpoint to expose current token/request counts
+- Fixed `_AGENTS_DIR` path: `parent.parent / "agents"` → `parent.parent / "docs" / "agents"`
+
+**`backend/Dockerfile`**:
+- Removed Node.js and Claude CLI install (no longer needed)
+- Added `COPY docs/ docs/` so agent `.md` files are available in container
+- CMD uses `sh -c` for `$PORT` shell expansion: `uvicorn backend.server:socket_app --host 0.0.0.0 --port ${PORT:-8000}`
+
+**`railway.toml`**:
+- Switched builder from Nixpacks to `DOCKERFILE` with `dockerfilePath = "backend/Dockerfile"`
+- Removed `startCommand` (was passing `$PORT` as a literal string, not expanding it)
+- Health check: `GET /health`, timeout 300s
+
+**`.env.example`**:
+- Removed ngrok vars
+- Added `ARIA_MODEL`, `ARIA_HOURLY_REQUEST_LIMIT`, `ARIA_HOURLY_TOKEN_LIMIT`
+
+**`start.sh`**:
+- Removed ngrok check and startup; simplified to backend + frontend only
+
+**Supabase** — new `api_usage` table:
+```sql
+CREATE TABLE api_usage (
+  tenant_id TEXT NOT NULL,
+  hour TEXT NOT NULL,        -- 'YYYY-MM-DD-HH' UTC
+  input_tokens BIGINT NOT NULL DEFAULT 0,
+  output_tokens BIGINT NOT NULL DEFAULT 0,
+  requests INT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (tenant_id, hour)
+);
+```
+
+### Deployment Fixes (Railway — 3 iterations)
+1. **Nixpacks failed** — Railway couldn't detect app type from repo root; fixed by switching to Dockerfile builder
+2. **Health check failed (missing docs/)** — `_AGENTS_DIR` pointed to `/app/agents/` which didn't exist in container; fixed path + added `COPY docs/ docs/`
+3. **Health check failed (`$PORT` literal)** — `startCommand` in railway.toml passed `$PORT` as a string to uvicorn; fixed by removing `startCommand` so Dockerfile CMD (using `sh -c`) handles expansion
+
+### Result
+- Backend is live on Railway with health check passing
+- Agents run without user's PC being on
+- Rate limits active and persisted to Supabase
+
+---
+
+## 2026-03-26 — Inbox Pipeline: Agent Outputs Saved & Displayed
+
+### Problem
+- Agents generated content in chat or via direct run, but outputs were fire-and-forget
+- The Inbox page was hardcoded empty with no backend data
+- CEO chat delegations ran sub-agents in background but never captured or stored their results
+- No way for users to review, copy, or manage generated content after it left the chat
+
+### Changes
+
+**Supabase** — new `inbox_items` table:
+```sql
+CREATE TABLE inbox_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'general',
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ready',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  task_id UUID,
+  chat_session_id TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+**`backend/server.py`**:
+- Added `_save_inbox_item()` — inserts agent output into `inbox_items` table
+- Added `_run_agent_to_inbox()` — wraps background agent execution, captures result, saves to inbox, emits Socket.IO `inbox_new_item` event, and marks the originating task as `done`
+- Added `_infer_content_type()` — maps agent slug to content type (blog_post, email_sequence, social_post, ad_campaign, strategy_update)
+- CEO chat delegation now uses `_run_agent_to_inbox()` instead of fire-and-forget `create_task`
+- Direct agent run endpoint (`POST /api/agents/{tenant_id}/{agent_name}/run`) also saves output to inbox
+- Added `GET /api/inbox/{tenant_id}` — list inbox items with optional `?status=` filter
+- Added `PATCH /api/inbox/{item_id}` — update item status (ready, completed, archived)
+- Added `DELETE /api/inbox/{item_id}` — remove item
+- Updated `GET /api/dashboard/{tenant_id}/inbox` — returns latest 5 inbox items
+
+**`frontend/lib/api.ts`**:
+- Added `inbox.list()`, `inbox.update()`, `inbox.remove()` API methods
+
+**`frontend/app/(dashboard)/inbox/page.tsx`** (fully rewritten):
+- Fetches real data from `/api/inbox/{tenant_id}`
+- Tab filters: All, Content ready, Needs review, Completed — with live counts
+- List/detail split view: item list on left, full content preview on right
+- Copy button to clipboard for any deliverable
+- Mark complete / Reopen / Delete actions
+- Agent name + color badges, content type labels, priority dots, relative timestamps
+- Socket.IO listener for `inbox_new_item` — auto-refreshes when new content arrives
+- Empty state links to CEO chat
+
+### Data Flow (now complete)
+1. User asks CEO in chat → "Write me a blog post"
+2. CEO delegates to Content Writer → task saved to `tasks` table
+3. Content Writer runs in background → generates blog post
+4. Output saved to `inbox_items` → Socket.IO notifies frontend
+5. Inbox page shows the deliverable → user can copy, review, or mark complete

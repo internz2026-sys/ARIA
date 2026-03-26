@@ -30,6 +30,15 @@ export const dashboard = {
   getInbox: (tenantId: string) => fetchAPI(`/api/dashboard/${tenantId}/inbox`),
 };
 
+export const inbox = {
+  list: (tenantId: string, status?: string) =>
+    fetchAPI(`/api/inbox/${tenantId}${status ? `?status=${status}` : ""}`),
+  update: (itemId: string, updates: { status: string }) =>
+    fetchAPI(`/api/inbox/${itemId}`, { method: "PATCH", body: JSON.stringify(updates) }),
+  remove: (itemId: string) =>
+    fetchAPI(`/api/inbox/${itemId}`, { method: "DELETE" }),
+};
+
 export const analytics = {
   getData: (tenantId: string, dateRange: string) => fetchAPI(`/api/analytics/${tenantId}?date_range=${dateRange}`),
 };

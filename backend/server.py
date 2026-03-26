@@ -258,6 +258,29 @@ async def list_agents(tenant_id: str):
 async def run_agent(tenant_id: str, agent_name: str):
     result = await dispatch_agent(tenant_id, agent_name)
     await sio.emit("agent_event", result, room=tenant_id)
+
+    # Save output to inbox
+    content = result.get("result", "")
+    if content and isinstance(content, str):
+        content_type = _infer_content_type(agent_name, content)
+        title = _extract_title(agent_name, "", content)
+        saved = _save_inbox_item(
+            tenant_id=tenant_id,
+            agent=agent_name,
+            title=title,
+            content=content,
+            content_type=content_type,
+        )
+        if saved:
+            await sio.emit("inbox_new_item", {
+                "id": saved["id"],
+                "agent": agent_name,
+                "type": content_type,
+                "title": title,
+                "status": "ready",
+                "created_at": saved.get("created_at", ""),
+            }, room=tenant_id)
+
     return result
 
 
@@ -351,7 +374,54 @@ async def dashboard_activity(tenant_id: str):
 
 @app.get("/api/dashboard/{tenant_id}/inbox")
 async def dashboard_inbox(tenant_id: str):
-    return {"tenant_id": tenant_id, "conversations": []}
+    """Return inbox items for the dashboard (latest 5)."""
+    try:
+        from backend.config.loader import _get_supabase
+        sb = _get_supabase()
+        result = sb.table("inbox_items").select("*").eq("tenant_id", tenant_id).order("created_at", desc=True).limit(5).execute()
+        return {"tenant_id": tenant_id, "items": result.data}
+    except Exception:
+        return {"tenant_id": tenant_id, "items": []}
+
+
+@app.get("/api/inbox/{tenant_id}")
+async def list_inbox(tenant_id: str, status: str = ""):
+    """List all inbox items for a tenant, optionally filtered by status."""
+    try:
+        from backend.config.loader import _get_supabase
+        sb = _get_supabase()
+        query = sb.table("inbox_items").select("*").eq("tenant_id", tenant_id)
+        if status:
+            query = query.eq("status", status)
+        result = query.order("created_at", desc=True).execute()
+        return {"items": result.data}
+    except Exception as e:
+        return {"items": [], "error": str(e)}
+
+
+@app.patch("/api/inbox/{item_id}")
+async def update_inbox_item(item_id: str, request: Request):
+    """Update an inbox item's status (ready, needs_review, completed, archived)."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    body = await request.json()
+    updates = {}
+    if "status" in body:
+        updates["status"] = body["status"]
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    sb.table("inbox_items").update(updates).eq("id", item_id).execute()
+    return {"ok": True}
+
+
+@app.delete("/api/inbox/{item_id}")
+async def delete_inbox_item(item_id: str):
+    """Delete an inbox item."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    sb.table("inbox_items").delete().eq("id", item_id).execute()
+    return {"ok": True}
 
 
 @app.get("/api/analytics/{tenant_id}")
@@ -455,6 +525,123 @@ async def ceo_triage(body: TriageRequest):
 async def cron_trigger():
     results = await run_scheduled_agents()
     return {"status": "completed", "tasks_run": len(results) if results else 0}
+
+
+# ─── Inbox helpers ───
+
+def _infer_content_type(agent: str, content: str) -> str:
+    """Infer the content type from the agent slug and output."""
+    type_map = {
+        "content_writer": "blog_post",
+        "email_marketer": "email_sequence",
+        "social_manager": "social_post",
+        "ad_strategist": "ad_campaign",
+        "ceo": "strategy_update",
+    }
+    return type_map.get(agent, "general")
+
+
+def _extract_title(agent: str, task_desc: str, content: str) -> str:
+    """Extract a short title from the task description or content."""
+    if task_desc and len(task_desc) > 5:
+        title = task_desc[:120].split("\n")[0]
+        if len(task_desc) > 120:
+            title = title.rsplit(" ", 1)[0] + "..."
+        return title
+    # Fallback: first non-empty line of content
+    for line in content.split("\n"):
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            return stripped[:120]
+    return f"{agent} output"
+
+
+def _save_inbox_item(
+    tenant_id: str,
+    agent: str,
+    title: str,
+    content: str,
+    content_type: str = "general",
+    priority: str = "medium",
+    task_id: str | None = None,
+    chat_session_id: str | None = None,
+) -> dict | None:
+    """Save an agent output to the inbox_items table. Returns the saved row."""
+    try:
+        from backend.config.loader import _get_supabase
+        sb = _get_supabase()
+        row = {
+            "tenant_id": tenant_id,
+            "agent": agent,
+            "type": content_type,
+            "title": title,
+            "content": content,
+            "status": "ready",
+            "priority": priority,
+        }
+        if task_id:
+            row["task_id"] = task_id
+        if chat_session_id:
+            row["chat_session_id"] = chat_session_id
+        result = sb.table("inbox_items").insert(row).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logging.getLogger("aria.inbox").error("Failed to save inbox item: %s", e)
+        return None
+
+
+async def _run_agent_to_inbox(
+    agent_module, agent_id: str, tenant_id: str, task_desc: str,
+    session_id: str | None = None, task_id: str | None = None,
+    priority: str = "medium",
+):
+    """Run an agent in background and save the result to the inbox."""
+    try:
+        result = await agent_module.run(tenant_id, context={"action": task_desc})
+        content = result.get("result", "")
+        if not content:
+            return
+
+        content_type = _infer_content_type(agent_id, content)
+        title = _extract_title(agent_id, task_desc, content)
+
+        saved = _save_inbox_item(
+            tenant_id=tenant_id,
+            agent=agent_id,
+            title=title,
+            content=content,
+            content_type=content_type,
+            priority=priority,
+            task_id=task_id,
+            chat_session_id=session_id,
+        )
+
+        # Emit real-time notification to frontend
+        if saved and tenant_id:
+            await sio.emit("inbox_new_item", {
+                "id": saved["id"],
+                "agent": agent_id,
+                "type": content_type,
+                "title": title,
+                "status": "ready",
+                "priority": priority,
+                "created_at": saved.get("created_at", ""),
+            }, room=tenant_id)
+
+        # Update the task status to done
+        if task_id:
+            try:
+                from backend.config.loader import _get_supabase
+                sb = _get_supabase()
+                sb.table("tasks").update({
+                    "status": "done",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", task_id).execute()
+            except Exception:
+                pass
+
+    except Exception as e:
+        logging.getLogger("aria.inbox").error("Agent %s failed for tenant %s: %s", agent_id, tenant_id, e)
 
 
 # ─── CEO Chat ───
@@ -705,13 +892,18 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             import asyncio
             asyncio.create_task(_return_to_desk(agent_id, tenant_id, task_desc))
 
-        # Execute agent in background
+        # Execute agent in background and save output to inbox
         try:
             from backend.agents import AGENT_REGISTRY
             agent_module = AGENT_REGISTRY.get(agent_id)
             if agent_module:
                 import asyncio as _aio
-                _aio.create_task(agent_module.run(tenant_id or "demo", context={"action": task_desc}))
+                _aio.create_task(_run_agent_to_inbox(
+                    agent_module, agent_id, tenant_id or "demo", task_desc,
+                    body.session_id,
+                    saved_tasks[-1]["id"] if saved_tasks else None,
+                    d.get("priority", "medium"),
+                ))
         except Exception:
             pass
 
