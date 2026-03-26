@@ -10,9 +10,7 @@ interface AgentInfoPanelProps {
 }
 
 const MODEL_DISPLAY: Record<
-  AgentInfoPanelProps["agent"] & object extends infer A
-    ? A extends { model: infer M } ? M : never
-    : never,
+  string,
   { label: string; badgeBg: string; badgeText: string }
 > = {
   "opus-4-6": {
