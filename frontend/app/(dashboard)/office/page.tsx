@@ -49,14 +49,16 @@ export default function OfficePage() {
   const [chatOverrides, setChatOverrides] = useState<Record<string, AgentStatus>>({});
   const prevMsgCount = useRef(0);
 
-  // CEO walks to meeting room the instant a message is sent
+  // When user sends a message — ALL agents huddle at the meeting room
   useEffect(() => {
     if (sending) {
-      setChatOverrides((prev) => ({ ...prev, ceo: "running" }));
+      const overrides: Record<string, AgentStatus> = {};
+      for (const a of AGENTS) overrides[a.id] = "running";
+      setChatOverrides(overrides);
     }
   }, [sending]);
 
-  // When CEO responds: detect delegations → move agents instantly
+  // When CEO responds: delegated agents go work, rest STAY at meeting
   useEffect(() => {
     if (messages.length <= prevMsgCount.current) {
       prevMsgCount.current = messages.length;
@@ -65,33 +67,36 @@ export default function OfficePage() {
     prevMsgCount.current = messages.length;
     const last = messages[messages.length - 1];
 
-    if (last?.role === "assistant") {
-      if (last.delegations && last.delegations.length > 0) {
-        // CEO + delegated agents walk to meeting room
-        const overrides: Record<string, AgentStatus> = { ceo: "running" };
-        for (const d of last.delegations) overrides[d.agent] = "running";
-        setChatOverrides((prev) => ({ ...prev, ...overrides }));
-
-        // After 4s meeting: CEO idle, agents start working
-        setTimeout(() => {
-          setChatOverrides((prev) => {
-            const next: Record<string, AgentStatus> = {};
-            for (const d of last.delegations!) {
-              next[d.agent] = "working";
-            }
-            // Remove CEO override — let polling handle it
-            return next;
-          });
-        }, 4000);
-      } else {
-        // No delegation — CEO returns to desk
-        setChatOverrides((prev) => {
-          const { ceo, ...rest } = prev;
-          return rest;
-        });
-      }
+    if (last?.role === "assistant" && last.delegations && last.delegations.length > 0) {
+      // Delegated agents leave meeting and go work at their desks
+      setChatOverrides((prev) => {
+        const next = { ...prev };
+        for (const d of last.delegations!) {
+          next[d.agent] = "working";
+        }
+        return next;
+      });
     }
+    // No delegations → everyone stays at meeting (overrides unchanged)
   }, [messages]);
+
+  // End meeting: clear overrides when chat goes quiet (10s after last response)
+  useEffect(() => {
+    if (sending) return; // still waiting for response
+    const hasRunning = Object.values(chatOverrides).some((s) => s === "running");
+    if (!hasRunning) return;
+    const timer = setTimeout(() => {
+      setChatOverrides((prev) => {
+        // Only clear "running" agents (keep "working" ones)
+        const next: Record<string, AgentStatus> = {};
+        for (const [id, status] of Object.entries(prev)) {
+          if (status === "working") next[id] = status;
+        }
+        return next;
+      });
+    }, 15000); // 15s after last response, non-delegated agents leave
+    return () => clearTimeout(timer);
+  }, [sending, chatOverrides]);
 
   // ── REST polling for task-based statuses (in_progress tasks) ──
   const fetchAgents = useCallback((tid: string) => {

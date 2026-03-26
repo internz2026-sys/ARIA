@@ -56,6 +56,101 @@ export const ROOMS: Room[] = [
 
 export const MEETING_CENTER = { x: 12, y: 4 };
 
+// ---- Meeting chair positions (pixel coords around the conference table) ----
+// The conference table is drawn at (9*T+16, 2*T+16) = (304, 80), size 64x32.
+// Chairs are drawn at offsets from the table origin (tX=304, tY=80).
+const TABLE_X = 9 * TILE_SIZE + 16; // 304
+const TABLE_Y = 2 * TILE_SIZE + 16; // 80
+
+export const MEETING_CHAIRS: { x: number; y: number }[] = [
+  // Top chairs (head of table = index 0 for CEO)
+  { x: TABLE_X + 16, y: TABLE_Y - 5 },
+  { x: TABLE_X + 48, y: TABLE_Y - 5 },
+  // Bottom chairs
+  { x: TABLE_X + 16, y: TABLE_Y + 37 },
+  { x: TABLE_X + 48, y: TABLE_Y + 37 },
+  // Side chairs
+  { x: TABLE_X - 5,  y: TABLE_Y + 14 },
+  { x: TABLE_X + 69, y: TABLE_Y + 14 },
+];
+
+// ---- Idle wander spots per department (pixel coords) -----------------------
+// Each room is 8x8 tiles. Spots are near decorations but not on top of them.
+// T=32, so tile (tx,ty) -> pixel center = (tx*32+16, ty*32+16).
+
+export const IDLE_SPOTS: Record<string, { x: number; y: number }[]> = {
+  "ceo-office": [
+    // Near bookshelf (1*T+16, 1*T+20)
+    { x: 1 * TILE_SIZE + 28, y: 2 * TILE_SIZE + 16 },
+    // Near lamp (6*T+16, 1*T+16)
+    { x: 6 * TILE_SIZE + 16, y: 2 * TILE_SIZE + 16 },
+    // Near plant (6*T+16, 6*T+16)
+    { x: 5 * TILE_SIZE + 16, y: 6 * TILE_SIZE + 8 },
+    // Rug center
+    { x: 4 * TILE_SIZE, y: 4 * TILE_SIZE },
+    // Near door (right side of room)
+    { x: 7 * TILE_SIZE, y: 6 * TILE_SIZE },
+  ],
+  "meeting-room": [
+    // Near whiteboard (9*T+4, 0*T+20)
+    { x: 10 * TILE_SIZE, y: 1 * TILE_SIZE + 16 },
+    // Near plant right (15*T, 1*T+16)
+    { x: 14 * TILE_SIZE + 16, y: 2 * TILE_SIZE },
+    // Near plant bottom (9*T+16, 6*T+16)
+    { x: 10 * TILE_SIZE, y: 6 * TILE_SIZE + 8 },
+    // Near door (bottom of room)
+    { x: 12 * TILE_SIZE, y: 7 * TILE_SIZE },
+  ],
+  "content-studio": [
+    // Near bookshelf (22*T, 1*T+4)
+    { x: 22 * TILE_SIZE + 12, y: 2 * TILE_SIZE + 16 },
+    // Near whiteboard (17*T+4, 1*T+4)
+    { x: 18 * TILE_SIZE, y: 2 * TILE_SIZE },
+    // Near lamp (22*T+16, 6*T)
+    { x: 22 * TILE_SIZE, y: 5 * TILE_SIZE + 16 },
+    // Near plant (17*T+16, 6*T+16)
+    { x: 18 * TILE_SIZE, y: 6 * TILE_SIZE + 8 },
+    // Rug center
+    { x: 20 * TILE_SIZE, y: 4 * TILE_SIZE },
+  ],
+  "email-room": [
+    // Near cabinet left (1*T+4, 9*T+4)
+    { x: 2 * TILE_SIZE, y: 10 * TILE_SIZE },
+    // Near cabinet right (1*T+20, 9*T+4)
+    { x: 2 * TILE_SIZE + 16, y: 10 * TILE_SIZE },
+    // Near coffee machine (5*T+8, 9*T+4)
+    { x: 5 * TILE_SIZE + 16, y: 10 * TILE_SIZE },
+    // Near plant (6*T+16, 14*T+16)
+    { x: 5 * TILE_SIZE + 16, y: 14 * TILE_SIZE + 8 },
+    // Rug center
+    { x: 4 * TILE_SIZE, y: 12 * TILE_SIZE },
+  ],
+  "social-hub": [
+    // Near whiteboard (9*T+4, 9*T+4)
+    { x: 10 * TILE_SIZE, y: 10 * TILE_SIZE },
+    // Near lamp (9*T+16, 14*T+16)
+    { x: 10 * TILE_SIZE, y: 14 * TILE_SIZE + 8 },
+    // Near plant (14*T+16, 14*T+16)
+    { x: 14 * TILE_SIZE, y: 14 * TILE_SIZE + 8 },
+    // Rug center
+    { x: 12 * TILE_SIZE, y: 12 * TILE_SIZE },
+    // Near door
+    { x: 12 * TILE_SIZE, y: 15 * TILE_SIZE },
+  ],
+  "ads-room": [
+    // Near bookshelf (17*T+4, 9*T+4)
+    { x: 18 * TILE_SIZE, y: 10 * TILE_SIZE },
+    // Near cabinet (22*T+8, 9*T+4)
+    { x: 22 * TILE_SIZE + 16, y: 10 * TILE_SIZE },
+    // Near water cooler (22*T+16, 14*T+8)
+    { x: 22 * TILE_SIZE, y: 14 * TILE_SIZE },
+    // Near plant (17*T+16, 14*T+16)
+    { x: 18 * TILE_SIZE, y: 14 * TILE_SIZE + 8 },
+    // Rug center
+    { x: 20 * TILE_SIZE, y: 12 * TILE_SIZE },
+  ],
+};
+
 // ---- Desk layout (office-specific data) -----------------------------------
 
 const DESK_LAYOUT: Record<string, { department: string; deskX: number; deskY: number; hasCrown: boolean }> = {

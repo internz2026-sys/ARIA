@@ -7,7 +7,8 @@ import {
   OFFICE_PIXEL_HEIGHT,
   ROOMS,
   AGENTS as DEFAULT_AGENTS,
-  MEETING_CENTER,
+  MEETING_CHAIRS,
+  IDLE_SPOTS,
   type OfficeAgent,
   type Room,
 } from "@/lib/office-config";
@@ -26,12 +27,21 @@ interface AnimPos {
   walking: boolean;
   facingRight: boolean;
   walkFrame: number;
+  // Idle wandering
+  idleTimer: number;       // countdown frames until next wander
+  wanderTarget: boolean;   // true = heading to idle spot, false = heading home to desk
+  wanderPause: number;     // pause frames when arrived at idle spot
+  thoughtIcon: number;     // index into thought icons (cycles)
+  thoughtTimer: number;    // countdown to next thought change
+  waveTimer: number;       // > 0 means wave animation is playing
 }
 
 const T = TILE_SIZE;
-const WALK_SPEED = 2.8; // pixels per frame — fast enough to be clearly visible
+const WALK_SPEED = 2.8; // pixels per frame
 
-// No idle wandering — agents only move when driven by real tasks
+// Thought bubble icons (drawn as simple shapes/text, no emoji)
+const THOUGHT_ICONS = ["?", "!", "~", "*", "#"];
+const THOUGHT_LABELS = ["hmm", "idea", "coffee", "note", "plan"];
 
 export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -50,8 +60,10 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
   const getTarget = useCallback((agent: OfficeAgent, idx: number) => {
     const deskPx = { x: agent.deskX * T + T / 2, y: agent.deskY * T + T / 2 };
     if (agent.status === "running") {
-      const meetPx = { x: MEETING_CENTER.x * T + T / 2, y: MEETING_CENTER.y * T + T / 2 };
-      return { x: meetPx.x + (idx - 2) * 24, y: meetPx.y + (idx % 2) * 20 };
+      // CEO always gets chair 0 (head of table)
+      const chairIdx = agent.id === "ceo" ? 0 : Math.min(idx, MEETING_CHAIRS.length - 1);
+      const chair = MEETING_CHAIRS[chairIdx];
+      return { x: chair.x, y: chair.y };
     }
     return deskPx; // working, idle, busy — all at desk
   }, []);
@@ -71,6 +83,12 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
           x: deskPx.x, y: deskPx.y,
           targetX: target.x, targetY: target.y,
           walking: false, facingRight: true, walkFrame: 0,
+          idleTimer: Math.floor(300 + Math.random() * 500),
+          wanderTarget: false,
+          wanderPause: 0,
+          thoughtIcon: Math.floor(Math.random() * THOUGHT_ICONS.length),
+          thoughtTimer: Math.floor(180 + Math.random() * 240),
+          waveTimer: 0,
         };
         prevStatus[agent.id] = agent.status;
         continue;
@@ -83,6 +101,10 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       const p = pos[agent.id];
       p.targetX = target.x;
       p.targetY = target.y;
+      // Reset idle wander state when status changes
+      p.wanderTarget = false;
+      p.wanderPause = 0;
+      p.idleTimer = Math.floor(300 + Math.random() * 500);
     }
   }, [agentList, getTarget]);
 
@@ -183,54 +205,11 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     // Walk animation — legs
     const legOffset = walking ? Math.sin(walkFrame * 0.3) * 5 : 0;
 
-    // Walking glow trail — bright colored ring follows agent while moving
-    if (walking) {
-      const trailPulse = 0.3 + Math.sin(time * 6) * 0.15;
-      ctx.beginPath(); ctx.arc(cx, y - 4, 22, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(83,74,183,${trailPulse})`;
-      ctx.lineWidth = 2; ctx.setLineDash([4, 4]); ctx.stroke(); ctx.setLineDash([]);
-      // Movement direction arrow
-      const arrowX = facingRight ? cx + 18 : cx - 18;
-      ctx.fillStyle = `rgba(83,74,183,${trailPulse + 0.1})`;
-      ctx.beginPath();
-      if (facingRight) {
-        ctx.moveTo(arrowX, y - 6); ctx.lineTo(arrowX + 6, y - 2); ctx.lineTo(arrowX, y + 2);
-      } else {
-        ctx.moveTo(arrowX, y - 6); ctx.lineTo(arrowX - 6, y - 2); ctx.lineTo(arrowX, y + 2);
-      }
-      ctx.fill();
-    }
-
-    // Working glow (at desk, executing a task) — large visible pulse
+    // Subtle working glow (at desk, executing a task)
     if (agent.status === "working" && !walking) {
-      const pulse = 0.35 + Math.sin(time * 2.5) * 0.2;
-      // Outer glow
-      ctx.beginPath(); ctx.arc(cx, y - 8, 24, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(59,130,246,${pulse * 0.4})`; ctx.fill();
-      // Inner glow
-      ctx.beginPath(); ctx.arc(cx, y - 8, 16, 0, Math.PI * 2);
+      const pulse = 0.2 + Math.sin(time * 2.5) * 0.1;
+      ctx.beginPath(); ctx.arc(cx, y - 8, 14, 0, Math.PI * 2);
       ctx.fillStyle = `rgba(59,130,246,${pulse})`; ctx.fill();
-      // Floating code particles
-      const p1y = y - 30 + Math.sin(time * 2) * 8;
-      const p2y = y - 26 + Math.cos(time * 2.5) * 6;
-      ctx.font = "bold 7px monospace";
-      ctx.fillStyle = `rgba(59,130,246,${0.4 + Math.sin(time * 3) * 0.2})`;
-      ctx.fillText("</>", cx - 18, p1y);
-      ctx.fillText("{}", cx + 10, p2y);
-    }
-
-    // Running glow — agent is heading to meeting
-    if (agent.status === "running" && !walking) {
-      const pulse = 0.3 + Math.sin(time * 3) * 0.2;
-      ctx.beginPath(); ctx.arc(cx, y - 8, 20, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(83,74,183,${pulse})`; ctx.fill();
-    }
-
-    // Busy glow
-    if (agent.status === "busy") {
-      const pulse = 0.3 + Math.sin(time * 3) * 0.2;
-      ctx.beginPath(); ctx.arc(cx, y - 8, 20, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,200,0,${pulse})`; ctx.fill();
     }
 
     // Hover ring
@@ -257,18 +236,30 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     ctx.fillStyle = "rgba(255,255,255,0.15)";
     ctx.fillRect(cx - 5, y - 11, 4, 10);
 
-    // Arms
+    // Arms — with wave animation on hover
+    const p = posRef.current[agent.id];
+    const waving = p && p.waveTimer > 0;
     if (walking) {
       const armSwing = Math.sin(walkFrame * 0.3) * 5;
       ctx.fillStyle = agent.color;
       ctx.fillRect(cx - 8, y - 10 + armSwing, 2, 8);
       ctx.fillRect(cx + 6, y - 10 - armSwing, 2, 8);
+    } else if (waving) {
+      // Wave! Right arm goes up
+      const waveAngle = Math.sin(p.waveTimer * 0.4) * 4;
+      ctx.fillStyle = agent.color;
+      ctx.fillRect(cx - 8, y - 10, 2, 8);
+      ctx.fillRect(cx + 6, y - 18 + waveAngle, 2, 8);
     } else if (agent.status === "working") {
-      // Typing at desk — visible fast arm movement
       const armOff = Math.sin(time * 10) * 3.5;
       ctx.fillStyle = agent.color;
       ctx.fillRect(cx - 8, y - 10 + armOff, 2, 8);
       ctx.fillRect(cx + 6, y - 10 - armOff, 2, 8);
+    } else if (agent.status === "running" && !walking) {
+      // Sitting pose at meeting — arms on table
+      ctx.fillStyle = agent.color;
+      ctx.fillRect(cx - 8, y - 6, 2, 6);
+      ctx.fillRect(cx + 6, y - 6, 2, 6);
     } else {
       ctx.fillStyle = agent.color;
       ctx.fillRect(cx - 8, y - 10, 2, 8);
@@ -309,39 +300,23 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       ctx.fillStyle = "#3498DB"; ctx.beginPath(); ctx.arc(cx + 3, crownY + 3, 1, 0, Math.PI * 2); ctx.fill();
     }
 
-    // Status dot — larger and pulsing when active
-    const dotColors: Record<string, string> = { idle: "#1D9E75", running: "#3B82F6", working: "#3B82F6", busy: "#EAB308" };
+    // Status dot
+    const dotColors: Record<string, string> = { idle: "#1D9E75", running: "#534AB7", working: "#3B82F6", busy: "#EAB308" };
     const isActive = agent.status !== "idle";
-    const dotSize = isActive ? 4 + Math.sin(time * 4) * 1 : 3;
-    if (isActive) {
-      // Ping ring around status dot
-      const pingR = 6 + Math.sin(time * 3) * 2;
-      ctx.beginPath(); ctx.arc(cx + 9, y - 24, pingR, 0, Math.PI * 2);
-      ctx.strokeStyle = dotColors[agent.status] || "#1D9E75";
-      ctx.lineWidth = 1; ctx.globalAlpha = 0.4; ctx.stroke(); ctx.globalAlpha = 1;
-    }
-    ctx.beginPath(); ctx.arc(cx + 9, y - 24, dotSize, 0, Math.PI * 2);
+    ctx.beginPath(); ctx.arc(cx + 9, y - 24, 3, 0, Math.PI * 2);
     ctx.fillStyle = dotColors[agent.status] || "#1D9E75"; ctx.fill();
     ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
 
-    // Name label above head — colored background when active
+    // Name label above head
     ctx.font = "bold 7px 'Courier New', monospace";
     const name = agent.name;
     const tw = ctx.measureText(name).width;
     const labelY = agent.hasCrown ? y - 34 : y - 28;
-    const labelBg = isActive ? agent.color : "rgba(44,44,42,0.8)";
-    ctx.fillStyle = labelBg;
-    ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 4, labelY - 1, tw + 8, 13, 3); ctx.fill();
+    ctx.fillStyle = isActive ? agent.color : "rgba(44,44,42,0.8)";
+    ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 3, labelY, tw + 6, 11, 2); ctx.fill();
     ctx.fillStyle = "#fff";
     ctx.textAlign = "center";
     ctx.fillText(name, cx, labelY + 8);
-    // Status text below name when active
-    if (isActive) {
-      const statusText = agent.status === "running" ? "IN MEETING" : agent.status === "working" ? "WORKING" : "BUSY";
-      ctx.font = "bold 5px 'Courier New', monospace";
-      ctx.fillStyle = "rgba(255,255,255,0.7)";
-      ctx.fillText(statusText, cx, labelY + 16);
-    }
     ctx.textAlign = "left";
   }, []);
 
@@ -498,10 +473,12 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     const time = performance.now() / 1000;
     const pos = posRef.current;
 
-    // Update agent positions + idle life behaviors
+    // Update agent positions + idle wandering
     for (const agent of agentList) {
       const p = pos[agent.id];
       if (!p) continue;
+
+      // Movement toward target
       const dx = p.targetX - p.x;
       const dy = p.targetY - p.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -514,8 +491,55 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       } else {
         p.x = p.targetX;
         p.y = p.targetY;
-        p.walking = false;
-        p.walkFrame = 0;
+        if (p.walking) {
+          p.walking = false;
+          p.walkFrame = 0;
+        }
+      }
+
+      // Thought icon cycling
+      p.thoughtTimer--;
+      if (p.thoughtTimer <= 0) {
+        p.thoughtIcon = (p.thoughtIcon + 1) % THOUGHT_ICONS.length;
+        p.thoughtTimer = Math.floor(180 + Math.random() * 240);
+      }
+
+      // Wave timer countdown
+      if (p.waveTimer > 0) p.waveTimer--;
+
+      // Idle wandering — only when agent status is "idle" and not currently walking
+      if (agent.status === "idle" && !p.walking) {
+        // If pausing at an idle spot, count down then head home
+        if (p.wanderPause > 0) {
+          p.wanderPause--;
+          if (p.wanderPause <= 0) {
+            // Head back to desk
+            const deskPx = { x: agent.deskX * T + T / 2, y: agent.deskY * T + T / 2 };
+            p.targetX = deskPx.x;
+            p.targetY = deskPx.y;
+            p.wanderTarget = false;
+          }
+          continue;
+        }
+
+        // If just arrived at an idle spot, start a pause
+        if (p.wanderTarget) {
+          p.wanderPause = Math.floor(60 + Math.random() * 60);
+          continue;
+        }
+
+        // Count down idle timer, then pick a new wander spot
+        p.idleTimer--;
+        if (p.idleTimer <= 0) {
+          const spots = IDLE_SPOTS[agent.department];
+          if (spots && spots.length > 0) {
+            const spot = spots[Math.floor(Math.random() * spots.length)];
+            p.targetX = spot.x;
+            p.targetY = spot.y;
+            p.wanderTarget = true;
+          }
+          p.idleTimer = Math.floor(300 + Math.random() * 500);
+        }
       }
     }
 
@@ -540,6 +564,28 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       const p = pos[agent.id];
       if (!p) continue;
       drawAgent(ctx, agent, time, hoveredAgent === agent.id, p.x, p.y, p.walking, p.walkFrame, p.facingRight);
+
+      // Thought bubble for idle wandering agents (not at desk, not walking)
+      if (agent.status === "idle" && !p.walking && p.wanderPause > 0) {
+        const bubbleX = p.x + 12;
+        const bubbleY = p.y - 28 + Math.sin(time * 2) * 2;
+        // Cloud shape
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.beginPath(); ctx.arc(bubbleX, bubbleY, 8, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(bubbleX - 4, bubbleY + 3, 3, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(bubbleX - 7, bubbleY + 7, 2, 0, Math.PI * 2); ctx.fill();
+        // Icon inside
+        ctx.fillStyle = "#534AB7";
+        ctx.font = "bold 8px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(THOUGHT_ICONS[p.thoughtIcon], bubbleX, bubbleY + 3);
+        ctx.textAlign = "left";
+      }
+
+      // Wave on hover
+      if (hoveredAgent === agent.id && p.waveTimer <= 0) {
+        p.waveTimer = 30; // trigger wave
+      }
     }
 
     frameRef.current = requestAnimationFrame(draw);
