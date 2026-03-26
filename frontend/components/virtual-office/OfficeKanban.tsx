@@ -54,40 +54,38 @@ export default function OfficeKanban() {
   const active = tasks.filter((t) => t.status !== "done").length;
   const inProgress = tasks.filter((t) => t.status === "in_progress").length;
 
-  // Panel position — draggable by header
+  // Panel position — offset from button so it follows when button is dragged
   const wH = typeof window !== "undefined" ? window.innerHeight : 800;
   const wW = typeof window !== "undefined" ? window.innerWidth : 1200;
-  const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
-  const panelDragRef = useRef<{ startX: number; startY: number; elX: number; elY: number } | null>(null);
+  const [panelOffset, setPanelOffset] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
+  const panelDragRef = useRef<{ startX: number; startY: number; startDx: number; startDy: number } | null>(null);
 
-  useEffect(() => { setPanelPos(null); }, [pos.x, pos.y, open]);
+  useEffect(() => { if (open) setPanelOffset({ dx: 0, dy: 0 }); }, [open]);
 
-  const defaultPanelX = Math.max(20, pos.x > wW * 0.4 ? pos.x + 180 - 700 : pos.x);
-  const defaultPanelY = pos.y > wH * 0.4 ? Math.max(20, pos.y - 440 - 12) : pos.y + 56 + 12;
+  const basePanelX = Math.max(20, pos.x > wW * 0.4 ? pos.x + 180 - 700 : pos.x);
+  const basePanelY = pos.y > wH * 0.4 ? Math.max(20, pos.y - 440 - 12) : pos.y + 56 + 12;
 
   const panelStyle: React.CSSProperties = {
     position: "fixed",
     width: 700,
     maxWidth: "calc(100vw - 40px)",
-    left: panelPos ? panelPos.x : defaultPanelX,
-    top: panelPos ? panelPos.y : defaultPanelY,
+    left: basePanelX + panelOffset.dx,
+    top: basePanelY + panelOffset.dy,
     zIndex: 51,
   };
 
   const onPanelHeaderDown = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest("button")) return;
     e.preventDefault();
-    const rect = panelRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    panelDragRef.current = { startX: e.clientX, startY: e.clientY, elX: rect.left, elY: rect.top };
+    panelDragRef.current = { startX: e.clientX, startY: e.clientY, startDx: panelOffset.dx, startDy: panelOffset.dy };
     function onMove(ev: MouseEvent) {
       const d = panelDragRef.current!;
-      setPanelPos({ x: d.elX + ev.clientX - d.startX, y: d.elY + ev.clientY - d.startY });
+      setPanelOffset({ dx: d.startDx + ev.clientX - d.startX, dy: d.startDy + ev.clientY - d.startY });
     }
     function onUp() { panelDragRef.current = null; document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
-  }, []);
+  }, [panelOffset]);
 
   if (pos.x < 0) return null;
 
