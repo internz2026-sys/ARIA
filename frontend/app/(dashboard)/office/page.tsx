@@ -151,6 +151,23 @@ export default function OfficePage() {
   // Socket.IO as bonus instant layer (may not work on Railway)
   const liveStatuses = useAgentStatus(tenantId);
 
+  // Clear "working" chat overrides when polled status goes idle (task moved to done)
+  useEffect(() => {
+    const toRemove: string[] = [];
+    for (const [id, status] of Object.entries(chatOverrides)) {
+      if (status !== "working") continue;
+      const polled = agents.find((a) => a.id === id);
+      if (polled && polled.status === "idle") toRemove.push(id);
+    }
+    if (toRemove.length > 0) {
+      setChatOverrides((prev) => {
+        const next = { ...prev };
+        for (const id of toRemove) delete next[id];
+        return next;
+      });
+    }
+  }, [agents, chatOverrides]);
+
   // Merge: chat overrides > socket > polled REST > defaults
   const finalAgents = useMemo(() => {
     return agents.map((agent) => {

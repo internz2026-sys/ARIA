@@ -303,21 +303,30 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
 
     // Status dot
     const dotColors: Record<string, string> = { idle: "#1D9E75", running: "#534AB7", working: "#3B82F6", busy: "#EAB308" };
-    const isActive = agent.status !== "idle";
     ctx.beginPath(); ctx.arc(cx + 9, y - 24, 3, 0, Math.PI * 2);
     ctx.fillStyle = dotColors[agent.status] || "#1D9E75"; ctx.fill();
     ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
 
-    // Name label below feet
-    ctx.font = "bold 6px 'Courier New', monospace";
+    // Name label below feet — main agents get a bright highlight border
+    const isMain = !agent.isNpc;
+    ctx.font = isMain ? "bold 7px 'Courier New', monospace" : "bold 6px 'Courier New', monospace";
     const name = agent.name;
     const tw = ctx.measureText(name).width;
     const labelY = baseY + 14;
-    ctx.fillStyle = isActive ? agent.color : "rgba(44,44,42,0.75)";
-    ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 3, labelY, tw + 6, 10, 2); ctx.fill();
+    if (isMain) {
+      // Bright outline for core agents
+      ctx.fillStyle = agent.color;
+      ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 4, labelY - 1, tw + 8, 12, 3); ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 4, labelY - 1, tw + 8, 12, 3); ctx.stroke();
+    } else {
+      ctx.fillStyle = "rgba(44,44,42,0.6)";
+      ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 3, labelY, tw + 6, 10, 2); ctx.fill();
+    }
     ctx.fillStyle = "#fff";
     ctx.textAlign = "center";
-    ctx.fillText(name, cx, labelY + 7);
+    ctx.fillText(name, cx, labelY + (isMain ? 8 : 7));
     ctx.textAlign = "left";
   }, []);
 
@@ -416,12 +425,83 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       ctx.globalAlpha = 1;
     }
 
+    // Helper: printer
+    function printer(x: number, y: number) {
+      ctx.fillStyle = "#E0E0E0"; ctx.fillRect(x, y, 18, 14);
+      ctx.fillStyle = "#BDBDBD"; ctx.fillRect(x + 1, y + 1, 16, 4);
+      ctx.fillStyle = "#4CAF50"; ctx.fillRect(x + 14, y + 2, 2, 2);
+      ctx.fillStyle = "#F5F5F5"; ctx.fillRect(x + 3, y + 7, 12, 3);
+      ctx.fillStyle = "#666"; ctx.fillRect(x + 2, y + 12, 14, 2);
+    }
+    // Helper: sofa / couch
+    function sofa(x: number, y: number, color: string) {
+      ctx.fillStyle = color; ctx.beginPath(); ctx.roundRect(x, y, 30, 14, 3); ctx.fill();
+      ctx.fillStyle = color; ctx.fillRect(x, y - 4, 4, 18); ctx.fillRect(x + 26, y - 4, 4, 18);
+      // Cushions
+      const lighter = color + "88";
+      ctx.fillStyle = lighter; ctx.fillRect(x + 5, y + 2, 9, 8); ctx.fillRect(x + 16, y + 2, 9, 8);
+    }
+    // Helper: trash bin
+    function bin(x: number, y: number) {
+      ctx.fillStyle = "#666"; ctx.fillRect(x - 4, y, 8, 10);
+      ctx.fillStyle = "#888"; ctx.fillRect(x - 5, y, 10, 2);
+    }
+    // Helper: picture frame on wall
+    function picture(x: number, y: number, color: string) {
+      ctx.fillStyle = "#8B6F47"; ctx.fillRect(x, y, 16, 12);
+      ctx.fillStyle = color; ctx.fillRect(x + 2, y + 2, 12, 8);
+      // Simple landscape
+      ctx.fillStyle = "#81C784"; ctx.fillRect(x + 2, y + 6, 12, 4);
+      ctx.fillStyle = "#64B5F6"; ctx.fillRect(x + 2, y + 2, 12, 4);
+    }
+    // Helper: sticky notes on wall
+    function stickyNotes(x: number, y: number) {
+      ctx.fillStyle = "#FFF176"; ctx.fillRect(x, y, 8, 8);
+      ctx.fillStyle = "#A5D6A7"; ctx.fillRect(x + 10, y, 8, 8);
+      ctx.fillStyle = "#EF9A9A"; ctx.fillRect(x + 5, y + 10, 8, 8);
+      ctx.fillStyle = "#90CAF9"; ctx.fillRect(x + 15, y + 10, 8, 8);
+    }
+    // Helper: potted cactus
+    function cactus(x: number, y: number) {
+      ctx.fillStyle = "#A1887F"; ctx.fillRect(x - 3, y + 2, 6, 4);
+      ctx.fillStyle = "#66BB6A"; ctx.fillRect(x - 1, y - 6, 3, 9);
+      ctx.fillRect(x - 4, y - 3, 3, 2);
+      ctx.fillRect(x + 2, y - 5, 3, 2);
+    }
+    // Helper: monitor/screen on wall (TV)
+    function wallScreen(x: number, y: number) {
+      ctx.fillStyle = "#333"; ctx.fillRect(x, y, 28, 18);
+      ctx.fillStyle = "#1a1a2e";
+      const flicker = 0.7 + Math.sin(time * 2) * 0.15;
+      ctx.globalAlpha = flicker;
+      ctx.fillRect(x + 2, y + 2, 24, 14);
+      // Fake chart bars
+      ctx.fillStyle = "#534AB7"; ctx.fillRect(x + 4, y + 10, 3, 5);
+      ctx.fillStyle = "#1D9E75"; ctx.fillRect(x + 9, y + 7, 3, 8);
+      ctx.fillStyle = "#D85A30"; ctx.fillRect(x + 14, y + 5, 3, 10);
+      ctx.fillStyle = "#3B82F6"; ctx.fillRect(x + 19, y + 8, 3, 7);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#555"; ctx.fillRect(x + 12, y + 18, 4, 3);
+    }
+    // Helper: bean bag
+    function beanBag(x: number, y: number, color: string) {
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.ellipse(x, y, 10, 7, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = color + "CC";
+      ctx.beginPath(); ctx.ellipse(x, y - 3, 7, 5, 0, Math.PI, Math.PI * 2); ctx.fill();
+    }
+
     // ── CEO Office (0,0 8x8) ──
     rug(1 * T, 2 * T, 6 * T, 4 * T, "#534AB7");
     bookshelf(1 * T + 4, 1 * T + 4);
     lamp(6 * T + 16, 1 * T + 16);
     plant(6 * T + 16, 6 * T + 16, 1.1);
     clock(4 * T, 0 * T + 12);
+    picture(1 * T + 8, 0 * T + 6, "#E8EAF6");
+    cabinet(0 * T + 4, 6 * T + 4);
+    cactus(2 * T, 1 * T + 14);
+    bin(7 * T, 7 * T);
+    sofa(1 * T + 8, 6 * T + 8, "#7E57C2");
 
     // ── Meeting Room (8,0 8x8) — central conference room ──
     rug(9 * T, 1 * T + 8, 6 * T, 5 * T, "#8B7355");
@@ -430,6 +510,10 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     plant(15 * T, 1 * T + 16);
     plant(9 * T + 16, 6 * T + 16);
     clock(12 * T, 0 * T + 12);
+    wallScreen(13 * T + 4, 0 * T + 20);
+    stickyNotes(15 * T + 8, 0 * T + 22);
+    bin(15 * T + 16, 7 * T);
+    cactus(9 * T + 4, 7 * T);
 
     // ── Content Studio (16,0 8x8) ──
     rug(17 * T, 2 * T, 6 * T, 4 * T, "#1D9E75");
@@ -438,6 +522,11 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     plant(17 * T + 16, 6 * T + 16);
     lamp(22 * T + 16, 6 * T);
     clock(20 * T, 0 * T + 12);
+    stickyNotes(19 * T, 0 * T + 22);
+    printer(17 * T + 4, 6 * T + 4);
+    beanBag(23 * T, 3 * T + 8, "#66BB6A");
+    cactus(17 * T + 4, 0 * T + 24);
+    picture(22 * T + 4, 0 * T + 6, "#C8E6C9");
 
     // ── Email Center (0,8 8x8) ──
     rug(1 * T, 10 * T, 6 * T, 4 * T, "#BA7517");
@@ -446,6 +535,12 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     coffee(5 * T + 8, 9 * T + 4);
     plant(6 * T + 16, 14 * T + 16);
     clock(4 * T, 8 * T + 12);
+    printer(0 * T + 4, 14 * T + 4);
+    lamp(1 * T + 8, 14 * T + 16);
+    bin(7 * T, 15 * T);
+    picture(5 * T, 8 * T + 6, "#FFF3E0");
+    cactus(7 * T, 9 * T + 8);
+    sofa(3 * T + 8, 14 * T + 10, "#F5A623");
 
     // ── Social Hub (8,8 8x8) ──
     rug(9 * T, 10 * T, 6 * T, 4 * T, "#D85A30");
@@ -453,6 +548,13 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     plant(14 * T + 16, 14 * T + 16);
     lamp(9 * T + 16, 14 * T + 16);
     clock(12 * T, 8 * T + 12);
+    wallScreen(13 * T + 4, 8 * T + 20);
+    beanBag(15 * T, 11 * T, "#E67E22");
+    beanBag(10 * T, 14 * T + 8, "#EC407A");
+    coffee(14 * T + 8, 9 * T + 4);
+    stickyNotes(11 * T, 8 * T + 22);
+    bin(9 * T + 4, 15 * T);
+    cactus(15 * T + 16, 9 * T + 8);
 
     // ── Ads Room (16,8 8x8) ──
     rug(17 * T, 10 * T, 6 * T, 4 * T, "#7C3AED");
@@ -461,6 +563,13 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     cooler(22 * T + 16, 14 * T + 8);
     plant(17 * T + 16, 14 * T + 16);
     clock(20 * T, 8 * T + 12);
+    printer(22 * T + 4, 14 * T + 4);
+    lamp(17 * T + 8, 9 * T + 16);
+    wallScreen(19 * T, 8 * T + 20);
+    picture(22 * T + 8, 8 * T + 6, "#EDE7F6");
+    bin(23 * T, 15 * T);
+    cactus(17 * T + 4, 15 * T);
+    sofa(19 * T + 8, 14 * T + 10, "#9575CD");
   }, []);
 
   // ── Main draw loop ──────────────────────────────────────────────────────
