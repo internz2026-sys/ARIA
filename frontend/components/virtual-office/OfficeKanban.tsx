@@ -30,12 +30,14 @@ export default function OfficeKanban() {
     fetchTasks(tid).then(setTasks).catch(() => {}).finally(() => setLoading(false));
   }, [open]);
 
-  // Close on click outside
+  // Close on click outside (but not when clicking other floating widgets)
   useEffect(() => {
     if (!open) return;
     function h(e: MouseEvent) {
-      const t = e.target as Node;
-      if (!btnRef.current?.contains(t) && !panelRef.current?.contains(t)) setOpen(false);
+      const t = e.target as HTMLElement;
+      if (btnRef.current?.contains(t) || panelRef.current?.contains(t)) return;
+      if (t.closest?.("[data-floating-widget]")) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
@@ -93,6 +95,7 @@ export default function OfficeKanban() {
     <>
       <button
         ref={btnRef}
+        data-floating-widget="task-board"
         onMouseDown={handleMouseDown}
         onClick={() => handleClick() && setOpen((v) => !v)}
         className="fixed left-0 top-0 z-40 flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform"
@@ -121,7 +124,7 @@ export default function OfficeKanban() {
       </button>
 
       {open && (
-        <div ref={panelRef} style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl">
+        <div ref={panelRef} data-floating-widget="task-board" style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl">
           <div className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8] cursor-grab active:cursor-grabbing" onMouseDown={onPanelHeaderDown}>
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full" style={{ background: "linear-gradient(135deg, #FF6B35, #F7418F)" }} />

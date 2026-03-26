@@ -49,12 +49,14 @@ export default function FloatingChat() {
   // Scroll to bottom on new messages AND when panel opens
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, open]);
 
-  // Close on click outside
+  // Close on click outside (but not when clicking other floating widgets)
   useEffect(() => {
     if (!open) return;
     function h(e: MouseEvent) {
-      const t = e.target as Node;
-      if (!btnRef.current?.contains(t) && !panelRef.current?.contains(t)) setOpen(false);
+      const t = e.target as HTMLElement;
+      if (btnRef.current?.contains(t) || panelRef.current?.contains(t)) return;
+      if (t.closest?.("[data-floating-widget]")) return; // ignore other widgets
+      setOpen(false);
     }
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
@@ -116,6 +118,7 @@ export default function FloatingChat() {
     <>
       <button
         ref={btnRef}
+        data-floating-widget="ceo-chat"
         onMouseDown={handleMouseDown}
         onClick={() => handleClick() && setOpen(v => !v)}
         className="fixed left-0 top-0 z-40 flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform"
@@ -136,7 +139,7 @@ export default function FloatingChat() {
       </button>
 
       {open && (
-        <div ref={panelRef} style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
+        <div ref={panelRef} data-floating-widget="ceo-chat" style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
           {/* Header — drag to move panel */}
           <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing" onMouseDown={onPanelHeaderDown}>
             <button
