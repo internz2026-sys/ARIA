@@ -3,20 +3,24 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 const settingsTabs = ["Profile", "Integrations", "Notifications", "Billing"];
 
-const integrations = [
-  { name: "Mailchimp", connected: false, description: "Email marketing automation", phase: "v1.5" },
-  { name: "ConvertKit", connected: false, description: "Creator email marketing", phase: "v1.5" },
-  { name: "X / Twitter", connected: false, description: "Social media publishing", phase: "v2" },
-  { name: "LinkedIn", connected: false, description: "Professional social publishing", phase: "v2" },
-  { name: "Meta Ads", connected: false, description: "Automated ad campaign management", phase: "v2.5" },
-  { name: "Google Analytics", connected: false, description: "Traffic and conversion analytics", phase: "v3" },
+const futureIntegrations = [
+  { name: "Mailchimp", description: "Email marketing automation", phase: "v1.5" },
+  { name: "ConvertKit", description: "Creator email marketing", phase: "v1.5" },
+  { name: "X / Twitter", description: "Social media publishing", phase: "v2" },
+  { name: "LinkedIn", description: "Professional social publishing", phase: "v2" },
+  { name: "Meta Ads", description: "Automated ad campaign management", phase: "v2.5" },
+  { name: "Google Analytics", description: "Traffic and conversion analytics", phase: "v3" },
 ];
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState("Profile");
   const [user, setUser] = useState({ name: "", email: "", company: "" });
+  const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
+  const [gmailReconnecting, setGmailReconnecting] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -29,7 +33,28 @@ export default function SettingsPage() {
         });
       }
     });
+    // Check Gmail connection status
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (tenantId) {
+      fetch(`${API_URL}/api/integrations/${tenantId}/gmail-status`)
+        .then(r => r.json())
+        .then(data => setGmailConnected(!!data?.connected))
+        .catch(() => setGmailConnected(false));
+    }
   }, []);
+
+  async function reconnectGmail() {
+    setGmailReconnecting(true);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback?mode=login`,
+        scopes: "https://www.googleapis.com/auth/gmail.send",
+        queryParams: { access_type: "offline", prompt: "consent" },
+      },
+    });
+    if (error) setGmailReconnecting(false);
+  }
 
   return (
     <div className="max-w-[900px] space-y-6">
@@ -100,21 +125,59 @@ export default function SettingsPage() {
 
       {/* Integrations */}
       {activeTab === "Integrations" && (
-        <div className="bg-white rounded-xl border border-[#E0DED8]">
-          <div className="px-5 py-4 border-b border-[#E0DED8]">
-            <h2 className="text-base font-semibold text-[#2C2C2A]">Integrations</h2>
-            <p className="text-xs text-[#5F5E5A] mt-1">ARIA v1 uses a copy-paste model. Direct integrations are coming in future versions.</p>
-          </div>
-          <div className="divide-y divide-[#E0DED8]">
-            {integrations.map((int) => (
-              <div key={int.name} className="px-5 py-4 flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-[#2C2C2A]">{int.name}</p>
-                  <p className="text-xs text-[#5F5E5A] mt-0.5">{int.description}</p>
+        <div className="space-y-4">
+          {/* Gmail — active integration */}
+          <div className="bg-white rounded-xl border border-[#E0DED8]">
+            <div className="px-5 py-4 border-b border-[#E0DED8]">
+              <h2 className="text-base font-semibold text-[#2C2C2A]">Active Integrations</h2>
+            </div>
+            <div className="px-5 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-[#FDF3E7] flex items-center justify-center">
+                  <svg className="w-5 h-5 text-[#BA7517]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+                  </svg>
                 </div>
-                <span className="text-[10px] font-medium px-2 py-1 rounded-full bg-[#F8F8F6] text-[#5F5E5A]">Coming in {int.phase}</span>
+                <div>
+                  <p className="text-sm font-medium text-[#2C2C2A]">Gmail</p>
+                  <p className="text-xs text-[#5F5E5A] mt-0.5">
+                    {gmailConnected === null ? "Checking..." : gmailConnected
+                      ? `Connected — emails sent from ${user.email}`
+                      : "Not connected — Email Marketer can only draft, not send"}
+                  </p>
+                </div>
               </div>
-            ))}
+              {gmailConnected === false ? (
+                <button
+                  onClick={reconnectGmail}
+                  disabled={gmailReconnecting}
+                  className="text-xs font-medium px-4 py-2 rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-60"
+                >
+                  {gmailReconnecting ? "Connecting..." : "Connect Gmail"}
+                </button>
+              ) : gmailConnected ? (
+                <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Future integrations */}
+          <div className="bg-white rounded-xl border border-[#E0DED8]">
+            <div className="px-5 py-4 border-b border-[#E0DED8]">
+              <h2 className="text-base font-semibold text-[#2C2C2A]">Coming Soon</h2>
+              <p className="text-xs text-[#5F5E5A] mt-1">Direct integrations are coming in future versions.</p>
+            </div>
+            <div className="divide-y divide-[#E0DED8]">
+              {futureIntegrations.map((int) => (
+                <div key={int.name} className="px-5 py-4 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-[#2C2C2A]">{int.name}</p>
+                    <p className="text-xs text-[#5F5E5A] mt-0.5">{int.description}</p>
+                  </div>
+                  <span className="text-[10px] font-medium px-2 py-1 rounded-full bg-[#F8F8F6] text-[#5F5E5A]">Coming in {int.phase}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

@@ -252,6 +252,17 @@ async def save_google_tokens(tenant_id: str, body: GoogleTokens):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/integrations/{tenant_id}/gmail-status")
+async def gmail_status(tenant_id: str):
+    """Check if Gmail is connected for a tenant."""
+    try:
+        config = get_tenant_config(tenant_id)
+        connected = bool(config.integrations.google_access_token)
+        return {"connected": connected, "email": config.owner_email if connected else None}
+    except Exception:
+        return {"connected": False, "email": None}
+
+
 # ─── Gmail Send API ───
 class GmailSendRequest(BaseModel):
     to: str
@@ -816,6 +827,17 @@ async def _run_agent_to_inbox(
 
         content_type = _infer_content_type(agent_id, content)
         title = _extract_title(agent_id, task_desc, content)
+
+        # Append email send status to content so users see what happened
+        emails_sent = result.get("emails_sent")
+        if emails_sent:
+            send_count = result.get("send_count", 0)
+            if send_count > 0:
+                content += f"\n\n---\n✅ Email sent successfully ({send_count} delivered)"
+            else:
+                errors = [r.get("error", "unknown error") for r in emails_sent if r.get("error")]
+                error_msg = errors[0] if errors else "unknown error"
+                content += f"\n\n---\n⚠️ Email sending failed: {error_msg}"
 
         saved = _save_inbox_item(
             tenant_id=tenant_id,

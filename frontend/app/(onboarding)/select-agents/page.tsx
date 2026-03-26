@@ -30,6 +30,28 @@ export default function SelectAgentsPage() {
 
   const activeCount = Object.values(enabled).filter(Boolean).length;
 
+  // Flush Google OAuth tokens saved during signup to the backend
+  async function flushGoogleTokens(tenantId: string) {
+    const accessToken = localStorage.getItem("aria_google_token");
+    if (!accessToken) return;
+    const refreshToken = localStorage.getItem("aria_google_refresh_token");
+    try {
+      await fetch(`${API_URL}/api/integrations/${tenantId}/google-tokens`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          google_access_token: accessToken,
+          google_refresh_token: refreshToken || null,
+        }),
+      });
+    } catch {
+      // Non-blocking — tokens can be recaptured on next Google login
+    } finally {
+      localStorage.removeItem("aria_google_token");
+      localStorage.removeItem("aria_google_refresh_token");
+    }
+  }
+
   async function handleLaunch() {
     setSaving(true);
     setError("");
@@ -69,6 +91,7 @@ export default function SelectAgentsPage() {
         if (res.ok) {
           const data = await res.json();
           localStorage.setItem("aria_tenant_id", data.tenant_id);
+          await flushGoogleTokens(data.tenant_id);
           localStorage.removeItem("aria_onboarding_session");
           localStorage.removeItem("aria_onboarding_config");
           localStorage.removeItem("aria_skipped_topics");
@@ -102,6 +125,7 @@ export default function SelectAgentsPage() {
 
         const data = await res.json();
         localStorage.setItem("aria_tenant_id", data.tenant_id);
+        await flushGoogleTokens(data.tenant_id);
         localStorage.removeItem("aria_onboarding_session");
         localStorage.removeItem("aria_onboarding_config");
         localStorage.removeItem("aria_skipped_topics");
