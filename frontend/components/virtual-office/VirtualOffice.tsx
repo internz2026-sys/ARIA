@@ -29,7 +29,7 @@ interface AnimPos {
 }
 
 const T = TILE_SIZE;
-const WALK_SPEED = 1.2; // pixels per frame
+const WALK_SPEED = 2.8; // pixels per frame — fast enough to be clearly visible
 
 // No idle wandering — agents only move when driven by real tasks
 
@@ -175,42 +175,83 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     let bobY = 0;
     if (!walking) {
       bobY = (agent.status === "running" || agent.status === "working")
-        ? Math.sin(time * 4) * 1.5
+        ? Math.sin(time * 4) * 2.5
         : Math.sin(time * 1.5) * 0.6;
+    } else {
+      // Bounce while walking
+      bobY = Math.abs(Math.sin(walkFrame * 0.35)) * -3;
     }
     const y = baseY + bobY;
 
     // Walk animation — legs
-    const legOffset = walking ? Math.sin(walkFrame * 0.3) * 3 : 0;
+    const legOffset = walking ? Math.sin(walkFrame * 0.3) * 5 : 0;
 
-    // Working glow (at desk, executing a task)
-    if (agent.status === "working") {
-      const pulse = 0.25 + Math.sin(time * 2.5) * 0.15;
+    // Walking glow trail — bright colored ring follows agent while moving
+    if (walking) {
+      const trailPulse = 0.3 + Math.sin(time * 6) * 0.15;
+      ctx.beginPath(); ctx.arc(cx, y - 4, 22, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(83,74,183,${trailPulse})`;
+      ctx.lineWidth = 2; ctx.setLineDash([4, 4]); ctx.stroke(); ctx.setLineDash([]);
+      // Movement direction arrow
+      const arrowX = facingRight ? cx + 18 : cx - 18;
+      ctx.fillStyle = `rgba(83,74,183,${trailPulse + 0.1})`;
+      ctx.beginPath();
+      if (facingRight) {
+        ctx.moveTo(arrowX, y - 6); ctx.lineTo(arrowX + 6, y - 2); ctx.lineTo(arrowX, y + 2);
+      } else {
+        ctx.moveTo(arrowX, y - 6); ctx.lineTo(arrowX - 6, y - 2); ctx.lineTo(arrowX, y + 2);
+      }
+      ctx.fill();
+    }
+
+    // Working glow (at desk, executing a task) — large visible pulse
+    if (agent.status === "working" && !walking) {
+      const pulse = 0.35 + Math.sin(time * 2.5) * 0.2;
+      // Outer glow
+      ctx.beginPath(); ctx.arc(cx, y - 8, 24, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(59,130,246,${pulse * 0.4})`; ctx.fill();
+      // Inner glow
       ctx.beginPath(); ctx.arc(cx, y - 8, 16, 0, Math.PI * 2);
       ctx.fillStyle = `rgba(59,130,246,${pulse})`; ctx.fill();
+      // Floating code particles
+      const p1y = y - 30 + Math.sin(time * 2) * 8;
+      const p2y = y - 26 + Math.cos(time * 2.5) * 6;
+      ctx.font = "bold 7px monospace";
+      ctx.fillStyle = `rgba(59,130,246,${0.4 + Math.sin(time * 3) * 0.2})`;
+      ctx.fillText("</>", cx - 18, p1y);
+      ctx.fillText("{}", cx + 10, p2y);
+    }
+
+    // Running glow — agent is heading to meeting
+    if (agent.status === "running" && !walking) {
+      const pulse = 0.3 + Math.sin(time * 3) * 0.2;
+      ctx.beginPath(); ctx.arc(cx, y - 8, 20, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(83,74,183,${pulse})`; ctx.fill();
     }
 
     // Busy glow
     if (agent.status === "busy") {
       const pulse = 0.3 + Math.sin(time * 3) * 0.2;
-      ctx.beginPath(); ctx.arc(cx, y - 8, 16, 0, Math.PI * 2);
+      ctx.beginPath(); ctx.arc(cx, y - 8, 20, 0, Math.PI * 2);
       ctx.fillStyle = `rgba(255,200,0,${pulse})`; ctx.fill();
     }
 
     // Hover ring
     if (isHovered) {
-      ctx.beginPath(); ctx.arc(cx, y - 8, 16, 0, Math.PI * 2);
-      ctx.strokeStyle = "#534AB7"; ctx.lineWidth = 2; ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, y - 8, 20, 0, Math.PI * 2);
+      ctx.strokeStyle = "#534AB7"; ctx.lineWidth = 2.5; ctx.stroke();
     }
 
-    // Shadow
-    ctx.fillStyle = "rgba(0,0,0,0.08)";
-    ctx.beginPath(); ctx.ellipse(cx, y + 4, 8, 3, 0, 0, Math.PI * 2); ctx.fill();
+    // Shadow — larger when walking
+    const shadowSize = walking ? 10 : 8;
+    ctx.fillStyle = walking ? "rgba(0,0,0,0.12)" : "rgba(0,0,0,0.08)";
+    ctx.beginPath(); ctx.ellipse(cx, baseY + 10, shadowSize, 3.5, 0, 0, Math.PI * 2); ctx.fill();
 
-    // Legs
+    // Legs — thicker when walking
     ctx.fillStyle = "#5C5C5C";
-    ctx.fillRect(cx - 3, y, 2, 6 + legOffset);
-    ctx.fillRect(cx + 1, y, 2, 6 - legOffset);
+    const legW = walking ? 3 : 2;
+    ctx.fillRect(cx - 3, y, legW, 6 + legOffset);
+    ctx.fillRect(cx + 1, y, legW, 6 - legOffset);
 
     // Body
     ctx.fillStyle = agent.color;
@@ -221,13 +262,13 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
 
     // Arms
     if (walking) {
-      const armSwing = Math.sin(walkFrame * 0.3) * 3;
+      const armSwing = Math.sin(walkFrame * 0.3) * 5;
       ctx.fillStyle = agent.color;
       ctx.fillRect(cx - 8, y - 10 + armSwing, 2, 8);
       ctx.fillRect(cx + 6, y - 10 - armSwing, 2, 8);
     } else if (agent.status === "working") {
-      // Typing at desk — fast arm movement
-      const armOff = Math.sin(time * 8) * 2;
+      // Typing at desk — visible fast arm movement
+      const armOff = Math.sin(time * 10) * 3.5;
       ctx.fillStyle = agent.color;
       ctx.fillRect(cx - 8, y - 10 + armOff, 2, 8);
       ctx.fillRect(cx + 6, y - 10 - armOff, 2, 8);
@@ -271,22 +312,39 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       ctx.fillStyle = "#3498DB"; ctx.beginPath(); ctx.arc(cx + 3, crownY + 3, 1, 0, Math.PI * 2); ctx.fill();
     }
 
-    // Status dot
+    // Status dot — larger and pulsing when active
     const dotColors: Record<string, string> = { idle: "#1D9E75", running: "#3B82F6", working: "#3B82F6", busy: "#EAB308" };
-    ctx.beginPath(); ctx.arc(cx + 9, y - 24, 3, 0, Math.PI * 2);
+    const isActive = agent.status !== "idle";
+    const dotSize = isActive ? 4 + Math.sin(time * 4) * 1 : 3;
+    if (isActive) {
+      // Ping ring around status dot
+      const pingR = 6 + Math.sin(time * 3) * 2;
+      ctx.beginPath(); ctx.arc(cx + 9, y - 24, pingR, 0, Math.PI * 2);
+      ctx.strokeStyle = dotColors[agent.status] || "#1D9E75";
+      ctx.lineWidth = 1; ctx.globalAlpha = 0.4; ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    ctx.beginPath(); ctx.arc(cx + 9, y - 24, dotSize, 0, Math.PI * 2);
     ctx.fillStyle = dotColors[agent.status] || "#1D9E75"; ctx.fill();
     ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
 
-    // Name label above head
+    // Name label above head — colored background when active
     ctx.font = "bold 7px 'Courier New', monospace";
     const name = agent.name;
     const tw = ctx.measureText(name).width;
     const labelY = agent.hasCrown ? y - 34 : y - 28;
-    ctx.fillStyle = "rgba(44,44,42,0.8)";
-    ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 3, labelY, tw + 6, 11, 2); ctx.fill();
+    const labelBg = isActive ? agent.color : "rgba(44,44,42,0.8)";
+    ctx.fillStyle = labelBg;
+    ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 4, labelY - 1, tw + 8, 13, 3); ctx.fill();
     ctx.fillStyle = "#fff";
     ctx.textAlign = "center";
     ctx.fillText(name, cx, labelY + 8);
+    // Status text below name when active
+    if (isActive) {
+      const statusText = agent.status === "running" ? "IN MEETING" : agent.status === "working" ? "WORKING" : "BUSY";
+      ctx.font = "bold 5px 'Courier New', monospace";
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.fillText(statusText, cx, labelY + 16);
+    }
     ctx.textAlign = "left";
   }, []);
 
