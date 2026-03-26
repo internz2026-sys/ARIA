@@ -94,6 +94,60 @@ export function useAgentStatus(tenantId: string): Record<string, AgentStatusPayl
 
 const MAX_FEED_SIZE = 10;
 
+// ---------------------------------------------------------------------------
+// useTaskUpdates — listen for real-time task status changes
+// ---------------------------------------------------------------------------
+
+export interface TaskUpdatePayload {
+  id: string;
+  agent: string;
+  status: string;
+  task: string;
+}
+
+export function useTaskUpdates(tenantId: string): TaskUpdatePayload | null {
+  const [update, setUpdate] = useState<TaskUpdatePayload | null>(null);
+  const joinedRoom = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!tenantId) return;
+
+    const s = getSocket();
+
+    const handleConnect = () => {
+      s.emit("join_tenant", { tenant_id: tenantId });
+      joinedRoom.current = tenantId;
+    };
+
+    const handleTaskUpdate = (payload: TaskUpdatePayload) => {
+      setUpdate(payload);
+    };
+
+    s.on("connect", handleConnect);
+    s.on("task_updated", handleTaskUpdate);
+
+    if (s.connected) {
+      handleConnect();
+    }
+
+    return () => {
+      s.off("connect", handleConnect);
+      s.off("task_updated", handleTaskUpdate);
+
+      if (joinedRoom.current) {
+        s.emit("leave_tenant", { tenant_id: joinedRoom.current });
+        joinedRoom.current = null;
+      }
+    };
+  }, [tenantId]);
+
+  return update;
+}
+
+// ---------------------------------------------------------------------------
+// useActivityFeed — keep the last 10 agent_event events for a tenant
+// ---------------------------------------------------------------------------
+
 export function useActivityFeed(tenantId: string): AgentEvent[] {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const joinedRoom = useRef<string | null>(null);

@@ -796,6 +796,12 @@ async def _run_agent_to_inbox(
                 except Exception:
                     pass
                 if tenant_id:
+                    await sio.emit("task_updated", {
+                        "id": task_id,
+                        "agent": agent_id,
+                        "status": "done",
+                        "task": task_desc,
+                    }, room=tenant_id)
                     try:
                         sb2 = _get_supabase()
                         other = sb2.table("tasks").select("id").eq(
@@ -834,9 +840,7 @@ async def _run_agent_to_inbox(
                 "created_at": saved.get("created_at", ""),
             }, room=tenant_id)
 
-        # Mark task as done in DB — agent stays "working" visually until
-        # the user moves the task to "done" on the Kanban board (which triggers idle).
-        # But we DO mark it done in DB so the Kanban reflects completion.
+        # Mark task as done and notify frontend in real-time
         if task_id:
             try:
                 from backend.config.loader import _get_supabase
@@ -848,8 +852,16 @@ async def _run_agent_to_inbox(
             except Exception:
                 pass
 
-            # Now that task is done, check if agent has other in_progress tasks
-            # If not, return agent to idle
+            # Emit task_updated so Kanban board auto-refreshes
+            if tenant_id:
+                await sio.emit("task_updated", {
+                    "id": task_id,
+                    "agent": agent_id,
+                    "status": "done",
+                    "task": task_desc,
+                }, room=tenant_id)
+
+            # Agent done — return to idle
             if tenant_id:
                 try:
                     sb2 = _get_supabase()
@@ -1095,6 +1107,13 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 result = sb.table("tasks").insert(task_row).execute()
                 if result.data:
                     saved_tasks.append(result.data[0])
+                    # Notify Kanban board of new task
+                    await sio.emit("task_updated", {
+                        "id": result.data[0]["id"],
+                        "agent": agent_id,
+                        "status": "in_progress",
+                        "task": task_desc,
+                    }, room=tenant_id)
             except Exception:
                 pass
 

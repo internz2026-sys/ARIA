@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import KanbanBoard from "@/components/shared/KanbanBoard";
 import { useDraggable } from "@/lib/use-draggable";
+import { useTaskUpdates } from "@/lib/socket";
 import {
   type Task,
   fetchTasks,
@@ -15,12 +16,29 @@ export default function OfficeKanban() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
   const { pos, btnRef, handleMouseDown, handleClick } = useDraggable(
     typeof window !== "undefined" ? window.innerWidth - 200 : 1000,
     typeof window !== "undefined" ? window.innerHeight - 80 : 700,
     "task-board",
   );
+
+  // Listen for real-time task updates from backend
+  const taskUpdate = useTaskUpdates(tenantId);
+
+  // Apply real-time task updates to local state
+  useEffect(() => {
+    if (!taskUpdate) return;
+    setTasks((prev) => {
+      const exists = prev.some((t) => t.id === taskUpdate.id);
+      if (exists) {
+        return prev.map((t) => t.id === taskUpdate.id ? { ...t, status: taskUpdate.status } : t);
+      }
+      // New task — add it
+      return [...prev, { id: taskUpdate.id, agent: taskUpdate.agent, task: taskUpdate.task, status: taskUpdate.status, priority: "medium", created_at: new Date().toISOString(), updated_at: new Date().toISOString() }];
+    });
+  }, [taskUpdate, tenantId]);
 
   // Load tasks when dropdown opens
   useEffect(() => {
