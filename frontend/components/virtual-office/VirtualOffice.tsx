@@ -308,16 +308,16 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     ctx.fillStyle = dotColors[agent.status] || "#1D9E75"; ctx.fill();
     ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
 
-    // Name label above head
-    ctx.font = "bold 7px 'Courier New', monospace";
+    // Name label below feet
+    ctx.font = "bold 6px 'Courier New', monospace";
     const name = agent.name;
     const tw = ctx.measureText(name).width;
-    const labelY = agent.hasCrown ? y - 34 : y - 28;
-    ctx.fillStyle = isActive ? agent.color : "rgba(44,44,42,0.8)";
-    ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 3, labelY, tw + 6, 11, 2); ctx.fill();
+    const labelY = baseY + 14;
+    ctx.fillStyle = isActive ? agent.color : "rgba(44,44,42,0.75)";
+    ctx.beginPath(); ctx.roundRect(cx - tw / 2 - 3, labelY, tw + 6, 10, 2); ctx.fill();
     ctx.fillStyle = "#fff";
     ctx.textAlign = "center";
-    ctx.fillText(name, cx, labelY + 8);
+    ctx.fillText(name, cx, labelY + 7);
     ctx.textAlign = "left";
   }, []);
 

@@ -53,7 +53,7 @@ export default function OfficePage() {
   useEffect(() => {
     if (sending) {
       const overrides: Record<string, AgentStatus> = {};
-      for (const a of AGENTS) overrides[a.id] = "running";
+      for (const a of AGENTS) { if (!a.isNpc) overrides[a.id] = "running"; }
       setChatOverrides(overrides);
     }
   }, [sending]);
