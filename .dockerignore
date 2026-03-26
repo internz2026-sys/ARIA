@@ -1,0 +1,25 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+frontend/.env.local
+
+# Dependencies / build artifacts
+backend/venv/
+frontend/node_modules/
+frontend/.next/
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Git / editor
+.git/
+.claude/
+.idea/
+.vscode/
+
+# Logs
+*.log
+/tmp/
