@@ -405,3 +405,30 @@ CREATE TABLE inbox_items (
 ### Result
 - Open either widget's dropdown → drag the button → panel follows smoothly
 - Click behavior unchanged (4px threshold distinguishes click from drag)
+
+---
+
+## 2026-03-26 — Task-to-Office Sync: Agent Status Reflects Task Board
+
+### Problem
+- Agents in the Virtual Office never reflected tasks from the Task Board — movement only happened during LIVE Socket.IO events from CEO chat delegation
+- `/api/office/agents/` returned hardcoded "idle" from in-memory store (resets on every Railway deploy)
+- Moving a task to "In Progress" on the Kanban board updated the database but emitted no Socket.IO event — Virtual Office didn't react
+- Deleting an in-progress task left the agent stuck in "working" visual state
+
+### Changes
+
+**`backend/server.py`**:
+- `GET /api/office/agents/{tenant_id}` — now queries `tasks` table for "in_progress" tasks and merges into agent statuses. Priority: active live status (running/working from delegation) > task-based status > idle
+- `PATCH /api/tasks/{task_id}` — emits `agent_status_change` via Socket.IO when task status changes:
+  - Task → "in_progress": agent emits "working" (starts typing animation in office)
+  - Task → "done"/"to_do"/"backlog": agent emits "idle" (only if no OTHER in_progress tasks remain for that agent)
+- `DELETE /api/tasks/{task_id}` — if deleted task was "in_progress", checks for remaining active tasks before emitting "idle"
+
+### Result
+- Navigate to Virtual Office → agents with in_progress tasks show "working" (typing at desk with blue glow)
+- Drag task to "In Progress" on Kanban → assigned agent starts working animation in real-time
+- Drag task to "Done" → agent returns to idle
+- Delete in-progress task → agent returns to idle
+- Multiple in_progress tasks for same agent: stays "working" until ALL are moved out of in_progress
+- Survives Railway redeploys (reads from Supabase tasks table, not just in-memory store)

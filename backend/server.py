@@ -339,19 +339,50 @@ async def virtual_office_agents(tenant_id: str):
     """Return all 18 virtual office agents with their current status."""
     now = datetime.now(timezone.utc).isoformat()
     live = _live_agent_status.get(tenant_id, {})
-    agents = [
-        {
-            "agent_id": a["agent_id"],
+
+    # Check tasks table for agents with in_progress tasks
+    task_statuses: dict[str, str] = {}
+    try:
+        from backend.config.loader import _get_supabase
+        sb = _get_supabase()
+        result = sb.table("tasks").select("agent,task").eq(
+            "tenant_id", tenant_id
+        ).eq("status", "in_progress").execute()
+        for t in (result.data or []):
+            task_statuses[t["agent"]] = t["task"]
+    except Exception:
+        pass
+
+    agents = []
+    for a in VIRTUAL_OFFICE_AGENTS:
+        aid = a["agent_id"]
+        live_entry = live.get(aid, {})
+        live_status = live_entry.get("status")
+
+        # Priority: active live status (running/working) > task-based > idle
+        if live_status and live_status not in ("idle",):
+            status = live_status
+            current_task = live_entry.get("current_task", "")
+            last_updated = live_entry.get("last_updated", now)
+        elif aid in task_statuses:
+            status = "working"
+            current_task = task_statuses[aid]
+            last_updated = now
+        else:
+            status = "idle"
+            current_task = ""
+            last_updated = now
+
+        agents.append({
+            "agent_id": aid,
             "name": a["name"],
             "role": a["role"],
             "model": a["model"],
-            "status": live.get(a["agent_id"], {}).get("status", "idle"),
-            "current_task": live.get(a["agent_id"], {}).get("current_task", ""),
+            "status": status,
+            "current_task": current_task,
             "department": a["department"],
-            "last_updated": live.get(a["agent_id"], {}).get("last_updated", now),
-        }
-        for a in VIRTUAL_OFFICE_AGENTS
-    ]
+            "last_updated": last_updated,
+        })
     return {"agents": agents}
 
 
@@ -1023,7 +1054,7 @@ class TaskUpdate(BaseModel):
 
 @app.patch("/api/tasks/{task_id}")
 async def update_task(task_id: str, body: TaskUpdate):
-    """Update a task's status or priority."""
+    """Update a task's status or priority. Syncs agent visual status in Virtual Office."""
     from backend.config.loader import _get_supabase
     sb = _get_supabase()
     updates = {}
@@ -1034,16 +1065,58 @@ async def update_task(task_id: str, body: TaskUpdate):
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Fetch task details before updating (for status sync)
+    task_result = sb.table("tasks").select("agent,tenant_id,task").eq("id", task_id).execute()
+
     sb.table("tasks").update(updates).eq("id", task_id).execute()
+
+    # Sync agent visual status with task status change
+    if body.status and task_result.data:
+        task = task_result.data[0]
+        agent_id = task["agent"]
+        tid = task["tenant_id"]
+        if body.status == "in_progress":
+            await _emit_agent_status(tid, agent_id, "working",
+                                     current_task=task.get("task", ""),
+                                     action="task_started")
+        elif body.status in ("done", "to_do", "backlog"):
+            # Only go idle if agent has no OTHER in_progress tasks
+            other = sb.table("tasks").select("id").eq(
+                "tenant_id", tid
+            ).eq("agent", agent_id).eq("status", "in_progress").neq(
+                "id", task_id
+            ).limit(1).execute()
+            if not other.data:
+                await _emit_agent_status(tid, agent_id, "idle",
+                                         action="task_status_changed")
+
     return {"ok": True}
 
 
 @app.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str):
-    """Delete a task."""
+    """Delete a task. If it was in_progress, sync agent back to idle."""
     from backend.config.loader import _get_supabase
     sb = _get_supabase()
+
+    # Fetch before deleting for status sync
+    task_result = sb.table("tasks").select("agent,tenant_id,status").eq("id", task_id).execute()
+
     sb.table("tasks").delete().eq("id", task_id).execute()
+
+    # If deleted task was in_progress, check if agent has other active tasks
+    if task_result.data and task_result.data[0].get("status") == "in_progress":
+        task = task_result.data[0]
+        agent_id = task["agent"]
+        tid = task["tenant_id"]
+        other = sb.table("tasks").select("id").eq(
+            "tenant_id", tid
+        ).eq("agent", agent_id).eq("status", "in_progress").limit(1).execute()
+        if not other.data:
+            await _emit_agent_status(tid, agent_id, "idle",
+                                     action="task_deleted")
+
     return {"ok": True}
 
 
