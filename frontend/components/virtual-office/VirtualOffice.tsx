@@ -46,18 +46,30 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
   // Track previous status per agent to detect changes
   const prevStatusRef = useRef<Record<string, string>>({});
 
-  // Initialize / update targets only when agent status actually changes
+  // Helper: compute target position for a given status
+  const getTarget = useCallback((agent: OfficeAgent, idx: number) => {
+    const deskPx = { x: agent.deskX * T + T / 2, y: agent.deskY * T + T / 2 };
+    if (agent.status === "running") {
+      const meetPx = { x: MEETING_CENTER.x * T + T / 2, y: MEETING_CENTER.y * T + T / 2 };
+      return { x: meetPx.x + (idx - 2) * 24, y: meetPx.y + (idx % 2) * 20 };
+    }
+    return deskPx; // working, idle, busy — all at desk
+  }, []);
+
+  // Initialize / update targets when agent status changes
   useEffect(() => {
     const pos = posRef.current;
     const prevStatus = prevStatusRef.current;
-    for (const agent of agentList) {
-      const deskPx = { x: agent.deskX * T + T / 2, y: agent.deskY * T + T / 2 };
-      const meetPx = { x: MEETING_CENTER.x * T + T / 2, y: MEETING_CENTER.y * T + T / 2 };
+    for (let idx = 0; idx < agentList.length; idx++) {
+      const agent = agentList[idx];
+      const target = getTarget(agent, idx);
 
       if (!pos[agent.id]) {
+        // First time: start at desk, set target based on current status
+        const deskPx = { x: agent.deskX * T + T / 2, y: agent.deskY * T + T / 2 };
         pos[agent.id] = {
           x: deskPx.x, y: deskPx.y,
-          targetX: deskPx.x, targetY: deskPx.y,
+          targetX: target.x, targetY: target.y,
           walking: false, facingRight: true, walkFrame: 0,
         };
         prevStatus[agent.id] = agent.status;
@@ -69,25 +81,10 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       prevStatus[agent.id] = agent.status;
 
       const p = pos[agent.id];
-
-      if (agent.status === "running") {
-        // Walk to meeting room
-        const idx = agentList.indexOf(agent);
-        const offsetX = (idx - 2) * 24;
-        const offsetY = (idx % 2) * 20;
-        p.targetX = meetPx.x + offsetX;
-        p.targetY = meetPx.y + offsetY;
-      } else if (agent.status === "working") {
-        // Return to desk and work (typing animation handled in draw)
-        p.targetX = deskPx.x;
-        p.targetY = deskPx.y;
-      } else {
-        // idle or busy — sit at desk
-        p.targetX = deskPx.x;
-        p.targetY = deskPx.y;
-      }
+      p.targetX = target.x;
+      p.targetY = target.y;
     }
-  }, [agentList]);
+  }, [agentList, getTarget]);
 
   // Resize — canvas is absolutely positioned so it can't inflate the wrapper
   const resize = useCallback(() => {

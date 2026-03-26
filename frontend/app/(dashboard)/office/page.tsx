@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import { AGENTS, type OfficeAgent } from "@/lib/office-config";
 import VirtualOffice from "@/components/virtual-office/VirtualOffice";
 import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
@@ -18,12 +18,40 @@ const EMPTY_ACTIVITY: ActivityItem[] = [
   { agent: "ARIA", action: "No recent activity — ask the CEO to assign tasks to get started" },
 ];
 
+const POLL_INTERVAL = 3000; // Poll every 3s for live updates
+
+function mergeAgents(remoteAgents: any[]): OfficeAgent[] {
+  return AGENTS.map((local) => {
+    const remote = remoteAgents.find((a: any) => a.agent_id === local.id);
+    if (remote) {
+      return {
+        ...local,
+        status: remote.status || local.status,
+        currentTask: remote.current_task || "",
+        lastUpdated: remote.last_updated || local.lastUpdated,
+      };
+    }
+    return local;
+  });
+}
+
 export default function OfficePage() {
   const [agents, setAgents] = useState<OfficeAgent[]>(AGENTS);
   const [selectedAgent, setSelectedAgent] = useState<OfficeAgent | null>(null);
   const [loading, setLoading] = useState(true);
   const [tenantId, setTenantId] = useState<string>("");
   const [activity, setActivity] = useState<ActivityItem[]>(EMPTY_ACTIVITY);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Fetch agent statuses from REST API
+  const fetchAgents = useCallback((tid: string) => {
+    fetch(`${API_URL}/api/office/agents/${tid}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.agents) setAgents(mergeAgents(data.agents));
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const tid = localStorage.getItem("aria_tenant_id");
@@ -32,29 +60,18 @@ export default function OfficePage() {
       setLoading(false);
       return;
     }
+
+    // Initial fetch
     fetch(`${API_URL}/api/office/agents/${tid}`)
       .then((r) => r.json())
       .then((data) => {
-        if (data.agents) {
-          const merged = AGENTS.map((local) => {
-            const remote = data.agents.find(
-              (a: any) => a.agent_id === local.id
-            );
-            if (remote) {
-              return {
-                ...local,
-                status: remote.status || local.status,
-                currentTask: remote.current_task || "",
-                lastUpdated: remote.last_updated || local.lastUpdated,
-              };
-            }
-            return local;
-          });
-          setAgents(merged);
-        }
+        if (data.agents) setAgents(mergeAgents(data.agents));
         setLoading(false);
       })
       .catch(() => setLoading(false));
+
+    // Poll for live updates (reliable fallback — works even if Socket.IO fails)
+    pollRef.current = setInterval(() => fetchAgents(tid), POLL_INTERVAL);
 
     // Fetch real activity from tasks + inbox
     fetch(`${API_URL}/api/dashboard/${tid}/activity`)
@@ -70,8 +87,13 @@ export default function OfficePage() {
         }
       })
       .catch(() => {});
-  }, []);
 
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [fetchAgents]);
+
+  // Socket.IO for instant updates (optimization on top of polling)
   const liveStatuses = useAgentStatus(tenantId);
 
   const agentsWithLive = useMemo(() => {
