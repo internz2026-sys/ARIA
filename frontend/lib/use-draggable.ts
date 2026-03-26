@@ -21,7 +21,7 @@ interface DragState {
  *  - handleClick: attach to onClick (filters out drags)
  *  - dragging: true during active drag
  */
-export function useDraggable(initialX: number, initialY: number) {
+export function useDraggable(initialX: number, initialY: number, storageKey?: string) {
   const [pos, setPos] = useState({ x: -1, y: -1 });
   const posRef = useRef({ x: -1, y: -1 });
   const dragRef = useRef<DragState>({ dragging: false, moved: false, startX: 0, startY: 0, elX: 0, elY: 0 });
@@ -29,12 +29,23 @@ export function useDraggable(initialX: number, initialY: number) {
   const onDragStartRef = useRef<(() => void) | null>(null);
   const rafRef = useRef<number | null>(null);
 
-  // Init position on mount
+  // Init position on mount — restore from localStorage if available
   useEffect(() => {
-    const p = { x: initialX, y: initialY };
+    let p = { x: initialX, y: initialY };
+    if (storageKey) {
+      try {
+        const saved = localStorage.getItem(`aria_widget_pos_${storageKey}`);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          // Validate position is still within viewport
+          if (parsed.x >= 0 && parsed.x < window.innerWidth - 60 && parsed.y >= 0 && parsed.y < window.innerHeight - 40) {
+            p = parsed;
+          }
+        }
+      } catch {}
+    }
     setPos(p);
     posRef.current = p;
-    // Apply initial position immediately
     if (btnRef.current) {
       btnRef.current.style.transform = `translate3d(${p.x}px, ${p.y}px, 0)`;
     }
@@ -82,6 +93,10 @@ export function useDraggable(initialX: number, initialY: number) {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       setPos({ ...posRef.current });
+      // Persist position to localStorage
+      if (storageKey && d.moved) {
+        try { localStorage.setItem(`aria_widget_pos_${storageKey}`, JSON.stringify(posRef.current)); } catch {}
+      }
     }
 
     document.addEventListener("mousemove", onMove);

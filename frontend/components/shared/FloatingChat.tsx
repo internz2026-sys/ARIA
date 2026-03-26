@@ -39,6 +39,7 @@ export default function FloatingChat() {
   const { pos, btnRef, handleMouseDown, handleClick } = useDraggable(
     typeof window !== "undefined" ? window.innerWidth - 200 : 1000,
     typeof window !== "undefined" ? window.innerHeight - 140 : 660,
+    "ceo-chat",
   );
 
   // Mark all messages as seen when panel is open

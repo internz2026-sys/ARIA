@@ -19,6 +19,7 @@ export default function OfficeKanban() {
   const { pos, btnRef, handleMouseDown, handleClick } = useDraggable(
     typeof window !== "undefined" ? window.innerWidth - 200 : 1000,
     typeof window !== "undefined" ? window.innerHeight - 80 : 700,
+    "task-board",
   );
 
   // Load tasks when dropdown opens
