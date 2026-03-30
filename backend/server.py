@@ -146,6 +146,7 @@ async def onboarding_message(body: OnboardingMessage):
         "message": response,
         "is_complete": agent.is_complete(),
         "questions_answered": agent.questions_answered,
+        "validated_fields": sorted(agent.validated_fields),
     }
 
 

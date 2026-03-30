@@ -12,14 +12,14 @@ interface ChatMessage {
 }
 
 const TOPICS = [
-  { key: "product_description", label: "Product description" },
+  { key: "business_name", label: "Business name" },
+  { key: "product_or_offer", label: "Product / offer" },
   { key: "target_audience", label: "Target audience" },
-  { key: "value_proposition", label: "Value proposition" },
-  { key: "competitors", label: "Competitors" },
-  { key: "marketing_goals", label: "Marketing goals" },
-  { key: "budget_timeline", label: "Budget & timeline" },
+  { key: "problem_solved", label: "Problem solved" },
+  { key: "differentiator", label: "Differentiator" },
+  { key: "channels", label: "Channels" },
   { key: "brand_voice", label: "Brand voice" },
-  { key: "channels_platforms", label: "Channels & platforms" },
+  { key: "goal_30_days", label: "30-day goal" },
 ];
 
 const TOPIC_LABELS: Record<string, string> = Object.fromEntries(TOPICS.map(t => [t.key, t.label]));
@@ -31,6 +31,7 @@ export default function DescribePage() {
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState("");
   const [questionsAnswered, setQuestionsAnswered] = useState(0);
+  const [validatedFields, setValidatedFields] = useState<string[]>([]);
   const [isComplete, setIsComplete] = useState(false);
   const [skippedTopics, setSkippedTopics] = useState<string[]>([]);
   const [skipping, setSkipping] = useState(false);
@@ -76,7 +77,8 @@ export default function DescribePage() {
       });
       const data = await res.json();
       setMessages(prev => [...prev, { role: "aria", text: data.message }]);
-      if (data.questions_answered) setQuestionsAnswered(data.questions_answered);
+      if (data.validated_fields) setValidatedFields(data.validated_fields);
+      if (data.questions_answered != null) setQuestionsAnswered(data.questions_answered);
       if (data.is_complete) setIsComplete(true);
     } catch {
       setMessages(prev => [...prev, { role: "aria", text: "Sorry, I had trouble processing that. Could you try again?" }]);
@@ -131,10 +133,11 @@ export default function DescribePage() {
           <div className="h-full bg-[#534AB7] rounded-full transition-all duration-500" style={{ width: `${progress}%` }} />
         </div>
         <div className="flex gap-1">
-          {TOPICS.map((t, i) => {
+          {TOPICS.map((t) => {
             const isSkipped = skippedTopics.includes(t.key);
-            const isAnswered = i < questionsAnswered && !isSkipped;
-            const isActive = i === questionsAnswered && !isComplete;
+            const isAnswered = validatedFields.includes(t.key);
+            const isActive = !isAnswered && !isSkipped && !isComplete &&
+              TOPICS.findIndex(f => !validatedFields.includes(f.key) && !skippedTopics.includes(f.key)) === TOPICS.indexOf(t);
             return (
               <div
                 key={t.key}
@@ -256,10 +259,11 @@ export default function DescribePage() {
               </div>
 
               <div className="space-y-2">
-                {TOPICS.map((topic, i) => {
+                {TOPICS.map((topic) => {
                   const isSkipped = skippedTopics.includes(topic.key);
-                  const isAnswered = i < questionsAnswered && !isSkipped;
-                  const isActive = i === questionsAnswered && !isComplete;
+                  const isAnswered = validatedFields.includes(topic.key);
+                  const isActive = !isAnswered && !isSkipped && !isComplete &&
+                    TOPICS.findIndex(f => !validatedFields.includes(f.key) && !skippedTopics.includes(f.key)) === TOPICS.indexOf(topic);
                   return (
                     <div
                       key={topic.key}

@@ -7,6 +7,7 @@ that all other agents reference.
 
 import asyncio
 import json
+import re
 
 from backend.config.tenant_schema import (
     TenantConfig, ICPConfig, ProductConfig, GTMPlaybook, BrandVoice,
@@ -95,6 +96,84 @@ EXAMPLES OF VALID INFERENCE
   "<Business> helps <audience> solve <problem> through <offer>, differentiated by <differentiator>."
 - 30_day_gtm_focus:
   "Over the next 30 days, ARIA should prioritize <channels> to support the goal of <goal_30_days>, using a <brand_voice> tone."
+
+ANSWER VALIDATION RULES
+- A checklist item must only be marked complete if the user's response meaningfully answers that specific onboarding question.
+- Do not mark a question complete just because the user replied with any text.
+- Do not mark a question complete if the response is vague, unrelated, evasive, or answers a different question.
+- You must classify each user reply against the 8 onboarding fields before updating progress.
+- Only check the checklist item if the answer matches the current question or clearly answers one of the 8 onboarding fields.
+
+FIELD MATCHING RULE
+Before marking progress, determine whether the user's reply contains a usable answer for any of these fields:
+1. business_name
+2. product_or_offer
+3. target_audience
+4. problem_solved
+5. differentiator
+6. channels
+7. brand_voice
+8. goal_30_days
+
+CHECKLIST UPDATE RULE
+- If the current question is answered properly, mark only that question complete.
+- If the user also included valid answers for later questions, mark those later questions complete too.
+- If the current question is not answered, do not check it.
+- If the answer is for a different onboarding field, store that field but still ask the current unanswered question.
+- Never advance progress using weak guesses.
+
+WHAT COUNTS AS A VALID ANSWER
+A valid answer must be specific enough to save into onboarding config.
+
+Examples:
+- business_name: Valid: "Acme Digital", "BrightPath Studio". Invalid: "I have a business", "not sure yet".
+- product_or_offer: Valid: "We sell skincare products for acne-prone teens". Invalid: "business", "marketing".
+- target_audience: Valid: "Small business owners in the Philippines". Invalid: "everyone", "people".
+- problem_solved: Valid: "We help students organize their thesis workflow". Invalid: "many problems", "it depends".
+- differentiator: Valid: "We provide done-for-you setup in 48 hours". Invalid: "we are good", "better service".
+- channels: Valid: "email and social", "content + ads". Invalid: "online", "all of them" unless normalized.
+- brand_voice: Valid: "professional and friendly". Invalid: "nice", "good tone".
+- goal_30_days: Valid: "Generate 30 qualified leads". Invalid: "grow", "success".
+
+INVALID / WEAK ANSWER HANDLING
+- If the user response does not adequately answer the current question, ask a short corrective prompt for that same question.
+- Do not move to the next question.
+- Do not check the checklist.
+- Do not generate summary/config yet.
+
+Recovery prompt examples:
+- "Please provide your business name."
+- "What exactly do you sell?"
+- "Who is your ideal customer specifically?"
+- "Please choose one or more: email, social, ads, content."
+- "What is your main goal for the next 30 days in one sentence?"
+
+INTELLIGENT EXTRACTION RULE
+- Identify whether the answer belongs to the current question, a future question, multiple questions, or none.
+- Do not confuse brand voice with differentiator, or audience with problem solved, etc.
+- If a message contains multiple valid answers, extract them into the correct fields.
+- If a message contains no valid onboarding answer, keep the same question active.
+
+PROGRESS METADATA TAG (REQUIRED)
+After EVERY response, you MUST append a metadata tag on its own line at the very end:
+
+[VALIDATED: field1, field2, field3]
+
+Where field1, field2, etc. are the field names from this list that NOW have valid answers:
+business_name, product_or_offer, target_audience, problem_solved, differentiator, channels, brand_voice, goal_30_days
+
+Rules for the metadata tag:
+- Include ALL fields that have been validly answered so far (cumulative).
+- If no new field was validated this turn, still include all previously validated fields.
+- If no fields have valid answers yet, use: [VALIDATED: none]
+- This tag must appear on the LAST line of every response, including the final summary.
+- The tag is machine-parsed and will be stripped before showing to the user.
+
+Examples:
+- User answers business name validly: [VALIDATED: business_name]
+- User answers business name and product in one message: [VALIDATED: business_name, product_or_offer]
+- User gives weak answer, nothing new validated: [VALIDATED: business_name] (keep previous)
+- First message, no valid answer yet: [VALIDATED: none]
 
 RE-ONBOARDING / EDIT MODE
 - If previous onboarding exists, do not block access.
@@ -237,39 +316,77 @@ CONVERSATION:
 """
 
 
-ONBOARDING_TOPICS = [
-    "product_description",
+# The 8 onboarding fields in order, matching the system prompt.
+ONBOARDING_FIELDS = [
+    "business_name",
+    "product_or_offer",
     "target_audience",
-    "value_proposition",
-    "competitors",
-    "marketing_goals",
-    "budget_timeline",
+    "problem_solved",
+    "differentiator",
+    "channels",
     "brand_voice",
-    "channels_platforms",
+    "goal_30_days",
 ]
 
-# Map topic index to the config fields that stay empty when skipped
+# Legacy topic names used by the frontend skip UI — maps to field names.
+ONBOARDING_TOPICS = ONBOARDING_FIELDS
+
+# Map field name to the config paths that stay empty when skipped.
 TOPIC_SKIPPED_FIELDS = {
-    "product_description": ["product"],
+    "business_name": ["business_name"],
+    "product_or_offer": ["product"],
     "target_audience": ["icp"],
-    "value_proposition": ["product.value_props", "product.differentiators"],
-    "competitors": ["product.competitors", "gtm_playbook.competitor_differentiation"],
-    "marketing_goals": ["gtm_playbook.kpis", "gtm_playbook.action_plan_30"],
-    "budget_timeline": ["gtm_playbook.action_plan_60", "gtm_playbook.action_plan_90"],
+    "problem_solved": ["icp.pain_points"],
+    "differentiator": ["product.differentiators", "gtm_playbook.competitor_differentiation"],
+    "channels": ["channels", "gtm_playbook.channel_strategy"],
     "brand_voice": ["brand_voice"],
-    "channels_platforms": ["channels", "gtm_playbook.channel_strategy"],
+    "goal_30_days": ["gtm_playbook.action_plan_30"],
 }
+
+# Regex to parse the [VALIDATED: ...] metadata tag from LLM responses.
+_VALIDATED_RE = re.compile(
+    r"\n?\[VALIDATED:\s*(none|[a-z0-9_,\s]+)\]\s*$", re.IGNORECASE
+)
+
+
+def _parse_validated_tag(text: str) -> tuple[str, set[str]]:
+    """Parse and strip the [VALIDATED: ...] metadata tag from LLM output.
+
+    Returns (cleaned_text, set_of_validated_fields).
+    """
+    m = _VALIDATED_RE.search(text)
+    if not m:
+        return text, set()
+    tag_content = m.group(1).strip().lower()
+    cleaned = text[: m.start()].rstrip()
+    if tag_content == "none":
+        return cleaned, set()
+    fields = {f.strip() for f in tag_content.split(",") if f.strip()}
+    # Only keep recognized field names.
+    valid = fields & set(ONBOARDING_FIELDS)
+    return cleaned, valid
 
 
 class OnboardingAgent:
     def __init__(self):
         self.messages: list[dict] = []
-        self.questions_answered = 0
         self.max_questions = 8
         self._complete = False
         self._extracted_config: dict | None = None
         self.skipped_topics: list[str] = []
-        self.current_topic_index: int = 0
+        self.validated_fields: set[str] = set()
+
+    @property
+    def questions_answered(self) -> int:
+        return len(self.validated_fields) + len(self.skipped_topics)
+
+    @property
+    def current_topic_index(self) -> int:
+        """Index of the first field that is neither validated nor skipped."""
+        for i, field in enumerate(ONBOARDING_FIELDS):
+            if field not in self.validated_fields and field not in self.skipped_topics:
+                return i
+        return len(ONBOARDING_FIELDS)
 
     def start_conversation(self) -> str:
         greeting = (
@@ -282,27 +399,26 @@ class OnboardingAgent:
 
     async def process_message(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
-        self.questions_answered += 1
-        if self.current_topic_index < len(ONBOARDING_TOPICS):
-            self.current_topic_index += 1
 
-        # Hard stop: all 8 topics answered
-        if self.questions_answered >= self.max_questions:
-            self._complete = True
-
-        # Build progress directive injected into system prompt
-        progress = f"Topics answered: {self.questions_answered}/{self.max_questions}. "
-        if self._complete:
-            progress += "All topics complete — produce the final structured output now. Do NOT ask another question. Do NOT add any text after the GTM Profile JSON block."
+        # Build progress directive injected into system prompt.
+        answered = self.questions_answered
+        validated_list = ", ".join(sorted(self.validated_fields)) or "none"
+        progress = (
+            f"Fields validated so far: [{validated_list}] ({answered}/{self.max_questions}). "
+        )
+        if answered >= self.max_questions:
+            progress += (
+                "All topics complete — produce the final structured output now. "
+                "Do NOT ask another question. "
+                "Do NOT add any text after the GTM Profile JSON block. "
+                "Still include the [VALIDATED: ...] tag on the last line."
+            )
         else:
-            progress += f"Next topic: {ONBOARDING_TOPICS[self.current_topic_index] if self.current_topic_index < len(ONBOARDING_TOPICS) else 'done'}."
+            next_field = ONBOARDING_FIELDS[self.current_topic_index]
+            progress += f"Current question field: {next_field}."
 
-        # Use native multi-turn messages instead of flattening the whole
-        # conversation into a single user message. This enables prompt caching
-        # on the system prompt + earlier turns, so each turn only pays for
-        # the new message instead of re-processing the entire history.
         # Use higher max_tokens for the final summary which includes JSON blocks.
-        tokens = 1500 if self._complete else 500
+        tokens = 1500 if answered >= self.max_questions else 500
         assistant_text = await call_claude(
             SYSTEM_PROMPT + "\n\n" + progress,
             messages=self.messages,
@@ -310,29 +426,42 @@ class OnboardingAgent:
             model=MODEL_HAIKU,
         )
 
-        self.messages.append({"role": "assistant", "content": assistant_text})
+        # Parse the [VALIDATED: ...] metadata tag and strip it from the response.
+        cleaned_text, new_validated = _parse_validated_tag(assistant_text)
 
-        # Also detect completion from the LLM output
-        if not self._complete and "onboarding complete" in assistant_text.lower():
+        # Update validated fields (cumulative — LLM reports all valid fields).
+        if new_validated:
+            self.validated_fields = new_validated
+
+        # Store the cleaned text (without metadata) in conversation history.
+        self.messages.append({"role": "assistant", "content": cleaned_text})
+
+        # Detect completion.
+        if not self._complete and self.questions_answered >= self.max_questions:
+            self._complete = True
+        if not self._complete and "onboarding complete" in cleaned_text.lower():
             self._complete = True
 
-        return assistant_text
+        return cleaned_text
 
     def skip_current_topic(self) -> str:
         """Skip the current onboarding topic. Returns the name of the skipped topic."""
-        if self.current_topic_index >= len(ONBOARDING_TOPICS):
+        idx = self.current_topic_index
+        if idx >= len(ONBOARDING_FIELDS):
             return ""
-        topic = ONBOARDING_TOPICS[self.current_topic_index]
+        topic = ONBOARDING_FIELDS[idx]
         self.skipped_topics.append(topic)
-        self.questions_answered += 1
-        self.current_topic_index += 1
         self.messages.append({"role": "user", "content": f"[Skipped: {topic}]"})
+        # Check for completion after skip.
+        if self.questions_answered >= self.max_questions:
+            self._complete = True
         return topic
 
     def get_current_topic(self) -> str:
         """Return the current topic being asked about."""
-        if self.current_topic_index < len(ONBOARDING_TOPICS):
-            return ONBOARDING_TOPICS[self.current_topic_index]
+        idx = self.current_topic_index
+        if idx < len(ONBOARDING_FIELDS):
+            return ONBOARDING_FIELDS[idx]
         return ""
 
     def get_skipped_fields(self) -> list[str]:
