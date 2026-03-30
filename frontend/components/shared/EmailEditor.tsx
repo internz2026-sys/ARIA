@@ -1,37 +1,6 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
-import { useEditor, EditorContent } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import Link from "@tiptap/extension-link";
-import Underline from "@tiptap/extension-underline";
-
-/**
- * Extract the inner editable content from a styled HTML email.
- * Strips <html>, <body>, wrapper <div> tags and their inline styles
- * so Tiptap can edit just the text. The template is re-applied on save.
- */
-function extractBodyContent(html: string): string {
-  if (!html) return "";
-  // Try to extract content inside the innermost wrapper div
-  const divMatch = html.match(/<div[^>]*style="[^"]*max-width[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/body>/i);
-  if (divMatch) return divMatch[1].trim();
-  // Try body content
-  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  if (bodyMatch) return bodyMatch[1].trim();
-  return html;
-}
-
-/** Re-wrap edited content in a professional email template. */
-function wrapInEmailTemplate(content: string): string {
-  // If already has full HTML structure, return as-is
-  if (/<html/i.test(content)) return content;
-  return `<html><body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; margin: 0; padding: 0; background-color: #f9f9f9;">
-<div style="max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
-${content}
-</div>
-</body></html>`;
-}
+import React, { useState, useCallback, useRef, useEffect } from "react";
 
 interface EmailEditorProps {
   to: string;
@@ -45,30 +14,7 @@ interface EmailEditorProps {
   cancelLoading?: boolean;
 }
 
-function ToolbarButton({
-  active,
-  onClick,
-  title,
-  children,
-}: {
-  active?: boolean;
-  onClick: () => void;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      className={`p-1.5 rounded transition-colors ${
-        active ? "bg-[#EEEDFE] text-[#534AB7]" : "text-[#5F5E5A] hover:bg-[#F8F8F6] hover:text-[#2C2C2A]"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
+type EditorTab = "preview" | "edit" | "source";
 
 export default function EmailEditor({
   to: initialTo,
@@ -85,55 +31,99 @@ export default function EmailEditor({
   const [subject, setSubject] = useState(initialSubject);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [tab, setTab] = useState<EditorTab>("edit");
+  const [sourceHtml, setSourceHtml] = useState(htmlBody);
+  const editIframeRef = useRef<HTMLIFrameElement>(null);
+  const previewIframeRef = useRef<HTMLIFrameElement>(null);
 
-  const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        heading: { levels: [1, 2, 3] },
-      }),
-      Link.configure({ openOnClick: false }),
-      Underline,
-    ],
-    content: extractBodyContent(htmlBody),
-    editorProps: {
-      attributes: {
-        class: "prose prose-sm max-w-none focus:outline-none min-h-[200px] px-4 py-3 text-[#2C2C2A]",
-      },
-    },
-  });
+  // Set up contentEditable on the edit iframe
+  useEffect(() => {
+    const iframe = editIframeRef.current;
+    if (!iframe || tab !== "edit") return;
 
-  const getWrappedHtml = useCallback(() => {
-    if (!editor) return "";
-    return wrapInEmailTemplate(editor.getHTML());
-  }, [editor]);
+    const onLoad = () => {
+      const doc = iframe.contentDocument;
+      if (!doc?.body) return;
+      doc.body.contentEditable = "true";
+      doc.body.style.outline = "none";
+      doc.body.style.cursor = "text";
+      // Auto-resize
+      const resize = () => {
+        iframe.style.height = `${Math.max(doc.body.scrollHeight + 20, 300)}px`;
+      };
+      resize();
+      const observer = new MutationObserver(resize);
+      observer.observe(doc.body, { childList: true, subtree: true, characterData: true });
+      doc.body.addEventListener("input", resize);
+    };
+
+    iframe.addEventListener("load", onLoad);
+    // If already loaded (re-render), trigger immediately
+    if (iframe.contentDocument?.body) onLoad();
+    return () => iframe.removeEventListener("load", onLoad);
+  }, [tab]);
+
+  // Auto-resize preview iframe
+  useEffect(() => {
+    const iframe = previewIframeRef.current;
+    if (!iframe || tab !== "preview") return;
+    const onLoad = () => {
+      const doc = iframe.contentDocument;
+      if (doc?.body) {
+        iframe.style.height = `${Math.max(doc.body.scrollHeight + 20, 300)}px`;
+      }
+    };
+    iframe.addEventListener("load", onLoad);
+    return () => iframe.removeEventListener("load", onLoad);
+  }, [tab]);
+
+  /** Get the current HTML from whichever mode is active */
+  const getCurrentHtml = useCallback((): string => {
+    if (tab === "source") return sourceHtml;
+    if (tab === "edit") {
+      const doc = editIframeRef.current?.contentDocument;
+      if (doc) return "<!DOCTYPE html>" + doc.documentElement.outerHTML;
+    }
+    return sourceHtml;
+  }, [tab, sourceHtml]);
+
+  // Sync HTML between tabs when switching
+  const handleTabSwitch = (newTab: EditorTab) => {
+    // Save current state before switching
+    const current = getCurrentHtml();
+    setSourceHtml(current);
+    setTab(newTab);
+  };
 
   const handleSave = useCallback(async () => {
-    if (!editor) return;
     setSaving(true);
     try {
-      await onSave({ to, subject, html_body: getWrappedHtml() });
+      await onSave({ to, subject, html_body: getCurrentHtml() });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {}
     setSaving(false);
-  }, [editor, to, subject, onSave, getWrappedHtml]);
+  }, [to, subject, onSave, getCurrentHtml]);
 
   const handleSend = useCallback(async () => {
-    if (!editor) return;
     setSaving(true);
     try {
-      await onSave({ to, subject, html_body: getWrappedHtml() });
+      await onSave({ to, subject, html_body: getCurrentHtml() });
     } catch {}
     setSaving(false);
     onSend();
-  }, [editor, to, subject, onSave, onSend, getWrappedHtml]);
+  }, [to, subject, onSave, onSend, getCurrentHtml]);
 
-  if (!editor) return null;
+  const tabs: { key: EditorTab; label: string; desc: string }[] = [
+    { key: "edit", label: "Edit", desc: "Click text to edit" },
+    { key: "preview", label: "Preview", desc: "How it looks when sent" },
+    { key: "source", label: "Source", desc: "Edit raw HTML" },
+  ];
 
   return (
-    <div className="flex flex-col w-full">
+    <div className="flex flex-col w-full h-full">
       {/* Envelope fields */}
-      <div className="border-b border-[#E0DED8] p-5 space-y-3">
+      <div className="border-b border-[#E0DED8] p-5 space-y-3 shrink-0">
         <div className="flex items-center gap-2">
           <label className="text-xs font-semibold text-[#5F5E5A] uppercase w-16 shrink-0">To</label>
           <input
@@ -156,8 +146,8 @@ export default function EmailEditor({
         </div>
       </div>
 
-      {/* Action bar — above editor for quick access */}
-      <div className="border-b border-[#E0DED8] px-5 py-3 flex items-center gap-2 bg-[#F8F8F6]">
+      {/* Action bar */}
+      <div className="border-b border-[#E0DED8] px-5 py-3 flex items-center gap-2 bg-[#F8F8F6] shrink-0">
         <button
           onClick={handleSend}
           disabled={sendDisabled || sendLoading || !to}
@@ -185,54 +175,63 @@ export default function EmailEditor({
         </button>
       </div>
 
-      {/* Toolbar */}
-      <div className="border-b border-[#E0DED8] px-5 py-1.5 flex items-center gap-0.5 flex-wrap">
-        <ToolbarButton active={editor.isActive("bold")} onClick={() => editor.chain().focus().toggleBold().run()} title="Bold">
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M15.6 10.79c.97-.67 1.65-1.77 1.65-2.79 0-2.26-1.75-4-4-4H7v14h7.04c2.09 0 3.71-1.7 3.71-3.79 0-1.52-.86-2.82-2.15-3.42zM10 6.5h3c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-3v-3zm3.5 9H10v-3h3.5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5z"/></svg>
-        </ToolbarButton>
-        <ToolbarButton active={editor.isActive("italic")} onClick={() => editor.chain().focus().toggleItalic().run()} title="Italic">
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M10 4v3h2.21l-3.42 8H6v3h8v-3h-2.21l3.42-8H18V4z"/></svg>
-        </ToolbarButton>
-        <ToolbarButton active={editor.isActive("underline")} onClick={() => editor.chain().focus().toggleUnderline().run()} title="Underline">
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17c3.31 0 6-2.69 6-6V3h-2.5v8c0 1.93-1.57 3.5-3.5 3.5S8.5 12.93 8.5 11V3H6v8c0 3.31 2.69 6 6 6zm-7 2v2h14v-2H5z"/></svg>
-        </ToolbarButton>
-
-        <div className="w-px h-5 bg-[#E0DED8] mx-1" />
-
-        <ToolbarButton active={editor.isActive("bulletList")} onClick={() => editor.chain().focus().toggleBulletList().run()} title="Bullet list">
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z"/></svg>
-        </ToolbarButton>
-        <ToolbarButton active={editor.isActive("orderedList")} onClick={() => editor.chain().focus().toggleOrderedList().run()} title="Numbered list">
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M2 17h2v.5H3v1h1v.5H2v1h3v-4H2v1zm1-9h1V4H2v1h1v3zm-1 3h1.8L2 13.1v.9h3v-1H3.2L5 10.9V10H2v1zm5-6v2h14V5H7zm0 14h14v-2H7v2zm0-6h14v-2H7v2z"/></svg>
-        </ToolbarButton>
-
-        <div className="w-px h-5 bg-[#E0DED8] mx-1" />
-
-        <ToolbarButton
-          active={editor.isActive("link")}
-          onClick={() => {
-            if (editor.isActive("link")) {
-              editor.chain().focus().unsetLink().run();
-            } else {
-              const url = prompt("Enter URL:");
-              if (url) editor.chain().focus().setLink({ href: url }).run();
-            }
-          }}
-          title="Link"
-        >
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>
-        </ToolbarButton>
-
-        <ToolbarButton onClick={() => editor.chain().focus().setHorizontalRule().run()} title="Divider">
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M4 11h16v2H4z"/></svg>
-        </ToolbarButton>
+      {/* Tabs: Edit / Preview / Source */}
+      <div className="border-b border-[#E0DED8] px-5 flex items-center gap-1 shrink-0">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => handleTabSwitch(t.key)}
+            className={`px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              tab === t.key
+                ? "border-[#534AB7] text-[#534AB7]"
+                : "border-transparent text-[#5F5E5A] hover:text-[#2C2C2A]"
+            }`}
+            title={t.desc}
+          >
+            {t.label}
+          </button>
+        ))}
+        <span className="ml-auto text-[10px] text-[#9E9C95]">
+          {tabs.find((t) => t.key === tab)?.desc}
+        </span>
       </div>
 
-      {/* Editor body */}
+      {/* Content area */}
       <div className="flex-1 overflow-auto bg-white">
-        <EditorContent editor={editor} />
-      </div>
+        {/* Edit mode: contentEditable iframe — preserves all HTML/CSS styling */}
+        {tab === "edit" && (
+          <iframe
+            ref={editIframeRef}
+            key={"edit-" + htmlBody.slice(0, 50)}
+            srcDoc={sourceHtml}
+            title="Edit email"
+            className="w-full min-h-[300px] border-0"
+            sandbox="allow-same-origin"
+          />
+        )}
 
+        {/* Preview mode: read-only render */}
+        {tab === "preview" && (
+          <iframe
+            ref={previewIframeRef}
+            srcDoc={getCurrentHtml()}
+            title="Email preview"
+            className="w-full min-h-[300px] border-0"
+            sandbox="allow-same-origin"
+          />
+        )}
+
+        {/* Source mode: raw HTML editing with monospace font */}
+        {tab === "source" && (
+          <textarea
+            value={sourceHtml}
+            onChange={(e) => setSourceHtml(e.target.value)}
+            spellCheck={false}
+            className="w-full h-full min-h-[400px] p-4 font-mono text-xs text-[#2C2C2A] bg-[#1e1e1e] text-[#d4d4d4] leading-relaxed resize-none focus:outline-none"
+            style={{ color: "#d4d4d4", backgroundColor: "#1e1e1e", tabSize: 2 }}
+          />
+        )}
+      </div>
     </div>
   );
 }

@@ -30,14 +30,24 @@ class EmailMarketerAgent(BaseAgent):
             send_note = f"""
 
 IMPORTANT: This email will be SENT to {recipient} from {config.owner_email} after you draft it.
-Write a complete, professional, ready-to-send email. Include a clear subject line.
+Write a complete, professional, ready-to-send email.
 
 Structure your response as:
 SUBJECT: <the subject line>
 ---
 <the full HTML email body>
 
-Make the HTML body professional with proper formatting. Do NOT include placeholder text."""
+The HTML body MUST be a complete, self-contained HTML email with ALL styling inline.
+Use this exact structure:
+- Start with <html><body style="...">
+- Use a centered container <div style="max-width:600px; margin:0 auto; ...">
+- Use inline styles on EVERY element (background colors, padding, font sizes, borders, etc.)
+- Use <table> elements for layout sections (email clients need tables, not flexbox/grid)
+- Include styled section headers with background colors
+- Include styled CTA buttons with background-color and padding
+- Use professional color scheme with brand-appropriate colors
+- Do NOT use <style> blocks or CSS classes — ALL styles must be inline
+- Do NOT include placeholder text — write real, ready-to-send content."""
 
         return f"""You are the Email Marketer for {config.business_name}, an AI marketing agent
 that creates complete email campaigns for developer-focused products.
@@ -112,13 +122,22 @@ def _extract_subject_and_body(content: str) -> tuple[str, str]:
 
 
 def _wrap_html(body: str) -> str:
-    """Ensure body is wrapped in basic HTML if it isn't already."""
-    if "<html" in body.lower() or "<body" in body.lower():
+    """Ensure body is wrapped in a complete HTML email structure."""
+    body_lower = body.lower()
+    # Already a complete HTML document
+    if "<html" in body_lower:
         return body
-    # Convert markdown-ish text to basic HTML
+    # Rich HTML fragment (has styled elements, tables, divs) — wrap without mangling
+    if any(tag in body_lower for tag in ["<table", "<div", "<td", 'style="', "<h1", "<h2", "<h3", "<section"]):
+        return f"""<html><body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; margin: 0; padding: 0; background-color: #f9f9f9;">
+<div style="max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+{body}
+</div>
+</body></html>"""
+    # Plain text — convert to basic HTML
     html_body = body.replace("\n\n", "</p><p>").replace("\n", "<br>")
-    return f"""<html><body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
-<div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+    return f"""<html><body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; margin: 0; padding: 0; background-color: #f9f9f9;">
+<div style="max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
 <p>{html_body}</p>
 </div>
 </body></html>"""
