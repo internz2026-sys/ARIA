@@ -6,6 +6,33 @@ import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
 import Underline from "@tiptap/extension-underline";
 
+/**
+ * Extract the inner editable content from a styled HTML email.
+ * Strips <html>, <body>, wrapper <div> tags and their inline styles
+ * so Tiptap can edit just the text. The template is re-applied on save.
+ */
+function extractBodyContent(html: string): string {
+  if (!html) return "";
+  // Try to extract content inside the innermost wrapper div
+  const divMatch = html.match(/<div[^>]*style="[^"]*max-width[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/body>/i);
+  if (divMatch) return divMatch[1].trim();
+  // Try body content
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch) return bodyMatch[1].trim();
+  return html;
+}
+
+/** Re-wrap edited content in a professional email template. */
+function wrapInEmailTemplate(content: string): string {
+  // If already has full HTML structure, return as-is
+  if (/<html/i.test(content)) return content;
+  return `<html><body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6; margin: 0; padding: 0; background-color: #f9f9f9;">
+<div style="max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+${content}
+</div>
+</body></html>`;
+}
+
 interface EmailEditorProps {
   to: string;
   subject: string;
@@ -67,7 +94,7 @@ export default function EmailEditor({
       Link.configure({ openOnClick: false }),
       Underline,
     ],
-    content: htmlBody,
+    content: extractBodyContent(htmlBody),
     editorProps: {
       attributes: {
         class: "prose prose-sm max-w-none focus:outline-none min-h-[200px] px-4 py-3 text-[#2C2C2A]",
@@ -75,27 +102,31 @@ export default function EmailEditor({
     },
   });
 
+  const getWrappedHtml = useCallback(() => {
+    if (!editor) return "";
+    return wrapInEmailTemplate(editor.getHTML());
+  }, [editor]);
+
   const handleSave = useCallback(async () => {
     if (!editor) return;
     setSaving(true);
     try {
-      await onSave({ to, subject, html_body: editor.getHTML() });
+      await onSave({ to, subject, html_body: getWrappedHtml() });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {}
     setSaving(false);
-  }, [editor, to, subject, onSave]);
+  }, [editor, to, subject, onSave, getWrappedHtml]);
 
   const handleSend = useCallback(async () => {
     if (!editor) return;
-    // Auto-save before sending
     setSaving(true);
     try {
-      await onSave({ to, subject, html_body: editor.getHTML() });
+      await onSave({ to, subject, html_body: getWrappedHtml() });
     } catch {}
     setSaving(false);
     onSend();
-  }, [editor, to, subject, onSave, onSend]);
+  }, [editor, to, subject, onSave, onSend, getWrappedHtml]);
 
   if (!editor) return null;
 
