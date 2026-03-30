@@ -681,6 +681,11 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
         "thread_id": gmail_thread_id,
         "status": "awaiting_reply",
     }, room=tenant_id)
+    await _notify(
+        tenant_id, "email_sent", f"Email sent to {to}",
+        body=subject, href="/conversations",
+        category="status", priority="normal",
+    )
 
     return {"status": "sent", "message_id": gmail_message_id, "thread_id": gmail_thread_id}
 
@@ -890,6 +895,39 @@ Keep it professional, concise, and on-brand. Do not include placeholder text."""
     }
 
 
+async def _notify(
+    tenant_id: str,
+    type: str,
+    title: str,
+    body: str = "",
+    href: str = "",
+    category: str = "inbox",
+    priority: str = "normal",
+) -> dict | None:
+    """Persist a notification and emit it via Socket.IO."""
+    try:
+        from backend.config.loader import _get_supabase
+        sb = _get_supabase()
+        row = {
+            "tenant_id": tenant_id,
+            "type": type,
+            "category": category,
+            "title": title,
+            "body": body,
+            "href": href,
+            "priority": priority,
+            "is_read": False,
+            "is_seen": False,
+        }
+        result = sb.table("notifications").insert(row).execute()
+        saved = result.data[0] if result.data else row
+        await sio.emit("notification", saved, room=tenant_id)
+        return saved
+    except Exception as e:
+        logger.warning("Failed to save notification: %s", e)
+        return None
+
+
 async def _emit_sync_events(tenant_id: str, sync_result: dict):
     """Emit Socket.IO events for new inbound replies found during Gmail sync."""
     for reply in sync_result.get("new_replies", []):
@@ -910,6 +948,14 @@ async def _emit_sync_events(tenant_id: str, sync_result: dict):
             "subject": reply.get("subject", ""),
             "snippet": reply.get("snippet", ""),
         }, room=tenant_id)
+        await _notify(
+            tenant_id, "reply_received",
+            f"Reply from {reply.get('sender', 'someone')}",
+            body=reply.get("snippet", "")[:200],
+            href="/conversations",
+            category="conversation",
+            priority="high",
+        )
 
 
 @app.post("/api/email/{tenant_id}/sync")
@@ -931,6 +977,83 @@ async def trigger_sync_all():
         if tid:
             await _emit_sync_events(tid, r)
     return {"tenants_synced": len(results), "results": results}
+
+
+# ─── Notifications ───
+
+@app.get("/api/notifications/{tenant_id}/counts")
+async def notification_counts(tenant_id: str):
+    """Get unread notification counts by category."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    result = sb.table("notifications").select("category", count="exact").eq(
+        "tenant_id", tenant_id
+    ).eq("is_read", False).execute()
+    # Count per category from raw rows
+    counts: dict[str, int] = {}
+    for row in (result.data or []):
+        cat = row.get("category", "other")
+        counts[cat] = counts.get(cat, 0) + 1
+    total = sum(counts.values())
+    return {
+        "inbox_unread": counts.get("inbox", 0),
+        "conversations_unread": counts.get("conversation", 0),
+        "system_unread": counts.get("system", 0),
+        "status_unread": counts.get("status", 0),
+        "total_unread": total,
+    }
+
+
+@app.get("/api/notifications/{tenant_id}")
+async def list_notifications(tenant_id: str, category: str = "", unread_only: bool = False, limit: int = 30):
+    """List recent notifications for a tenant."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    query = sb.table("notifications").select("*").eq("tenant_id", tenant_id)
+    if category:
+        query = query.eq("category", category)
+    if unread_only:
+        query = query.eq("is_read", False)
+    result = query.order("created_at", desc=True).limit(limit).execute()
+    return {"notifications": result.data or []}
+
+
+class MarkReadRequest(BaseModel):
+    ids: list[str] = []  # empty = mark all
+
+
+@app.post("/api/notifications/{tenant_id}/mark-read")
+async def mark_notifications_read(tenant_id: str, body: MarkReadRequest):
+    """Mark specific notification IDs (or all) as read."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    now = datetime.now(timezone.utc).isoformat()
+    if body.ids:
+        sb.table("notifications").update({"is_read": True, "updated_at": now}).eq(
+            "tenant_id", tenant_id
+        ).in_("id", body.ids).execute()
+    else:
+        sb.table("notifications").update({"is_read": True, "updated_at": now}).eq(
+            "tenant_id", tenant_id
+        ).eq("is_read", False).execute()
+    return {"ok": True}
+
+
+@app.post("/api/notifications/{tenant_id}/mark-seen")
+async def mark_notifications_seen(tenant_id: str, body: MarkReadRequest):
+    """Mark specific notification IDs (or all) as seen."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    now = datetime.now(timezone.utc).isoformat()
+    if body.ids:
+        sb.table("notifications").update({"is_seen": True, "updated_at": now}).eq(
+            "tenant_id", tenant_id
+        ).in_("id", body.ids).execute()
+    else:
+        sb.table("notifications").update({"is_seen": True, "updated_at": now}).eq(
+            "tenant_id", tenant_id
+        ).eq("is_seen", False).execute()
+    return {"ok": True}
 
 
 # ─── Webhook Endpoints ───
@@ -1533,6 +1656,14 @@ async def _run_agent_to_inbox(
                 "priority": priority,
                 "created_at": saved.get("created_at", ""),
             }, room=tenant_id)
+            n_type = "approval_needed" if item_status == "draft_pending_approval" else "inbox_new_item"
+            await _notify(
+                tenant_id, n_type, title,
+                body=content[:200] if content else "",
+                href="/inbox",
+                category="inbox",
+                priority=priority,
+            )
 
         # Mark task as done and notify frontend in real-time
         if task_id:

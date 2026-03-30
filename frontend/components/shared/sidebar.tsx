@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { useNotifications } from "@/lib/use-notifications";
 
 const navItems = [
   {
@@ -51,7 +52,7 @@ const navItems = [
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
       </svg>
     ),
-    badge: 0,
+    badgeKey: "inbox" as const,
   },
   {
     label: "Conversations",
@@ -61,6 +62,7 @@ const navItems = [
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
       </svg>
     ),
+    badgeKey: "conversations" as const,
   },
   {
     label: "Agents",
@@ -105,6 +107,7 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [user, setUser] = useState<{ name: string; email: string; initials: string } | null>(null);
+  const { badges } = useNotifications();
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -158,11 +161,16 @@ export default function Sidebar() {
             >
               {item.icon}
               <span>{item.label}</span>
-              {!!item.badge && (
-                <span className="ml-auto bg-[#D85A30] text-white text-xs font-semibold px-2 py-0.5 rounded-full">
-                  {item.badge}
-                </span>
-              )}
+              {(() => {
+                const key = (item as any).badgeKey as keyof typeof badges | undefined;
+                const count = key ? badges[key] || 0 : 0;
+                if (!count) return null;
+                return (
+                  <span className="ml-auto bg-[#D85A30] text-white text-xs font-semibold px-2 py-0.5 rounded-full min-w-[20px] text-center">
+                    {count > 99 ? "99+" : count}
+                  </span>
+                );
+              })()}
             </Link>
           );
         })}

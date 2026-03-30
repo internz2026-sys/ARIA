@@ -6,7 +6,10 @@ import { supabase } from "@/lib/supabase";
 import Sidebar from "@/components/shared/sidebar";
 import FloatingChat from "@/components/shared/FloatingChat";
 import OfficeKanban from "@/components/virtual-office/OfficeKanban";
+import NotificationBell from "@/components/shared/NotificationBell";
+import ToastContainer from "@/components/shared/ToastContainer";
 import { CeoChatProvider } from "@/lib/use-ceo-chat";
+import { NotificationProvider } from "@/lib/use-notifications";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -72,6 +75,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <CeoChatProvider>
+      <NotificationProvider>
       <div className="min-h-screen bg-[#F8F8F6] flex">
         {/* Mobile overlay */}
         {sidebarOpen && (
@@ -107,12 +111,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
               </svg>
             </button>
-            <div className="ml-3 flex items-center gap-2">
+            <div className="ml-3 flex items-center gap-2 flex-1">
               <div className="w-7 h-7 rounded-lg bg-[#534AB7] flex items-center justify-center">
                 <span className="text-white font-bold text-xs">A</span>
               </div>
               <span className="text-[#2C2C2A] font-semibold text-base">ARIA</span>
             </div>
+            <NotificationBell />
+          </div>
+
+          {/* Desktop header with notification bell */}
+          <div className="hidden lg:flex sticky top-0 z-30 bg-[#F8F8F6] h-14 items-center justify-end px-8 border-b border-[#E0DED8]/50">
+            <NotificationBell />
           </div>
 
           {/* Page content */}
@@ -122,7 +132,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {/* Floating widgets — available on every dashboard page */}
         <FloatingChat />
         <OfficeKanban />
+        <ToastContainer />
       </div>
+      </NotificationProvider>
     </CeoChatProvider>
   );
 }

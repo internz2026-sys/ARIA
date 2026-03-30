@@ -73,3 +73,19 @@ export const emailThreads = {
 export const analytics = {
   getData: (tenantId: string, dateRange: string) => fetchAPI(`/api/analytics/${tenantId}?date_range=${dateRange}`),
 };
+
+export const notificationsApi = {
+  counts: (tenantId: string) => fetchAPI(`/api/notifications/${tenantId}/counts`),
+  list: (tenantId: string, unreadOnly = false, limit = 30) =>
+    fetchAPI(`/api/notifications/${tenantId}?unread_only=${unreadOnly}&limit=${limit}`),
+  markRead: (tenantId: string, ids?: string[]) =>
+    fetchAPI(`/api/notifications/${tenantId}/mark-read`, {
+      method: "POST",
+      body: JSON.stringify({ ids: ids || [] }),
+    }),
+  markSeen: (tenantId: string, ids?: string[]) =>
+    fetchAPI(`/api/notifications/${tenantId}/mark-seen`, {
+      method: "POST",
+      body: JSON.stringify({ ids: ids || [] }),
+    }),
+};
