@@ -99,6 +99,42 @@ function parseTable(
   return { element, consumed: i - startIdx };
 }
 
+function parseCodeBlock(
+  lines: string[],
+  startIdx: number,
+  keyPrefix: string
+): { element: React.ReactNode; consumed: number } {
+  const openMatch = lines[startIdx].trim().match(/^```(\w*)$/);
+  if (!openMatch) return { element: null, consumed: 0 };
+
+  const lang = openMatch[1] || "";
+  const codeLines: string[] = [];
+  let i = startIdx + 1;
+
+  while (i < lines.length && !lines[i].trim().startsWith("```")) {
+    codeLines.push(lines[i]);
+    i++;
+  }
+
+  // Skip closing ```
+  if (i < lines.length) i++;
+
+  const element = (
+    <div key={keyPrefix} className="my-2 rounded-lg overflow-hidden border border-[#E0DED8]">
+      {lang && (
+        <div className="px-3 py-1 bg-[#F0F0EC] text-[10px] font-mono text-[#5F5E5A] uppercase tracking-wide">
+          {lang}
+        </div>
+      )}
+      <pre className="px-3 py-2 bg-[#F8F8F6] overflow-x-auto text-xs leading-relaxed">
+        <code className="font-mono text-[#2C2C2A]">{codeLines.join("\n")}</code>
+      </pre>
+    </div>
+  );
+
+  return { element, consumed: i - startIdx };
+}
+
 export function renderMarkdown(text: string): React.ReactNode {
   const lines = text.split("\n");
   const elements: React.ReactNode[] = [];
@@ -112,6 +148,16 @@ export function renderMarkdown(text: string): React.ReactNode {
     if (!trimmed) {
       i++;
       continue;
+    }
+
+    // Code block (```json ... ```)
+    if (trimmed.startsWith("```")) {
+      const { element, consumed } = parseCodeBlock(lines, i, `code-${i}`);
+      if (element && consumed > 0) {
+        elements.push(element);
+        i += consumed;
+        continue;
+      }
     }
 
     // Horizontal rule (---, ***, ___)
