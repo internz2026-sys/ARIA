@@ -63,5 +63,5 @@ def update_tenant_config(tenant_id: str | UUID, updates: dict) -> TenantConfig:
 
 def get_active_tenants() -> list[TenantConfig]:
     sb = _get_supabase()
-    result = sb.table("tenant_configs").select("*").eq("is_active", True).execute()
+    result = sb.table("tenant_configs").select("*").execute()
     return [TenantConfig(**row) for row in result.data]
