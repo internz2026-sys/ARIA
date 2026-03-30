@@ -1339,6 +1339,7 @@ def _save_inbox_item(
     email_draft: dict | None = None,
 ) -> dict | None:
     """Save an agent output to the inbox_items table. Returns the saved row."""
+    _logger = logging.getLogger("aria.inbox")
     try:
         from backend.config.loader import _get_supabase
         sb = _get_supabase()
@@ -1358,9 +1359,10 @@ def _save_inbox_item(
         if email_draft:
             row["email_draft"] = email_draft
         result = sb.table("inbox_items").insert(row).execute()
+        _logger.info("Saved inbox item: agent=%s title=%s status=%s", agent, title[:60], status)
         return result.data[0] if result.data else None
     except Exception as e:
-        logging.getLogger("aria.inbox").error("Failed to save inbox item: %s", e)
+        _logger.error("Failed to save inbox item: %s", e)
         return None
 
 
@@ -1394,10 +1396,14 @@ async def _run_agent_to_inbox(
                                      action="return_and_work")
 
         # Phase 3: Actually run the agent (this is where real time is spent)
+        _logger = logging.getLogger("aria.inbox")
+        _logger.info("Running agent %s for tenant %s — task: %s", agent_id, tenant_id, task_desc[:100])
         result = await agent_module.run(tenant_id, context={"action": task_desc})
         content = result.get("result", "")
+        _logger.info("Agent %s returned %d chars, keys: %s", agent_id, len(content), list(result.keys()))
 
-        if not content:
+        if not content and not result.get("email_draft"):
+            _logger.warning("Agent %s returned empty content for tenant %s", agent_id, tenant_id)
             # No content but task should still be marked done
             if task_id:
                 try:
