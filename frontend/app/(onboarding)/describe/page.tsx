@@ -79,7 +79,24 @@ export default function DescribePage() {
       setMessages(prev => [...prev, { role: "aria", text: data.message }]);
       if (data.validated_fields) setValidatedFields(data.validated_fields);
       if (data.questions_answered != null) setQuestionsAnswered(data.questions_answered);
-      if (data.is_complete) setIsComplete(true);
+      if (data.is_complete) {
+        setIsComplete(true);
+        // Eagerly extract and cache config so /review has data even if the
+        // backend session is lost on Railway redeploy before the user navigates.
+        localStorage.setItem("aria_onboarding_session", sessionId);
+        fetch(`${API_URL}/api/onboarding/extract-config`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId }),
+        })
+          .then(r => r.ok ? r.json() : null)
+          .then(d => {
+            if (d?.config) {
+              localStorage.setItem("aria_onboarding_config", JSON.stringify(d.config));
+            }
+          })
+          .catch(() => { /* non-blocking */ });
+      }
     } catch {
       setMessages(prev => [...prev, { role: "aria", text: "Sorry, I had trouble processing that. Could you try again?" }]);
     }

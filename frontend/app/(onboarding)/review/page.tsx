@@ -16,19 +16,38 @@ export default function ReviewPage() {
       router.push("/describe");
       return;
     }
+
+    // Try to load cached config first so we have a fallback.
+    const cached = localStorage.getItem("aria_onboarding_config");
+    let fallbackCfg: Record<string, any> | null = null;
+    if (cached) {
+      try { fallbackCfg = JSON.parse(cached); } catch { /* ignore */ }
+    }
+
     fetch(`${API_URL}/api/onboarding/extract-config`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId }),
     })
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error("Session expired");
+        return r.json();
+      })
       .then(data => {
         const cfg = data.config || {};
         setConfig(cfg);
         localStorage.setItem("aria_onboarding_config", JSON.stringify(cfg));
         setLoading(false);
       })
-      .catch(() => { setConfig({}); setLoading(false); });
+      .catch(() => {
+        // API failed (session lost on deploy) — use cached config.
+        if (fallbackCfg && Object.keys(fallbackCfg).length > 0) {
+          setConfig(fallbackCfg);
+        } else {
+          setConfig({});
+        }
+        setLoading(false);
+      });
   }, [router]);
 
   if (loading) {
