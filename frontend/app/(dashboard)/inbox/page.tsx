@@ -221,7 +221,7 @@ export default function InboxPage() {
     if (checkedIds.size === 0) return;
     setActionLoading("bulk-delete");
     try {
-      await Promise.all([...checkedIds].map((id) => inbox.remove(id)));
+      await Promise.all(Array.from(checkedIds).map((id) => inbox.remove(id)));
       setItems((prev) => prev.filter((i) => !checkedIds.has(i.id)));
       if (selected && checkedIds.has(selected.id)) setSelected(null);
       setCheckedIds(new Set());
@@ -233,7 +233,7 @@ export default function InboxPage() {
     if (checkedIds.size === 0) return;
     setActionLoading("bulk-complete");
     try {
-      await Promise.all([...checkedIds].map((id) => inbox.update(id, { status: "completed" })));
+      await Promise.all(Array.from(checkedIds).map((id) => inbox.update(id, { status: "completed" })));
       setItems((prev) =>
         prev.map((i) => (checkedIds.has(i.id) ? { ...i, status: "completed" } : i))
       );
