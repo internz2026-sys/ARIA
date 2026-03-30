@@ -179,6 +179,7 @@ class SaveConfig(BaseModel):
     owner_email: str
     owner_name: str
     active_agents: list[str] | None = None
+    existing_tenant_id: str | None = None  # If set, overwrite this tenant
 
 
 @app.post("/api/onboarding/save-config")
@@ -188,7 +189,7 @@ async def save_config(body: SaveConfig):
     agent = onboarding_sessions.get(body.session_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Session not found")
-    tenant_id = str(uuid.uuid4())
+    tenant_id = body.existing_tenant_id or str(uuid.uuid4())
     config = await agent.build_tenant_config(tenant_id, body.owner_email, body.owner_name, body.active_agents)
 
     # Generate condensed brief — all agents use this instead of full context
@@ -210,6 +211,7 @@ class SaveConfigDirect(BaseModel):
     owner_name: str
     active_agents: list[str] | None = None
     skipped_topics: list[str] | None = None
+    existing_tenant_id: str | None = None  # If set, overwrite this tenant
 
 
 @app.post("/api/onboarding/save-config-direct")
@@ -221,7 +223,7 @@ async def save_config_direct(body: SaveConfigDirect):
 
     extracted = body.config
     has_skips = bool(body.skipped_topics)
-    tenant_id = str(uuid.uuid4())
+    tenant_id = body.existing_tenant_id or str(uuid.uuid4())
     config = TenantConfig(
         tenant_id=tenant_id,
         business_name=extracted.get("business_name", ""),
@@ -248,6 +250,85 @@ async def save_config_direct(body: SaveConfigDirect):
 
     save_tenant_config(config)
     return {"tenant_id": tenant_id, "config": config.model_dump(mode="json")}
+
+
+# ─── Re-onboarding / Edit Mode ───
+
+@app.get("/api/tenant/{tenant_id}/onboarding-data")
+async def get_onboarding_data(tenant_id: str):
+    """Return existing onboarding answers mapped to the 8 onboarding fields."""
+    try:
+        config = get_tenant_config(tenant_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {
+        "business_name": config.business_name,
+        "offer": config.product.description or config.description or "",
+        "target_audience": ", ".join(config.icp.target_titles) if config.icp.target_titles else "",
+        "problem_solved": ", ".join(config.icp.pain_points) if config.icp.pain_points else "",
+        "differentiator": ", ".join(config.product.differentiators) if config.product.differentiators else "",
+        "channels": config.channels or [],
+        "brand_voice": config.brand_voice.tone or "",
+        "thirty_day_goal": config.gtm_playbook.action_plan_30 or "",
+        "product_name": config.product.name or "",
+        "industry": config.industry or "technology",
+        "active_agents": config.active_agents or [],
+        "onboarding_status": config.onboarding_status,
+    }
+
+
+class UpdateOnboarding(BaseModel):
+    """Partial update of onboarding fields."""
+    business_name: str | None = None
+    offer: str | None = None
+    target_audience: str | None = None
+    problem_solved: str | None = None
+    differentiator: str | None = None
+    channels: list[str] | None = None
+    brand_voice: str | None = None
+    thirty_day_goal: str | None = None
+
+
+@app.post("/api/tenant/{tenant_id}/update-onboarding")
+async def update_onboarding(tenant_id: str, body: UpdateOnboarding):
+    """Update specific onboarding fields on an existing tenant, then regenerate brief."""
+    from backend.config.brief import generate_agent_brief
+
+    try:
+        config = get_tenant_config(tenant_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    # Apply updates only for provided fields
+    if body.business_name is not None:
+        config.business_name = body.business_name
+    if body.offer is not None:
+        config.product.description = body.offer
+        config.description = body.offer
+    if body.target_audience is not None:
+        config.icp.target_titles = [t.strip() for t in body.target_audience.split(",") if t.strip()]
+    if body.problem_solved is not None:
+        config.icp.pain_points = [p.strip() for p in body.problem_solved.split(",") if p.strip()]
+    if body.differentiator is not None:
+        config.product.differentiators = [d.strip() for d in body.differentiator.split(",") if d.strip()]
+    if body.channels is not None:
+        config.channels = body.channels
+    if body.brand_voice is not None:
+        config.brand_voice.tone = body.brand_voice
+    if body.thirty_day_goal is not None:
+        config.gtm_playbook.action_plan_30 = body.thirty_day_goal
+
+    config.onboarding_status = "completed"
+    config.skipped_fields = []
+
+    # Regenerate brief with updated data
+    try:
+        config.agent_brief = await generate_agent_brief(config)
+    except Exception as e:
+        logger.warning("Brief regeneration failed: %s", e)
+
+    save_tenant_config(config)
+    return {"ok": True, "tenant_id": str(config.tenant_id)}
 
 
 # ─── Agent Brief (re)generation ───

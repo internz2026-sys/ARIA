@@ -92,6 +92,19 @@ export default function SettingsPage() {
           </div>
 
           <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+            <h2 className="text-base font-semibold text-[#2C2C2A] mb-2">Business Profile</h2>
+            <p className="text-sm text-[#5F5E5A] mb-4">Edit or redo your onboarding to update how ARIA markets your product.</p>
+            <div className="flex items-center gap-3">
+              <a href="/edit-profile" className="px-4 py-2 bg-[#534AB7] text-white rounded-lg text-sm font-medium hover:bg-[#433AA0] transition-colors">
+                Edit answers
+              </a>
+              <a href="/welcome" className="px-4 py-2 border border-[#E0DED8] text-[#5F5E5A] rounded-lg text-sm font-medium hover:bg-[#F8F8F6] transition-colors">
+                Restart onboarding
+              </a>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
             <h2 className="text-base font-semibold text-[#2C2C2A] mb-4">Brand Voice</h2>
             <p className="text-sm text-[#5F5E5A] mb-4">Select the tone ARIA uses when creating content for your brand.</p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

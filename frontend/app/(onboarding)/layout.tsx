@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase";
 const steps = [
   { path: "/welcome", label: "Welcome" },
   { path: "/describe", label: "Describe" },
+  { path: "/edit-profile", label: "Edit" },
   { path: "/review", label: "Review" },
   { path: "/select-agents", label: "Agents" },
   { path: "/connect", label: "Connect" },

@@ -67,6 +67,7 @@ export default function SelectAgentsPage() {
       const sessionId = localStorage.getItem("aria_onboarding_session");
       const cachedConfig = localStorage.getItem("aria_onboarding_config");
       const skippedTopics = localStorage.getItem("aria_skipped_topics");
+      const reonboardingTenantId = localStorage.getItem("aria_reonboarding_tenant_id");
 
       let res: Response;
 
@@ -81,6 +82,7 @@ export default function SelectAgentsPage() {
               owner_email: ownerEmail,
               owner_name: ownerName,
               active_agents: activeAgents,
+              existing_tenant_id: reonboardingTenantId || undefined,
             }),
           });
         } catch {
@@ -95,6 +97,7 @@ export default function SelectAgentsPage() {
           localStorage.removeItem("aria_onboarding_session");
           localStorage.removeItem("aria_onboarding_config");
           localStorage.removeItem("aria_skipped_topics");
+          localStorage.removeItem("aria_reonboarding_tenant_id");
           router.push("/dashboard");
           return;
         }
@@ -112,6 +115,7 @@ export default function SelectAgentsPage() {
               owner_name: ownerName,
               active_agents: activeAgents,
               skipped_topics: skippedTopics ? JSON.parse(skippedTopics) : null,
+              existing_tenant_id: reonboardingTenantId || undefined,
             }),
           });
         } catch {

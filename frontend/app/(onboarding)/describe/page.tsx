@@ -33,9 +33,14 @@ export default function DescribePage() {
   const [isComplete, setIsComplete] = useState(false);
   const [skippedTopics, setSkippedTopics] = useState<string[]>([]);
   const [skipping, setSkipping] = useState(false);
+  const [isRestart, setIsRestart] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Detect restart mode
+    if (localStorage.getItem("aria_reonboarding_tenant_id")) {
+      setIsRestart(true);
+    }
     fetch(`${API_URL}/api/onboarding/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
       .then(r => r.json())
       .then(data => {
@@ -148,6 +153,14 @@ export default function DescribePage() {
       <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
         {/* ── Chat column ── */}
         <div className="flex-1 lg:w-[65%] flex flex-col min-h-0 border-r border-[#E0DED8]">
+          {/* Restart banner */}
+          {isRestart && (
+            <div className="px-6 py-2.5 bg-[#FDEEE8] border-b border-[#D85A30]/20 flex items-center gap-2">
+              <svg width="14" height="14" fill="none" viewBox="0 0 24 24"><path d="M1 4v6h6" stroke="#D85A30" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" stroke="#D85A30" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              <span className="text-xs font-medium text-[#D85A30]">Re-onboarding: your previous profile will be overwritten when you finish.</span>
+            </div>
+          )}
+
           {/* Chat header with question counter */}
           <div className="px-6 py-4 border-b border-[#E0DED8] flex items-center justify-between">
             <div>
