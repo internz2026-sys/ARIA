@@ -5,7 +5,7 @@ import json
 import logging
 import re
 
-from backend.agents.base import BaseAgent
+from backend.agents.base import BaseAgent, MODEL_HAIKU
 
 logger = logging.getLogger("aria.email_marketer")
 
@@ -20,7 +20,8 @@ class EmailMarketerAgent(BaseAgent):
     CONTEXT_KEY = "action"  # tasks come in via context={"action": "..."}
     DEFAULT_CONTEXT = "draft a newsletter"
     MAX_TOKENS = 2000
-    CONTEXT_FIELDS = {"business", "product", "audience", "pain_points", "voice"}
+    MODEL = MODEL_HAIKU
+    CONTEXT_FIELDS = {"business", "audience", "pain_points", "voice"}
 
     def build_system_prompt(self, config, action: str) -> str:
         # Detect if this is a send task with a recipient
@@ -29,47 +30,20 @@ class EmailMarketerAgent(BaseAgent):
         if recipient:
             send_note = f"""
 
-IMPORTANT: This email will be SENT to {recipient} from {config.owner_email} after you draft it.
-Write a complete, professional, ready-to-send email.
+SENDING to {recipient} from {config.owner_email}. Write ready-to-send email.
 
-Structure your response as:
-SUBJECT: <the subject line>
----
-<the full HTML email body>
+Format: SUBJECT: <subject>\n---\n<full HTML email body>
 
-The HTML body MUST be a complete, self-contained HTML email with ALL styling inline.
-Use this exact structure:
-- Start with <html><body style="...">
-- Use a centered container <div style="max-width:600px; margin:0 auto; ...">
-- Use inline styles on EVERY element (background colors, padding, font sizes, borders, etc.)
-- Use <table> elements for layout sections (email clients need tables, not flexbox/grid)
-- Include styled section headers with background colors
-- Include styled CTA buttons with background-color and padding
-- Use professional color scheme with brand-appropriate colors
-- Do NOT use <style> blocks or CSS classes — ALL styles must be inline
-- Do NOT include placeholder text — write real, ready-to-send content."""
+HTML rules: complete <html><body> document, ALL styles inline, table-based layout, styled CTA buttons, no CSS classes/style blocks."""
 
-        return f"""You are the Email Marketer for {config.business_name}, an AI marketing agent
-that creates complete email campaigns for developer-focused products.
+        return f"""You are the Email Marketer for {config.business_name}.
 
 {self.business_context(config, self.CONTEXT_FIELDS)}
 Positioning: {config.gtm_playbook.positioning}
 
-Campaign types:
-1. welcome_sequence — 3-5 email series for new signups (intro, value, activation)
-2. newsletter — weekly/biweekly with product updates, content roundup, community highlights
-3. launch_sequence — pre-launch teaser, launch day announcement, social proof follow-up, final reminder
-4. re_engagement — win-back emails for inactive users
-5. product_update — feature announcement with clear benefit framing
-
-For each email provide:
-- Subject line (2-3 A/B variants)
-- Preview text
-- Email body (plain text + HTML-ready format)
-- Recommended send time and day
-- Segmentation notes (if applicable)
-
-Keep emails concise, value-driven, one clear CTA per email.
+Types: welcome_sequence, newsletter, launch_sequence, re_engagement, product_update.
+Per email: subject line (2 A/B variants), preview text, HTML body, send time.
+Keep concise, value-driven, one CTA per email.
 {send_note}"""
 
     def build_user_message(self, action: str, context: dict | None) -> str:

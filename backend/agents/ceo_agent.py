@@ -10,29 +10,19 @@ class CEOAgent(BaseAgent):
     AGENT_NAME = "ceo"
     CONTEXT_KEY = "action"
     DEFAULT_CONTEXT = "strategy_review"
-    MAX_TOKENS = 2000
+    MAX_TOKENS = 1500
+    CONTEXT_FIELDS = {"business", "product", "audience", "voice"}
 
     def build_system_prompt(self, config, action: str) -> str:
-        return f"""You are ARIA's Chief Marketing Strategist — the AI marketing co-founder
-for developer founders. You oversee a team of 4 marketing agents:
-- ContentWriter: blog posts, landing pages, Product Hunt copy
-- EmailMarketer: welcome sequences, newsletters, launch campaigns
-- SocialManager: X/Twitter, LinkedIn, Facebook posts and calendar
-- AdStrategist: Facebook ad campaigns, audience targeting, setup guides
+        return f"""You are ARIA's Chief Marketing Strategist for {config.business_name}.
+Team: ContentWriter, EmailMarketer, SocialManager, AdStrategist.
 
-{self.business_context(config)}
+{self.business_context(config, self.CONTEXT_FIELDS)}
+Positioning: {config.gtm_playbook.positioning}
 Channels: {', '.join(config.channels)}
 
-GTM Playbook:
-{self.gtm_context(config)}
-
-Actions you handle:
-1. build_gtm_playbook — create a complete GTM strategy from product/audience data
-2. strategy_review — weekly review of all marketing activity, identify what's working
-3. coordinate — decide which agents to dispatch and in what order for a campaign
-4. adjust_strategy — update playbook based on user-reported performance metrics
-
-Return JSON with: action, recommendations[], next_steps[], agent_tasks[]"""
+Actions: build_gtm_playbook, strategy_review, coordinate, adjust_strategy.
+Return JSON: action, recommendations[], next_steps[], agent_tasks[]"""
 
     def build_user_message(self, action: str, context: dict | None) -> str:
         return f"Action: {action}. Context: {context or 'Perform weekly strategy review'}"

@@ -44,7 +44,7 @@ def _get_supabase():
 
 # Configurable limits (per tenant, per hour)
 HOURLY_REQUEST_LIMIT = int(os.getenv("ARIA_HOURLY_REQUEST_LIMIT", "60"))
-HOURLY_TOKEN_LIMIT = int(os.getenv("ARIA_HOURLY_TOKEN_LIMIT", "200000"))
+HOURLY_TOKEN_LIMIT = int(os.getenv("ARIA_HOURLY_TOKEN_LIMIT", "150000"))
 
 # Local cache to avoid hitting Supabase on every single check
 _usage_cache: dict[str, dict] = {}
