@@ -221,10 +221,11 @@ export default function FloatingChat() {
 
           {/* Input */}
           <div className="border-t border-[#E0DED8] px-3 py-2 shrink-0">
-            <div className="flex items-center gap-2">
-              <input type="text" value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSend()}
-                placeholder="Ask the CEO..." disabled={sending}
-                className="flex-1 px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50" />
+            <div className="flex items-end gap-2">
+              <textarea value={input} onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 80) + "px"; }}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                placeholder="Ask the CEO..." disabled={sending} rows={1}
+                className="flex-1 min-h-[36px] max-h-[80px] px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none" />
               <button onClick={handleSend} disabled={!input.trim() || sending} className="p-2 bg-[#534AB7] text-white rounded-lg hover:bg-[#433AA0] transition-colors disabled:opacity-40">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />

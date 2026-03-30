@@ -246,15 +246,15 @@ export default function CEOChatPage() {
 
         {/* Input */}
         <div className="border-t border-[#E0DED8] px-4 pt-3 pb-2">
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
+          <div className="flex items-end gap-2">
+            <textarea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSend()}
+              onChange={(e) => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 150) + "px"; }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
               placeholder="Ask the CEO agent anything about your marketing..."
               disabled={sending}
-              className="flex-1 px-4 py-3 bg-white border border-[#E0DED8] rounded-xl text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] disabled:opacity-60"
+              rows={1}
+              className="flex-1 min-h-[48px] max-h-[150px] px-4 py-3 bg-white border border-[#E0DED8] rounded-xl text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] disabled:opacity-60 resize-none"
             />
             <button
               onClick={handleSend}

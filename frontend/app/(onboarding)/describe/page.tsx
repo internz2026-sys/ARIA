@@ -215,14 +215,15 @@ export default function DescribePage() {
 
           {/* Input area */}
           <div className="px-6 py-4 border-t border-[#E0DED8]">
-            <form onSubmit={handleSend} className="flex items-center gap-3">
-              <input
-                type="text"
+            <form onSubmit={handleSend} className="flex items-end gap-3">
+              <textarea
                 value={input}
-                onChange={e => setInput(e.target.value)}
+                onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px"; }}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(e); } }}
                 placeholder="Type your answer..."
                 disabled={loading}
-                className="flex-1 h-11 rounded-lg border border-[#E0DED8] px-4 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60"
+                rows={1}
+                className="flex-1 min-h-[44px] max-h-[120px] rounded-lg border border-[#E0DED8] px-4 py-2.5 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60 resize-none"
               />
               <button
                 type="button"
