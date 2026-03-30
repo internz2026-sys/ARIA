@@ -173,7 +173,10 @@ def _create_inbox_item_for_reply(
     }
     try:
         result = sb.table("inbox_items").insert(row).execute()
-        return result.data[0] if result.data else None
+        saved = result.data[0] if result.data else None
+        if saved:
+            logger.info("Created inbox item for reply from %s (id=%s)", sender, saved.get("id"))
+        return saved
     except Exception as e:
         logger.error("Failed to create inbox item for reply: %s", e)
         return None
@@ -196,13 +199,14 @@ async def sync_tenant_replies(tenant_id: str) -> dict:
 
     known_msg_ids = _get_known_message_ids(tenant_id)
     imported = 0
+    new_replies: list[dict] = []  # Collect for real-time notifications
 
     for gmail_tid in thread_ids:
         try:
             thread_data = await gmail_tool.get_thread(token, gmail_tid)
             if thread_data.get("error"):
                 if thread_data["error"] == "token_expired":
-                    return {"imported": imported, "threads_checked": 0, "error": "token_expired"}
+                    return {"imported": imported, "threads_checked": 0, "error": "token_expired", "new_replies": new_replies}
                 logger.warning("Failed to fetch thread %s: %s", gmail_tid, thread_data["error"])
                 continue
 
@@ -235,7 +239,14 @@ async def sync_tenant_replies(tenant_id: str) -> dict:
                     imported += 1
                     known_msg_ids.add(msg_id)
                     _update_thread_status(db_thread["id"], "needs_review")
-                    _create_inbox_item_for_reply(tenant_id, db_thread, msg)
+                    inbox_item = _create_inbox_item_for_reply(tenant_id, db_thread, msg)
+                    new_replies.append({
+                        "thread_id": db_thread["id"],
+                        "sender": sender_email,
+                        "subject": msg.get("subject", ""),
+                        "snippet": msg.get("preview_snippet", "")[:200],
+                        "inbox_item": inbox_item,
+                    })
                     logger.info(
                         "Imported inbound reply from %s in thread %s",
                         sender_email, gmail_tid,
@@ -244,7 +255,7 @@ async def sync_tenant_replies(tenant_id: str) -> dict:
         except Exception as e:
             logger.error("Error syncing thread %s for tenant %s: %s", gmail_tid, tenant_id, e)
 
-    return {"imported": imported, "threads_checked": len(thread_ids), "error": None}
+    return {"imported": imported, "threads_checked": len(thread_ids), "error": None, "new_replies": new_replies}
 
 
 async def sync_all_tenants() -> list[dict]:
@@ -253,7 +264,7 @@ async def sync_all_tenants() -> list[dict]:
     results = []
 
     for tenant in tenants:
-        if not tenant.integrations.google_access_token:
+        if not tenant.integrations.google_access_token and not tenant.integrations.google_refresh_token:
             continue
         try:
             result = await sync_tenant_replies(str(tenant.tenant_id))

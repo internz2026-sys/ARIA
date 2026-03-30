@@ -653,6 +653,12 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
         "status": "sent",
     }, room=tenant_id)
 
+    # Notify conversations page that a thread was updated
+    await sio.emit("email_thread_updated", {
+        "thread_id": gmail_thread_id,
+        "status": "awaiting_reply",
+    }, room=tenant_id)
+
     return {"status": "sent", "message_id": gmail_message_id, "thread_id": gmail_thread_id}
 
 
@@ -861,11 +867,34 @@ Keep it professional, concise, and on-brand. Do not include placeholder text."""
     }
 
 
+async def _emit_sync_events(tenant_id: str, sync_result: dict):
+    """Emit Socket.IO events for new inbound replies found during Gmail sync."""
+    for reply in sync_result.get("new_replies", []):
+        inbox_item = reply.get("inbox_item")
+        if inbox_item:
+            await sio.emit("inbox_new_item", {
+                "id": inbox_item.get("id", ""),
+                "agent": "email_marketer",
+                "type": "email_reply",
+                "title": inbox_item.get("title", ""),
+                "status": "needs_review",
+                "priority": "high",
+                "created_at": inbox_item.get("created_at", ""),
+            }, room=tenant_id)
+        await sio.emit("email_reply_received", {
+            "thread_id": reply.get("thread_id", ""),
+            "sender": reply.get("sender", ""),
+            "subject": reply.get("subject", ""),
+            "snippet": reply.get("snippet", ""),
+        }, room=tenant_id)
+
+
 @app.post("/api/email/{tenant_id}/sync")
 async def trigger_email_sync(tenant_id: str):
     """Manually trigger Gmail inbound reply sync for a tenant."""
     from backend.tools.gmail_sync import sync_tenant_replies
     result = await sync_tenant_replies(tenant_id)
+    await _emit_sync_events(tenant_id, result)
     return result
 
 
@@ -874,6 +903,10 @@ async def trigger_sync_all():
     """Trigger Gmail sync for all active tenants. Called by cron."""
     from backend.tools.gmail_sync import sync_all_tenants
     results = await sync_all_tenants()
+    for r in results:
+        tid = r.get("tenant_id", "")
+        if tid:
+            await _emit_sync_events(tid, r)
     return {"tenants_synced": len(results), "results": results}
 
 
@@ -1283,6 +1316,10 @@ async def cron_trigger():
     try:
         from backend.tools.gmail_sync import sync_all_tenants
         sync_results = await sync_all_tenants()
+        for sr in sync_results:
+            tid = sr.get("tenant_id", "")
+            if tid:
+                await _emit_sync_events(tid, sr)
     except Exception as e:
         logger.warning("Gmail sync during cron failed: %s", e)
 

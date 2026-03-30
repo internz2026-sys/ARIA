@@ -81,6 +81,58 @@ export default function ConversationsPage() {
 
   useEffect(() => { fetchThreads(); }, [fetchThreads]);
 
+  // Real-time updates via Socket.IO + auto-poll every 30s
+  const selectedRef = useRef<EmailThread | null>(null);
+  selectedRef.current = selected;
+
+  useEffect(() => {
+    if (!tenantId) return;
+    let socket: any = null;
+
+    try {
+      const { getSocket } = require("@/lib/socket");
+      socket = getSocket();
+
+      const handleReply = () => {
+        fetchThreads();
+        // Refresh current thread messages if one is selected
+        if (selectedRef.current) {
+          emailThreads.get(tenantId, selectedRef.current.id).then(data => {
+            setMessages(data.messages || []);
+          }).catch(() => {});
+        }
+      };
+
+      socket.on("email_reply_received", handleReply);
+      socket.on("email_thread_updated", handleReply);
+      socket.on("inbox_item_updated", handleReply);
+
+      return () => {
+        socket.off("email_reply_received", handleReply);
+        socket.off("email_thread_updated", handleReply);
+        socket.off("inbox_item_updated", handleReply);
+      };
+    } catch {
+      // socket lib may not be available
+    }
+  }, [tenantId, fetchThreads]);
+
+  // Auto-poll for new replies every 30 seconds
+  useEffect(() => {
+    if (!tenantId) return;
+    const interval = setInterval(async () => {
+      try {
+        await emailThreads.sync(tenantId);
+        fetchThreads();
+        if (selectedRef.current) {
+          const data = await emailThreads.get(tenantId, selectedRef.current.id);
+          setMessages(data.messages || []);
+        }
+      } catch {}
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [tenantId, fetchThreads]);
+
   const selectThread = async (thread: EmailThread) => {
     setSelected(thread);
     setThreadLoading(true);
