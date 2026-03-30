@@ -1076,18 +1076,35 @@ async def dashboard_inbox(tenant_id: str):
 
 
 @app.get("/api/inbox/{tenant_id}")
-async def list_inbox(tenant_id: str, status: str = ""):
-    """List all inbox items for a tenant, optionally filtered by status."""
+async def list_inbox(tenant_id: str, status: str = "", page: int = 1, page_size: int = 20):
+    """List inbox items for a tenant with pagination."""
     try:
         from backend.config.loader import _get_supabase
         sb = _get_supabase()
+
+        # Count query
+        count_query = sb.table("inbox_items").select("id", count="exact").eq("tenant_id", tenant_id)
+        if status:
+            count_query = count_query.eq("status", status)
+        count_result = count_query.execute()
+        total = count_result.count if count_result.count is not None else len(count_result.data)
+
+        # Paginated data query
+        offset = (max(page, 1) - 1) * page_size
         query = sb.table("inbox_items").select("*").eq("tenant_id", tenant_id)
         if status:
             query = query.eq("status", status)
-        result = query.order("created_at", desc=True).execute()
-        return {"items": result.data}
+        result = query.order("created_at", desc=True).range(offset, offset + page_size - 1).execute()
+
+        return {
+            "items": result.data,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, -(-total // page_size)),  # ceil division
+        }
     except Exception as e:
-        return {"items": [], "error": str(e)}
+        return {"items": [], "total": 0, "page": 1, "page_size": page_size, "total_pages": 1, "error": str(e)}
 
 
 @app.patch("/api/inbox/{item_id}")

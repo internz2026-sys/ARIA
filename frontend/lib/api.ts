@@ -31,8 +31,13 @@ export const dashboard = {
 };
 
 export const inbox = {
-  list: (tenantId: string, status?: string) =>
-    fetchAPI(`/api/inbox/${tenantId}${status ? `?status=${status}` : ""}`),
+  list: (tenantId: string, status?: string, page: number = 1, pageSize: number = 20) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    params.set("page", String(page));
+    params.set("page_size", String(pageSize));
+    return fetchAPI(`/api/inbox/${tenantId}?${params.toString()}`);
+  },
   update: (itemId: string, updates: { status: string }) =>
     fetchAPI(`/api/inbox/${itemId}`, { method: "PATCH", body: JSON.stringify(updates) }),
   remove: (itemId: string) =>

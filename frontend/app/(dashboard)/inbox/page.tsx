@@ -72,6 +72,30 @@ function timeAgo(dateStr: string): string {
   return `${days}d ago`;
 }
 
+function stripHtml(html: string): string {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<\/h[1-6]>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function looksLikeHtml(text: string): boolean {
+  return /<\/?[a-z][\s\S]*>/i.test(text);
+}
+
 export default function InboxPage() {
   const [items, setItems] = useState<InboxItem[]>([]);
   const [activeTab, setActiveTab] = useState("");
@@ -80,6 +104,11 @@ export default function InboxPage() {
   const [copied, setCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [showHtmlSource, setShowHtmlSource] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+  const PAGE_SIZE = 20;
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
@@ -87,14 +116,16 @@ export default function InboxPage() {
   const fetchItems = useCallback(async () => {
     if (!tenantId) return;
     try {
-      const data = await inbox.list(tenantId, activeTab);
+      const data = await inbox.list(tenantId, activeTab, page, PAGE_SIZE);
       setItems(data.items || []);
+      setTotalPages(data.total_pages || 1);
+      setTotalItems(data.total || 0);
     } catch {
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [tenantId, activeTab]);
+  }, [tenantId, activeTab, page]);
 
   useEffect(() => {
     fetchItems();
@@ -166,12 +197,51 @@ export default function InboxPage() {
   const isEmailDraft = (item: InboxItem) => !!item.email_draft;
   const isPendingApproval = (item: InboxItem) => item.status === "draft_pending_approval";
 
-  const tabCounts = STATUS_TABS.map((tab) => ({
-    ...tab,
-    count: tab.key ? items.filter((i) => i.status === tab.key).length : items.length,
-  }));
+  const filteredItems = items;
 
-  const filteredItems = activeTab ? items.filter((i) => i.status === activeTab) : items;
+  // ─── Bulk actions ───
+  const toggleCheck = (id: string) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllChecked = () => {
+    if (checkedIds.size === filteredItems.length) {
+      setCheckedIds(new Set());
+    } else {
+      setCheckedIds(new Set(filteredItems.map((i) => i.id)));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (checkedIds.size === 0) return;
+    setActionLoading("bulk-delete");
+    try {
+      await Promise.all([...checkedIds].map((id) => inbox.remove(id)));
+      setItems((prev) => prev.filter((i) => !checkedIds.has(i.id)));
+      if (selected && checkedIds.has(selected.id)) setSelected(null);
+      setCheckedIds(new Set());
+    } catch {}
+    setActionLoading(null);
+  };
+
+  const handleBulkComplete = async () => {
+    if (checkedIds.size === 0) return;
+    setActionLoading("bulk-complete");
+    try {
+      await Promise.all([...checkedIds].map((id) => inbox.update(id, { status: "completed" })));
+      setItems((prev) =>
+        prev.map((i) => (checkedIds.has(i.id) ? { ...i, status: "completed" } : i))
+      );
+      if (selected && checkedIds.has(selected.id)) setSelected({ ...selected, status: "completed" });
+      setCheckedIds(new Set());
+    } catch {}
+    setActionLoading(null);
+  };
 
   // ─── Email Draft Preview Detail ───
   const renderEmailPreview = (item: InboxItem) => {
@@ -394,7 +464,7 @@ export default function InboxPage() {
       </div>
       <div className="flex-1 overflow-auto p-5">
         <div className="prose prose-sm max-w-none text-[#2C2C2A] whitespace-pre-wrap">
-          {item.content}
+          {looksLikeHtml(item.content) ? stripHtml(item.content) : item.content}
         </div>
       </div>
     </div>
@@ -409,10 +479,10 @@ export default function InboxPage() {
 
       {/* Tabs */}
       <div className="flex items-center gap-1 bg-white rounded-xl border border-[#E0DED8] p-1.5 overflow-x-auto">
-        {tabCounts.map((tab) => (
+        {STATUS_TABS.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => { setActiveTab(tab.key); setSelected(null); setShowHtmlSource(false); }}
+            onClick={() => { setActiveTab(tab.key); setSelected(null); setShowHtmlSource(false); setCheckedIds(new Set()); setPage(1); }}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
               activeTab === tab.key
                 ? "bg-[#EEEDFE] text-[#534AB7]"
@@ -420,15 +490,9 @@ export default function InboxPage() {
             }`}
           >
             {tab.label}
-            {tab.count > 0 && (
-              <span
-                className={`text-xs px-1.5 py-0.5 rounded-full ${
-                  activeTab === tab.key
-                    ? "bg-[#534AB7] text-white"
-                    : "bg-[#F8F8F6] text-[#5F5E5A]"
-                }`}
-              >
-                {tab.count}
+            {activeTab === tab.key && totalItems > 0 && (
+              <span className="text-xs px-1.5 py-0.5 rounded-full bg-[#534AB7] text-white">
+                {totalItems}
               </span>
             )}
           </button>
@@ -460,46 +524,140 @@ export default function InboxPage() {
       ) : (
         <div className="flex gap-4 min-h-[500px]">
           {/* Item list */}
-          <div className="w-full md:w-[380px] shrink-0 space-y-2">
+          <div className="w-full md:w-[380px] shrink-0 flex flex-col gap-2">
+            {/* Bulk action toolbar */}
+            <div className="flex items-center gap-2 px-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filteredItems.length > 0 && checkedIds.size === filteredItems.length}
+                  onChange={toggleAllChecked}
+                  className="w-4 h-4 rounded border-[#C5C3BC] text-[#534AB7] focus:ring-[#534AB7] cursor-pointer"
+                />
+                <span className="text-xs text-[#5F5E5A]">
+                  {checkedIds.size > 0 ? `${checkedIds.size} selected` : "Select all"}
+                </span>
+              </label>
+              {checkedIds.size > 0 && (
+                <div className="flex items-center gap-1.5 ml-auto">
+                  <button
+                    onClick={handleBulkComplete}
+                    disabled={actionLoading === "bulk-complete"}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors disabled:opacity-60"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                    </svg>
+                    {actionLoading === "bulk-complete" ? "Updating..." : "Mark completed"}
+                  </button>
+                  <button
+                    onClick={handleBulkDelete}
+                    disabled={actionLoading === "bulk-delete"}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors disabled:opacity-60"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                    </svg>
+                    {actionLoading === "bulk-delete" ? "Deleting..." : "Delete"}
+                  </button>
+                </div>
+              )}
+            </div>
+
             {filteredItems.map((item) => {
               const badge = STATUS_BADGES[item.status];
+              const isChecked = checkedIds.has(item.id);
               return (
-                <button
+                <div
                   key={item.id}
-                  onClick={() => { setSelected(item); setShowHtmlSource(false); }}
-                  className={`w-full text-left p-4 rounded-xl border transition-all ${
+                  className={`flex items-start gap-2 p-4 rounded-xl border transition-all cursor-pointer ${
                     selected?.id === item.id
                       ? "border-[#534AB7] bg-[#FAFAFF] shadow-sm"
+                      : isChecked
+                      ? "border-[#534AB7]/40 bg-[#FAFAFF]/50"
                       : "border-[#E0DED8] bg-white hover:border-[#C5C3BC]"
                   }`}
                 >
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: AGENT_COLORS[item.agent] || "#999" }} />
-                    <span className="text-xs font-medium" style={{ color: AGENT_COLORS[item.agent] || "#999" }}>
-                      {AGENT_NAMES[item.agent] || item.agent}
-                    </span>
-                    <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
-                  </div>
-                  <h4 className="text-sm font-semibold text-[#2C2C2A] truncate">{item.title}</h4>
-                  {/* Email draft snippet */}
-                  {item.email_draft?.preview_snippet && (
-                    <p className="text-xs text-[#9E9C95] mt-1 line-clamp-2">{item.email_draft.preview_snippet}</p>
-                  )}
-                  <div className="flex items-center gap-2 mt-2">
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#F8F8F6] text-[#5F5E5A] border border-[#E0DED8]">
-                      {TYPE_LABELS[item.type] || item.type}
-                    </span>
-                    <span className={`w-1.5 h-1.5 rounded-full ${PRIORITY_DOT[item.priority] || "bg-gray-400"}`} />
-                    <span className="text-[11px] text-[#9E9C95] capitalize">{item.priority}</span>
-                    {badge && (
-                      <span className={`ml-auto text-[11px] px-2 py-0.5 rounded-full border ${badge.bg} ${badge.text} ${badge.border}`}>
-                        {badge.label}
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    onChange={(e) => { e.stopPropagation(); toggleCheck(item.id); }}
+                    className="w-4 h-4 mt-0.5 rounded border-[#C5C3BC] text-[#534AB7] focus:ring-[#534AB7] cursor-pointer shrink-0"
+                  />
+                  <button
+                    onClick={() => { setSelected(item); setShowHtmlSource(false); }}
+                    className="flex-1 text-left min-w-0"
+                  >
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: AGENT_COLORS[item.agent] || "#999" }} />
+                      <span className="text-xs font-medium" style={{ color: AGENT_COLORS[item.agent] || "#999" }}>
+                        {AGENT_NAMES[item.agent] || item.agent}
                       </span>
+                      <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
+                    </div>
+                    <h4 className="text-sm font-semibold text-[#2C2C2A] truncate">{item.title}</h4>
+                    {item.email_draft?.preview_snippet && (
+                      <p className="text-xs text-[#9E9C95] mt-1 line-clamp-2">{item.email_draft.preview_snippet}</p>
                     )}
-                  </div>
-                </button>
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#F8F8F6] text-[#5F5E5A] border border-[#E0DED8]">
+                        {TYPE_LABELS[item.type] || item.type}
+                      </span>
+                      <span className={`w-1.5 h-1.5 rounded-full ${PRIORITY_DOT[item.priority] || "bg-gray-400"}`} />
+                      <span className="text-[11px] text-[#9E9C95] capitalize">{item.priority}</span>
+                      {badge && (
+                        <span className={`ml-auto text-[11px] px-2 py-0.5 rounded-full border ${badge.bg} ${badge.text} ${badge.border}`}>
+                          {badge.label}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                </div>
               );
             })}
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between pt-2 px-1">
+                <span className="text-xs text-[#9E9C95]">
+                  Page {page} of {totalPages} ({totalItems} items)
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => { setPage(1); setCheckedIds(new Set()); }}
+                    disabled={page <= 1}
+                    className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    First
+                  </button>
+                  <button
+                    onClick={() => { setPage((p) => Math.max(1, p - 1)); setCheckedIds(new Set()); }}
+                    disabled={page <= 1}
+                    className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setCheckedIds(new Set()); }}
+                    disabled={page >= totalPages}
+                    className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => { setPage(totalPages); setCheckedIds(new Set()); }}
+                    disabled={page >= totalPages}
+                    className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Last
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Detail pane */}
