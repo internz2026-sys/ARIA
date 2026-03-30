@@ -125,6 +125,35 @@ export default function EmailEditor({
         </div>
       </div>
 
+      {/* Action bar — above editor for quick access */}
+      <div className="border-b border-[#E0DED8] px-5 py-3 flex items-center gap-2 bg-[#F8F8F6]">
+        <button
+          onClick={handleSend}
+          disabled={sendDisabled || sendLoading || !to}
+          title={!to ? "Add a recipient first" : ""}
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#1D9E75] text-white hover:bg-[#178a64] transition-colors disabled:opacity-60"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+          </svg>
+          {sendLoading ? "Sending..." : "Approve & Send"}
+        </button>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F0EFEC] transition-colors disabled:opacity-60"
+        >
+          {saving ? "Saving..." : saved ? "Saved!" : "Save changes"}
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={cancelLoading}
+          className="ml-auto px-3 py-2 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors disabled:opacity-60"
+        >
+          {cancelLoading ? "Cancelling..." : "Cancel draft"}
+        </button>
+      </div>
+
       {/* Toolbar */}
       <div className="border-b border-[#E0DED8] px-5 py-1.5 flex items-center gap-0.5 flex-wrap">
         <ToolbarButton active={editor.isActive("bold")} onClick={() => editor.chain().focus().toggleBold().run()} title="Bold">
@@ -173,34 +202,6 @@ export default function EmailEditor({
         <EditorContent editor={editor} />
       </div>
 
-      {/* Action bar */}
-      <div className="border-t border-[#E0DED8] px-5 py-4 flex items-center gap-2">
-        <button
-          onClick={handleSend}
-          disabled={sendDisabled || sendLoading || !to}
-          title={!to ? "Add a recipient first" : ""}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#1D9E75] text-white hover:bg-[#178a64] transition-colors disabled:opacity-60"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-          </svg>
-          {sendLoading ? "Sending..." : "Approve & Send"}
-        </button>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors disabled:opacity-60"
-        >
-          {saving ? "Saving..." : saved ? "Saved!" : "Save changes"}
-        </button>
-        <button
-          onClick={onCancel}
-          disabled={cancelLoading}
-          className="ml-auto px-3 py-2 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors disabled:opacity-60"
-        >
-          {cancelLoading ? "Cancelling..." : "Cancel draft"}
-        </button>
-      </div>
     </div>
   );
 }

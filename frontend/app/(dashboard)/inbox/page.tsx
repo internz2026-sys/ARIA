@@ -314,24 +314,8 @@ export default function InboxPage() {
             ) : null;
           })()}
         </div>
-        <div className="flex-1 overflow-auto p-5">
-          <div className="bg-white rounded-lg border border-[#E0DED8] overflow-hidden">
-            <iframe
-              ref={iframeRef}
-              srcDoc={draft.html_body}
-              title="Email preview"
-              className="w-full min-h-[300px] border-0"
-              sandbox="allow-same-origin"
-              onLoad={() => {
-                if (iframeRef.current?.contentDocument) {
-                  const h = iframeRef.current.contentDocument.body.scrollHeight;
-                  iframeRef.current.style.height = `${Math.max(h + 20, 300)}px`;
-                }
-              }}
-            />
-          </div>
-        </div>
-        <div className="border-t border-[#E0DED8] px-5 py-4 flex items-center gap-2">
+        {/* Action bar — above content */}
+        <div className="border-b border-[#E0DED8] px-5 py-3 flex items-center gap-2 bg-[#F8F8F6]">
           {item.status === "sent" && (
             <span className="flex items-center gap-1.5 text-sm font-medium text-[#1D9E75]">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -353,7 +337,7 @@ export default function InboxPage() {
                   setItems(prev => prev.map(i => i.id === item.id ? { ...i, status: "draft_pending_approval" } : i));
                   setSelected({ ...item, status: "draft_pending_approval" });
                 }}
-                className="px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors"
+                className="px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F0EFEC] transition-colors"
               >
                 Edit & Retry
               </button>
@@ -365,6 +349,24 @@ export default function InboxPage() {
           >
             Delete
           </button>
+        </div>
+        {/* Email content */}
+        <div className="flex-1 overflow-auto p-5">
+          <div className="bg-white rounded-lg border border-[#E0DED8] overflow-hidden">
+            <iframe
+              ref={iframeRef}
+              srcDoc={draft.html_body}
+              title="Email preview"
+              className="w-full min-h-[300px] border-0"
+              sandbox="allow-same-origin"
+              onLoad={() => {
+                if (iframeRef.current?.contentDocument) {
+                  const h = iframeRef.current.contentDocument.body.scrollHeight;
+                  iframeRef.current.style.height = `${Math.max(h + 20, 300)}px`;
+                }
+              }}
+            />
+          </div>
         </div>
       </div>
     );
