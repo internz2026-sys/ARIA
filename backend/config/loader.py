@@ -1,12 +1,16 @@
 """Tenant config loader — reads/writes tenant configurations from Supabase."""
 from __future__ import annotations
 
+import logging
 import os
+import re
 from uuid import UUID
 
 from supabase import create_client, Client
 
 from .tenant_schema import TenantConfig
+
+logger = logging.getLogger("aria.config")
 
 _client: Client | None = None
 
@@ -31,7 +35,23 @@ def save_tenant_config(config: TenantConfig) -> TenantConfig:
     sb = _get_supabase()
     data = config.model_dump(mode="json")
     data["tenant_id"] = str(config.tenant_id)
-    sb.table("tenant_configs").upsert(data).execute()
+
+    # Retry loop: if Supabase rejects a column that doesn't exist in the
+    # table yet, strip it and try again (up to 5 times).
+    for _ in range(5):
+        try:
+            sb.table("tenant_configs").upsert(data).execute()
+            return config
+        except Exception as e:
+            msg = str(e)
+            # PostgREST PGRST204: column not found in schema cache
+            m = re.search(r"Could not find the '(\w+)' column", msg)
+            if m:
+                col = m.group(1)
+                logger.warning("Column '%s' missing in tenant_configs — stripping from save", col)
+                data.pop(col, None)
+                continue
+            raise
     return config
 
 
