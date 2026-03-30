@@ -173,7 +173,12 @@ async def extract_config(body: OnboardingStart):
     agent = onboarding_sessions.get(body.session_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Session not found")
-    config_data = await agent.extract_config()
+    try:
+        config_data = await agent.extract_config()
+    except Exception as e:
+        logger.error("extract_config failed: %s", e)
+        # Return the fallback config so the frontend still works
+        config_data = agent._fallback_config_from_messages()
     return {"config": config_data}
 
 

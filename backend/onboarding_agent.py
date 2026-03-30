@@ -7,12 +7,15 @@ that all other agents reference.
 
 import asyncio
 import json
+import logging
 import re
 
 from backend.config.tenant_schema import (
     TenantConfig, ICPConfig, ProductConfig, GTMPlaybook, BrandVoice, GTMProfile,
 )
 from backend.tools.claude_cli import call_claude, MODEL_HAIKU
+
+logger = logging.getLogger("aria.onboarding")
 
 SYSTEM_PROMPT = """You are ARIA's onboarding agent.
 
@@ -448,12 +451,98 @@ class OnboardingAgent:
 
     @staticmethod
     def _repair_json(s: str) -> str:
-        """Best-effort fix for common LLM JSON mistakes (trailing commas, etc.)."""
+        """Best-effort fix for common LLM JSON mistakes."""
+        # Strip markdown code fences
+        s = re.sub(r'^```(?:json)?\s*', '', s, flags=re.MULTILINE)
+        s = re.sub(r'```\s*$', '', s, flags=re.MULTILINE)
+        # Remove JS-style comments
+        s = re.sub(r'//[^\n]*', '', s)
         # Remove trailing commas before } or ]
         s = re.sub(r',\s*([}\]])', r'\1', s)
-        # Remove control characters that break JSON (except newlines/tabs)
+        # Remove control characters (except \n \r \t)
         s = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', s)
+        # Fix unescaped newlines inside JSON strings: replace actual newlines
+        # within string values with \\n
+        s = re.sub(r'(?<=": ")(.*?)(?=")', lambda m: m.group(0).replace('\n', '\\n'), s, flags=re.DOTALL)
         return s
+
+    @staticmethod
+    def _extract_json(raw: str) -> str:
+        """Pull the outermost JSON object from LLM output."""
+        start = raw.find("{")
+        if start == -1:
+            return raw
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(raw)):
+            c = raw[i]
+            if escape:
+                escape = False
+                continue
+            if c == '\\':
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    return raw[start:i + 1]
+        # Unbalanced — return best guess
+        end = raw.rfind("}") + 1
+        return raw[start:end] if end > start else raw
+
+    def _try_parse_json(self, raw: str) -> dict | None:
+        """Try parsing raw LLM output as JSON with progressive repair."""
+        json_str = self._extract_json(raw)
+        for text in [json_str, self._repair_json(json_str)]:
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                continue
+        return None
+
+    def _fallback_config_from_messages(self) -> dict:
+        """Build a minimal config from conversation messages when JSON extraction fails."""
+        user_msgs = [m['content'] for m in self.messages if m['role'] == 'user']
+        fields = ONBOARDING_FIELDS[:]
+        config: dict = {"business_name": "", "description": "", "channels": [], "gtm_profile": {}}
+        gp: dict = {}
+
+        for i, msg in enumerate(user_msgs):
+            if i >= len(fields):
+                break
+            field = fields[i]
+            val = msg.strip()
+            if field == "business_name":
+                config["business_name"] = val
+                gp["business_name"] = val
+            elif field == "product_or_offer":
+                config["description"] = val
+                gp["offer"] = val
+            elif field == "target_audience":
+                gp["audience"] = val
+            elif field == "problem_solved":
+                gp["problem"] = val
+            elif field == "differentiator":
+                gp["differentiator"] = val
+            elif field == "channels":
+                channels = [c.strip() for c in re.split(r'[,\n]+', val) if c.strip()]
+                config["channels"] = channels
+                gp["primary_channels"] = channels
+            elif field == "brand_voice":
+                gp["brand_voice"] = val
+            elif field == "goal_30_days":
+                gp["goal_30_days"] = val
+
+        config["gtm_profile"] = gp
+        return config
 
     async def extract_config(self) -> dict:
         conversation_text = "\n".join(
@@ -461,38 +550,42 @@ class OnboardingAgent:
             for m in self.messages
         )
 
+        # Attempt 1: standard extraction
         raw = await call_claude(
             "You are a structured data extraction assistant. Return ONLY valid JSON, no other text.",
             EXTRACTION_PROMPT + conversation_text,
             max_tokens=2000,
             model=MODEL_HAIKU,
         )
+        result = self._try_parse_json(raw)
+        if result:
+            self._extracted_config = result
+            return result
 
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        json_str = raw[start:end] if start != -1 and end > start else raw
+        logger.warning("JSON parse failed on first attempt, retrying with stricter prompt")
 
-        # First try as-is, then try repaired JSON, then retry the LLM call once
-        for attempt, text in enumerate([json_str, self._repair_json(json_str)]):
-            try:
-                result = json.loads(text)
-                self._extracted_config = result
-                return result
-            except json.JSONDecodeError:
-                continue
-
-        # All local fixes failed — retry with a stricter prompt
+        # Attempt 2: stricter prompt
         raw2 = await call_claude(
-            "You are a JSON generator. Return ONLY a single valid JSON object. "
-            "No trailing commas. No comments. No text before or after the JSON.",
+            "You are a JSON generator. Output ONLY a single valid JSON object.\n"
+            "RULES:\n"
+            "- No trailing commas\n"
+            "- No comments\n"
+            "- All string values on a single line (use \\n for newlines)\n"
+            "- Escape all quotes inside strings with \\\"\n"
+            "- No text before or after the JSON object",
             EXTRACTION_PROMPT + conversation_text,
             max_tokens=2000,
             model=MODEL_HAIKU,
         )
-        start2 = raw2.find("{")
-        end2 = raw2.rfind("}") + 1
-        json_str2 = raw2[start2:end2] if start2 != -1 and end2 > start2 else raw2
-        result = json.loads(self._repair_json(json_str2))
+        result = self._try_parse_json(raw2)
+        if result:
+            self._extracted_config = result
+            return result
+
+        logger.warning("JSON parse failed on retry — using fallback from conversation messages")
+
+        # Attempt 3: build config directly from user messages
+        result = self._fallback_config_from_messages()
         self._extracted_config = result
         return result
 
