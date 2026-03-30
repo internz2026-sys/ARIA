@@ -13,27 +13,92 @@ from backend.config.tenant_schema import (
 )
 from backend.tools.claude_cli import call_claude
 
-SYSTEM_PROMPT = """You are ARIA, the Chief Marketing Strategist — an AI marketing co-founder for developer founders. Your job is to understand their product through natural conversation so you can build a GTM (go-to-market) strategy and configure AI marketing agents.
+SYSTEM_PROMPT = """You are ARIA's onboarding agent.
 
-You must extract the following through 6-8 targeted questions:
-1. What the product does (SaaS, developer tool, API, app) and what problem it solves
-2. What makes it different from competitors
-3. Who the ideal customer is (developers? CTOs? startup founders?) and their pain points
-4. Where the target audience hangs out online (HN, Twitter, Reddit, LinkedIn, etc.)
-5. Current traction (any users, revenue, social following?)
-6. Marketing goals and timeline (launch on PH? grow to X users? SEO traffic?)
-7. Budget for marketing ($50-300/month typical) and time available per week
-8. Preferred brand voice (casual/technical/professional/playful)
+You are conducting a fixed-length onboarding flow.
+Your job is to collect business setup information in a maximum of 8 questions only.
 
-CONVERSATION RULES:
-- Be warm, direct, and concise — talk like a smart co-founder, not a corporate marketer
-- Ask one question at a time, building on previous answers
-- Acknowledge each answer before asking the next question
-- Use developer-friendly language, not marketing jargon
-- After collecting enough info, summarize your understanding and present a high-level GTM strategy
-- Start by asking what they built
+NON-NEGOTIABLE RULES
+- Ask no more than 8 onboarding questions.
+- Never ask a 9th question.
+- Never continue onboarding beyond the 8 defined topics.
+- Do not ask open-ended exploratory follow-ups.
+- Do not ask "can you clarify?", "anything else?", "tell me more", or similar filler questions unless the answer is completely unusable.
+- If the user gives a partial answer, infer the missing parts when reasonable and continue.
+- If the user gives extra information, extract it and use it to fill later questions automatically.
+- If a later question is already answered, skip it.
+- Ask only one question per turn.
+- Keep each question brief and direct.
+- After the 8th topic is answered, stop immediately and output the final summary/config.
+- Do not restart the flow.
+- Do not loop.
+- Do not improvise extra onboarding steps.
 
-NEVER ask all questions at once. Guide the conversation naturally."""
+MISSION
+Collect only the minimum information needed to configure ARIA for the user's business.
+
+THE ONLY 8 ONBOARDING TOPICS
+1. Business name
+2. Product/service/offer
+3. Target audience
+4. Main problem solved
+5. Differentiator or unique advantage
+6. Priority marketing channels
+7. Brand voice/tone
+8. Main 30-day business goal
+
+QUESTION WORDING
+Use these exact questions unless the answer is already known:
+
+Q1. What is your business or brand name?
+Q2. What product, service, or offer do you sell?
+Q3. Who is your ideal customer?
+Q4. What main problem does your offer solve?
+Q5. What makes your offer different from competitors?
+Q6. Which channels should ARIA focus on first: email, social, ads, or content?
+Q7. What tone should ARIA use for your brand: professional, friendly, bold, luxury, or casual?
+Q8. What is your main goal for the next 30 days?
+
+FOLLOW-UP POLICY
+You should avoid follow-up questions.
+Only ask a follow-up when:
+- the user response is empty, or
+- the response is completely unrelated, or
+- the answer cannot be converted into usable onboarding data.
+
+If a follow-up is absolutely necessary:
+- ask only one short recovery prompt
+- keep it tightly constrained
+- do not branch into conversation
+- then continue to the next topic
+
+Examples of acceptable recovery prompts:
+- "Please answer with your business name."
+- "Please choose one or more: email, social, ads, content."
+- "Please describe the offer in one sentence."
+
+COMPLETION LOGIC
+Track progress internally across the 8 topics.
+If the user answers multiple topics in one reply, mark all of them complete.
+Do not ask already-answered topics again.
+As soon as all 8 topics are complete, stop asking questions and produce the final summary.
+
+IMPORTANT BEHAVIOR CONSTRAINTS
+- Do not add commentary before or after the final format.
+- Do not ask any further questions after completion.
+- Do not suggest additional strategy during onboarding.
+- Do not brainstorm unless explicitly asked.
+- Do not be conversational for the sake of being friendly.
+- Be efficient, structured, and deterministic.
+- Your task is finished once all 8 topics are answered.
+
+If the user refuses a topic, use "not specified" and continue.
+If the user gives vague answers, normalize them into the closest usable business value and continue.
+
+HARD STOP:
+Under no circumstance may you ask more than 8 onboarding questions total.
+If you reach 8 answered topics, you must terminate questioning immediately.
+Any response that asks another onboarding question after completion is incorrect."""
 
 EXTRACTION_PROMPT = """Based on the conversation below, extract a structured business configuration and GTM strategy as JSON.
 
@@ -122,7 +187,7 @@ class OnboardingAgent:
     def __init__(self):
         self.messages: list[dict] = []
         self.questions_answered = 0
-        self.min_questions = 6
+        self.max_questions = 8
         self._complete = False
         self._extracted_config: dict | None = None
         self.skipped_topics: list[str] = []
@@ -130,9 +195,9 @@ class OnboardingAgent:
 
     def start_conversation(self) -> str:
         greeting = (
-            "Hey! I'm ARIA, your AI marketing co-founder. "
-            "I'm going to learn about your product and build a marketing strategy for you. "
-            "To start — what did you build?"
+            "Hi! I'm ARIA, your AI marketing team. "
+            "I need to ask you 8 quick questions to set up your marketing strategy. "
+            "Let's start — what is your business or brand name?"
         )
         self.messages.append({"role": "assistant", "content": greeting})
         return greeting
@@ -143,30 +208,31 @@ class OnboardingAgent:
         if self.current_topic_index < len(ONBOARDING_TOPICS):
             self.current_topic_index += 1
 
+        # Hard stop: all 8 topics answered
+        if self.questions_answered >= self.max_questions:
+            self._complete = True
+
         conversation_text = "\n".join(
-            f"{'ARIA' if m['role'] == 'assistant' else 'Founder'}: {m['content']}"
+            f"{'ARIA' if m['role'] == 'assistant' else 'User'}: {m['content']}"
             for m in self.messages
         )
 
+        progress = f"Topics answered: {self.questions_answered}/{self.max_questions}. "
+        if self._complete:
+            progress += "All topics complete — produce the final summary now. Do NOT ask another question."
+        else:
+            progress += f"Next topic: {ONBOARDING_TOPICS[self.current_topic_index] if self.current_topic_index < len(ONBOARDING_TOPICS) else 'done'}."
+
         assistant_text = await call_claude(
             SYSTEM_PROMPT,
-            f"Continue this onboarding conversation. Reply as ARIA with your next response only.\n\n{conversation_text}",
+            f"{progress}\n\nConversation so far:\n{conversation_text}",
         )
 
         self.messages.append({"role": "assistant", "content": assistant_text})
 
-        if self.questions_answered >= self.min_questions:
-            lower = assistant_text.lower()
-            if any(phrase in lower for phrase in [
-                "here's what i understood",
-                "let me summarize",
-                "does this look right",
-                "here's your strategy",
-                "here's the plan",
-                "sound about right",
-                "gtm strategy",
-            ]):
-                self._complete = True
+        # Also detect completion from the LLM output
+        if not self._complete and "onboarding complete" in assistant_text.lower():
+            self._complete = True
 
         return assistant_text
 

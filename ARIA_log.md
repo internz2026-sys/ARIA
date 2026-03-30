@@ -592,3 +592,43 @@ CREATE TABLE inbox_items (
 5. Task moves to **"Done"** on Kanban automatically (Socket.IO)
 6. Agent returns to **"Idle"** in virtual office
 7. Content saved to Inbox
+
+---
+
+## 2026-03-27 — Gmail Integration Bug Fixes: Token Storage, Error Handling, Settings UI
+
+### Problems
+- New users who signed up via Google OAuth never had their Gmail tokens stored in the backend — tokens were stashed in localStorage during the callback (no `tenant_id` yet) but the onboarding completion flow never flushed them to the backend
+- `gmail_tool.send_email()` crashed on any non-401 HTTP error (`raise_for_status()`) — errors like 400, 403, 429 propagated and crashed the entire agent background task
+- When `_run_agent_to_inbox()` caught an agent crash, it only logged the error — no inbox item was created, task stayed stuck as "in_progress", user got no feedback
+- When the Google refresh token expired (Testing mode: 7-day limit), the error message was a raw HTTP 400 with no guidance
+- Settings > Integrations had no Gmail status — users couldn't see if Gmail was connected or reconnect it
+
+### Changes
+
+**`frontend/app/(onboarding)/select-agents/page.tsx`:**
+- Added `flushGoogleTokens(tenantId)` — after onboarding creates `tenant_id`, reads `aria_google_token` / `aria_google_refresh_token` from localStorage and POSTs them to `/api/integrations/{tenant_id}/google-tokens`, then clears localStorage
+
+**`backend/server.py`:**
+- Added `GET /api/integrations/{tenant_id}/gmail-status` endpoint — returns `{connected, email}` for Settings UI
+- In `_run_agent_to_inbox()`: email send status (success count or error) is now appended to inbox item content so users see ✅ or ⚠️
+- In `_run_agent_to_inbox()` exception handler: now creates an inbox error item, marks the task as done, and emits `task_updated` so the Kanban doesn't get stuck
+
+**`backend/tools/gmail_tool.py`:**
+- `send_email()`: replaced `raise_for_status()` with structured error return for all 4xx/5xx — no more crashes
+- `refresh_access_token()`: validates `GOOGLE_CLIENT_ID`/`SECRET` are set, returns Google's actual error description on failure instead of raw HTTP exception
+
+**`backend/agents/email_marketer_agent.py`:**
+- Wrapped send calls in try/except — network errors no longer crash the agent
+- When refresh token is missing: clears stale access token and returns actionable error
+- When refresh fails: clears both tokens from `tenant_configs` so `gmail-status` returns `connected: false`, error message says "reconnect Gmail in Settings > Integrations"
+
+**`frontend/app/(dashboard)/settings/page.tsx`:**
+- Integrations tab now shows Gmail as an active integration with live connection status
+- "Connect Gmail" button triggers Google OAuth re-authentication when disconnected
+- Future integrations moved to "Coming Soon" section
+
+### Token lifecycle (post-fix)
+- Google access tokens expire after 1 hour — backend auto-refreshes using stored refresh token
+- For published OAuth apps: refresh token never expires — email sending works indefinitely
+- If refresh fails: tokens are cleared, Settings shows "Not connected", error in inbox tells user to reconnect
