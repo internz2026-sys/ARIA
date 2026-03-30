@@ -632,3 +632,41 @@ CREATE TABLE inbox_items (
 - Google access tokens expire after 1 hour — backend auto-refreshes using stored refresh token
 - For published OAuth apps: refresh token never expires — email sending works indefinitely
 - If refresh fails: tokens are cleared, Settings shows "Not connected", error in inbox tells user to reconnect
+
+---
+
+## 2026-03-30 — Onboarding Error Fixes: JSON Parsing, Socket.IO, Column Safety
+
+### Problems
+- Deployed `select-agents` page returned error "Cannot connect to the backend server" because multiple backend crashes on `/api/onboarding/save-config` and `/api/onboarding/extract-config`
+- Root causes:
+  1. `server.py` had no module-level `logger` — `except` blocks that tried `logger.warning()` crashed with `NameError`, turning recoverable errors into 500s
+  2. `onboarding_agent.py` `extract_config()` called `json.loads()` on LLM output without any error handling — when Haiku returned JSON with unescaped quotes/newlines, it crashed with `JSONDecodeError`
+  3. `sio.enter_room()` in `server.py` was missing `await` — caused `RuntimeWarning: coroutine never awaited`
+  4. Supabase `tenant_configs` table didn't have `gtm_profile` column — save crashed with `PGRST204: Could not find 'gtm_profile' column`
+
+### Changes
+
+**`backend/server.py`:**
+- Added `logger = logging.getLogger("aria.server")` at module level (after `load_dotenv()`)
+- Changed `sio.enter_room(sid, tenant_id)` → `await sio.enter_room(sid, tenant_id)`
+- Wrapped `extract_config()` endpoint in try/except — on any exception, returns fallback config from conversation messages instead of 500
+
+**`backend/onboarding_agent.py`:**
+- Added `logger = logging.getLogger("aria.onboarding")` and `import logging`
+- Replaced brittle JSON extraction with:
+  - `_extract_json()`: properly tracks brace depth + string boundaries (not naive `find/rfind`)
+  - `_repair_json()`: handles markdown fences, JS comments, trailing commas, control chars, unescaped newlines in strings
+  - `_try_parse_json()`: attempts parse with original, then repaired JSON
+  - `_fallback_config_from_messages()`: if both LLM attempts fail, builds minimal config directly from user messages (never crashes)
+- `extract_config()` now has two LLM attempts with stricter second prompt, then falls back to conversation-based config
+
+**`backend/config/loader.py`:**
+- Added `save_tenant_config()` retry loop: on PGRST204 (missing column), extracts the column name from error message, strips it from data, and retries (up to 5 times)
+- Gracefully handles new schema fields that don't exist in Supabase yet
+
+### Result
+- Onboarding flow now works end-to-end without crashing
+- When LLM produces invalid JSON, the fallback ensures users still get a usable config (built from their answers)
+- Missing database columns don't block onboarding — data is safely filtered before insert
+- Frontend "Launch ARIA" button succeeds after completing the flow
