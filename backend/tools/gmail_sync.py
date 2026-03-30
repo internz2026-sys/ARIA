@@ -32,13 +32,29 @@ def _extract_email_address(raw: str) -> str:
 async def _ensure_access_token(config) -> str | None:
     """Get a valid access token, refreshing if needed. Returns None if disconnected."""
     token = config.integrations.google_access_token
+    refresh = config.integrations.google_refresh_token
+
+    # If no access token, try refreshing from refresh token
+    if not token and refresh:
+        try:
+            token = await gmail_tool.refresh_access_token(refresh)
+            config.integrations.google_access_token = token
+            save_tenant_config(config)
+            return token
+        except Exception as e:
+            logger.warning("Gmail token refresh failed for tenant %s: %s", config.tenant_id, e)
+            if getattr(e, "is_revoked", False):
+                config.integrations.google_refresh_token = None
+                logger.warning("Google revoked refresh token for tenant %s — user must reconnect", config.tenant_id)
+            save_tenant_config(config)
+            return None
+
     if not token:
         return None
 
     # Test token by fetching profile
     profile = await gmail_tool.get_profile(token)
     if profile.get("error") == "token_expired":
-        refresh = config.integrations.google_refresh_token
         if not refresh:
             logger.warning("Gmail token expired and no refresh token for tenant %s", config.tenant_id)
             config.integrations.google_access_token = None
@@ -51,14 +67,13 @@ async def _ensure_access_token(config) -> str | None:
         except Exception as e:
             logger.warning("Gmail token refresh failed for tenant %s: %s", config.tenant_id, e)
             config.integrations.google_access_token = None
-            # Only clear refresh_token if Google explicitly revoked it
             if getattr(e, "is_revoked", False):
                 config.integrations.google_refresh_token = None
                 logger.warning("Google revoked refresh token for tenant %s — user must reconnect", config.tenant_id)
             save_tenant_config(config)
             return None
     elif profile.get("error"):
-        logger.warning("Gmail API error for tenant %s: %s", config.tenant_id, profile["error"])
+        logger.warning("Gmail API error for tenant %s: %s — token may lack required scopes", config.tenant_id, profile["error"])
         return None
 
     return token

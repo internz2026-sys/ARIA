@@ -55,7 +55,7 @@ function LoginForm() {
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback?mode=login`,
-        scopes: "https://www.googleapis.com/auth/gmail.send",
+        scopes: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
         queryParams: {
           access_type: "offline",
           prompt: "consent",

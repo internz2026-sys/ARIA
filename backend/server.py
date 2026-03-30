@@ -1,6 +1,7 @@
 """ARIA FastAPI Server — webhooks, chat, agent management, dashboard API."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -34,11 +35,33 @@ from backend.paperclip_sync import initialize as paperclip_init, is_connected as
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
 
+async def _gmail_sync_loop():
+    """Background loop: sync Gmail inbound replies every 2 minutes."""
+    import asyncio
+    _log = logging.getLogger("aria.gmail_sync_loop")
+    while True:
+        await asyncio.sleep(120)  # 2 minutes
+        try:
+            from backend.tools.gmail_sync import sync_all_tenants
+            results = await sync_all_tenants()
+            for sr in results:
+                tid = sr.get("tenant_id", "")
+                if tid:
+                    await _emit_sync_events(tid, sr)
+            total = sum(r.get("imported", 0) for r in results)
+            if total > 0:
+                _log.info("Background sync: imported %d replies from %d tenants", total, len(results))
+        except Exception as e:
+            _log.warning("Background Gmail sync failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: sync agents with Paperclip AI orchestrator."""
+    """Startup: sync agents with Paperclip AI orchestrator + start background Gmail sync."""
     await paperclip_init()
+    sync_task = asyncio.create_task(_gmail_sync_loop())
     yield
+    sync_task.cancel()
 
 
 app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
