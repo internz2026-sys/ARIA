@@ -137,27 +137,6 @@ INTELLIGENT EXTRACTION
 - If a message contains multiple valid answers, extract and mark all matching fields
 - Default assumption: the user is answering the question that was just asked
 
-PROGRESS METADATA TAG (REQUIRED)
-After EVERY response, you MUST append a metadata tag on its own line at the very end:
-
-[VALIDATED: field1, field2, field3]
-
-Where field1, field2, etc. are the field names from this list that NOW have valid answers:
-business_name, product_or_offer, target_audience, problem_solved, differentiator, channels, brand_voice, goal_30_days
-
-Rules for the metadata tag:
-- Include ALL fields that have been validly answered so far (cumulative).
-- If no new field was validated this turn, still include all previously validated fields.
-- If no fields have valid answers yet, use: [VALIDATED: none]
-- This tag must appear on the LAST line of every response, including the final summary.
-- The tag is machine-parsed and will be stripped before showing to the user.
-
-Examples:
-- User answers business name validly: [VALIDATED: business_name]
-- User answers business name and product in one message: [VALIDATED: business_name, product_or_offer]
-- User gives weak answer, nothing new validated: [VALIDATED: business_name] (keep previous)
-- First message, no valid answer yet: [VALIDATED: none]
-
 RE-ONBOARDING / EDIT MODE
 - If previous onboarding exists, do not block access.
 - Offer:
@@ -383,6 +362,20 @@ class OnboardingAgent:
     async def process_message(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
 
+        # Remember which field the user was answering BEFORE we call the LLM.
+        current_field_idx = self.current_topic_index
+        current_field = (
+            ONBOARDING_FIELDS[current_field_idx]
+            if current_field_idx < len(ONBOARDING_FIELDS)
+            else None
+        )
+
+        # Auto-validate the current field immediately — the user replied,
+        # so we assume they answered the question. This is the reliable
+        # default; the LLM tag is a bonus refinement, not a gate.
+        if current_field:
+            self.validated_fields.add(current_field)
+
         # Build progress directive injected into system prompt.
         answered = self.questions_answered
         validated_list = ", ".join(sorted(self.validated_fields)) or "none"
@@ -393,8 +386,7 @@ class OnboardingAgent:
             progress += (
                 "All topics complete — produce the final structured output now. "
                 "Do NOT ask another question. "
-                "Do NOT add any text after the GTM Profile JSON block. "
-                "Still include the [VALIDATED: ...] tag on the last line."
+                "Do NOT add any text after the GTM Profile JSON block."
             )
         else:
             next_field = ONBOARDING_FIELDS[self.current_topic_index]
@@ -409,12 +401,9 @@ class OnboardingAgent:
             model=MODEL_HAIKU,
         )
 
-        # Parse the [VALIDATED: ...] metadata tag and strip it from the response.
-        cleaned_text, new_validated = _parse_validated_tag(assistant_text)
-
-        # Update validated fields (cumulative — LLM reports all valid fields).
-        if new_validated:
-            self.validated_fields = new_validated
+        # Strip the [VALIDATED: ...] tag if present (cleanup only — we
+        # already advanced progress above so the tag is not required).
+        cleaned_text, _tag_fields = _parse_validated_tag(assistant_text)
 
         # Store the cleaned text (without metadata) in conversation history.
         self.messages.append({"role": "assistant", "content": cleaned_text})
