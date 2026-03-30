@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { AGENT_COLORS, AGENT_NAMES } from "@/lib/agent-config";
 import { useCeoChat, type ChatMessage } from "@/lib/use-ceo-chat";
 import { formatDateAgo } from "@/lib/utils";
+import { useSpeechToText, useTTS } from "@/lib/use-voice";
 
 function renderMarkdown(text: string) {
   const parts: React.ReactNode[] = [];
@@ -37,6 +38,18 @@ export default function CEOChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const { messages, sessions, sessionId, sending, send, switchSession, startNewChat } = useCeoChat();
+  const stt = useSpeechToText(useCallback((text: string) => setInput(prev => prev ? prev + " " + text : text), []));
+  const tts = useTTS();
+  const prevMsgCount = useRef(0);
+
+  // Auto-read new assistant messages aloud
+  useEffect(() => {
+    if (messages.length > prevMsgCount.current) {
+      const last = messages[messages.length - 1];
+      if (last?.role === "assistant") tts.speak(last.content);
+    }
+    prevMsgCount.current = messages.length;
+  }, [messages, tts]);
 
   // Load user name from Supabase
   useEffect(() => {
@@ -191,6 +204,23 @@ export default function CEOChatPage() {
                     </div>
                     <p className="text-sm leading-relaxed whitespace-pre-wrap">{renderMarkdown(msg.content)}</p>
                   </div>
+                  {msg.role === "assistant" && tts.supported && (
+                    <button
+                      onClick={() => tts.speaking ? tts.stop() : tts.speak(msg.content)}
+                      className="mt-1 p-1 rounded text-[#B0AFA8] hover:text-[#534AB7] transition-colors"
+                      title={tts.speaking ? "Stop reading" : "Read aloud"}
+                    >
+                      {tts.speaking ? (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+                        </svg>
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                        </svg>
+                      )}
+                    </button>
+                  )}
 
                   {msg.delegations && msg.delegations.length > 0 && (
                     <div className="mt-2 space-y-2">
@@ -256,6 +286,21 @@ export default function CEOChatPage() {
               rows={1}
               className="flex-1 min-h-[48px] max-h-[150px] px-4 py-3 bg-white border border-[#E0DED8] rounded-xl text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] disabled:opacity-60 resize-none"
             />
+            {stt.supported && (
+              <button
+                onClick={stt.toggle}
+                className={`p-3 rounded-xl transition-colors ${
+                  stt.listening
+                    ? "bg-red-500 text-white animate-pulse"
+                    : "border border-[#E0DED8] text-[#5F5E5A] hover:text-[#534AB7] hover:bg-[#F8F8F6]"
+                }`}
+                title={stt.listening ? "Stop recording" : "Voice input"}
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                </svg>
+              </button>
+            )}
             <button
               onClick={handleSend}
               disabled={!input.trim() || sending}
