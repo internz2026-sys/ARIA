@@ -670,3 +670,61 @@ CREATE TABLE inbox_items (
 - When LLM produces invalid JSON, the fallback ensures users still get a usable config (built from their answers)
 - Missing database columns don't block onboarding — data is safely filtered before insert
 - Frontend "Launch ARIA" button succeeds after completing the flow
+
+---
+
+## 2026-03-30 — Real-time Email Sync + Gmail OAuth Fixes
+
+### Problems
+- Inbound email replies from recipients were not automatically captured — only visible if user manually clicked "Sync Gmail" or cron ran
+- Conversations page had no way to see replies in real-time
+- Inbox page didn't refresh when replies arrived
+- 403 Gmail API errors when sync tried to read threads — insufficient OAuth scopes
+- Background Gmail sync crashed with error "column tenant_configs.is_active does not exist"
+- Email sending didn't notify the conversations page to update thread status
+
+### Changes
+
+**`backend/tools/gmail_sync.py`:**
+- Modified `sync_tenant_replies()` to collect `new_replies` list with `{thread_id, sender, subject, snippet, inbox_item}` data for Socket.IO emission
+- Modified `_create_inbox_item_for_reply()` to log created items for debugging
+- Modified `_ensure_access_token()` to auto-refresh when only `refresh_token` exists (no access token yet)
+- Fixed `sync_all_tenants()` to check both `google_access_token` AND `google_refresh_token` (was only checking access token)
+
+**`backend/server.py`:**
+- Added `import asyncio` and `_gmail_sync_loop()` background task that runs every 2 minutes, syncing all tenants and emitting socket events
+- Added `_emit_sync_events(tenant_id, sync_result)` helper — reusable function that emits `inbox_new_item` + `email_reply_received` socket events for all new replies (eliminates duplicate code across 3 sync endpoints)
+- Modified `/api/email/{tenant_id}/sync` to call `_emit_sync_events()` after sync
+- Modified `/api/email/sync-all` to call `_emit_sync_events()` for each tenant
+- Modified `/api/cron/run-scheduled` to call `_emit_sync_events()` for each tenant after sync
+- Modified `approve_and_send_email()` to emit `email_thread_updated` socket event after sending so conversations page refreshes
+- Fixed `get_active_tenants()` — removed filter on non-existent `is_active` column, now returns all tenants
+
+**`frontend/app/(dashboard)/conversations/page.tsx`:**
+- Added Socket.IO listeners for `email_reply_received`, `email_thread_updated`, `inbox_item_updated` — triggers real-time refresh of threads and current thread messages
+- Added `selectedRef` useRef to track selected thread across render cycles (needed for auto-poll)
+- Added 30-second auto-poll interval on conversations page — calls `emailThreads.sync()` + refreshes thread list and selected thread messages
+
+**`frontend/app/(auth)/{login,signup}/page.tsx` + `frontend/app/(dashboard)/settings/page.tsx`:**
+- Updated OAuth scopes to include `https://www.googleapis.com/auth/gmail.readonly` alongside `gmail.send` (required for sync to read threads and messages)
+
+**`backend/config/loader.py`:**
+- Fixed `get_active_tenants()` to not filter by `is_active` column (doesn't exist in schema)
+
+### Result
+- Replies are now caught automatically **every 2 minutes** via background sync loop
+- When using conversations page, replies appear **in real-time** via socket events + 30s auto-poll
+- Inbox auto-refreshes when new reply inbox items are created
+- Email thread status updates immediately after sending
+- No manual "Sync Gmail" button needed (though it's still available)
+- Users must reconnect Gmail once to grant the new `gmail.readonly` scope
+
+### Real-time flow
+1. User sends email via ARIA → Thread tracked in `email_threads` table
+2. Recipient replies → Gmail stores it in same thread
+3. Background sync (every 2min) or conversations page auto-poll (every 30s) detects reply
+4. Socket.IO emits `email_reply_received` + `inbox_new_item` events
+5. Frontend listens and instantly refreshes:
+   - Inbox: shows new reply as high-priority item
+   - Conversations: thread moves to "needs_review", messages list updates
+6. User clicks thread → sees full conversation with reply visible
