@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { renderMarkdown } from "@/lib/render-markdown";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -186,7 +187,7 @@ export default function DescribePage() {
                     ? "bg-[#534AB7] text-white rounded-br-md"
                     : "bg-[#F8F8F6] text-[#2C2C2A] border border-[#E0DED8] rounded-bl-md"
                 }`}>
-                  {msg.text}
+                  {msg.role === "aria" ? renderMarkdown(msg.text) : msg.text}
                 </div>
               </div>
             ))}

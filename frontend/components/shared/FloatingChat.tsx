@@ -5,26 +5,7 @@ import { AGENT_COLORS, AGENT_NAMES } from "@/lib/agent-config";
 import { useDraggable } from "@/lib/use-draggable";
 import { useCeoChat } from "@/lib/use-ceo-chat";
 import { formatDateAgo } from "@/lib/utils";
-
-function renderMd(text: string) {
-  const parts: React.ReactNode[] = [];
-  text.split("\n").forEach((line, li) => {
-    if (li > 0) parts.push(<br key={`b${li}`} />);
-    const re = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
-    let last = 0, m, pi = 0;
-    const lp: React.ReactNode[] = [];
-    while ((m = re.exec(line)) !== null) {
-      if (m.index > last) lp.push(line.slice(last, m.index));
-      if (m[2]) lp.push(<strong key={`${li}-${pi++}`}>{m[2]}</strong>);
-      else if (m[3]) lp.push(<em key={`${li}-${pi++}`}>{m[3]}</em>);
-      else if (m[4]) lp.push(<code key={`${li}-${pi++}`} className="px-0.5 bg-black/10 rounded text-[10px] font-mono">{m[4]}</code>);
-      last = m.index + m[0].length;
-    }
-    if (last < line.length) lp.push(line.slice(last));
-    parts.push(...lp);
-  });
-  return parts;
-}
+import { renderMarkdown } from "@/lib/render-markdown";
 
 export default function FloatingChat() {
   const [open, setOpen] = useState(false);
@@ -207,7 +188,7 @@ export default function FloatingChat() {
                         ? "bg-[#534AB7] text-white rounded-br-sm"
                         : "bg-[#F8F8F6] text-[#2C2C2A] border border-[#E0DED8] rounded-bl-sm"
                     }`}>
-                      <p className="text-xs leading-relaxed whitespace-pre-wrap">{renderMd(m.content)}</p>
+                      <div className="text-xs leading-relaxed">{renderMarkdown(m.content)}</div>
                     </div>
                   </div>
                   {m.delegations && m.delegations.length > 0 && (
