@@ -66,13 +66,28 @@ export function useSpeechToText(onResult: (text: string) => void): UseSpeechToTe
 interface UseTTSReturn {
   speaking: boolean;
   supported: boolean;
+  enabled: boolean;
+  setEnabled: (v: boolean) => void;
   speak: (text: string) => void;
   stop: () => void;
 }
 
+const TTS_KEY = "aria_tts_enabled";
+
 export function useTTS(): UseTTSReturn {
   const [speaking, setSpeaking] = useState(false);
+  const [enabled, setEnabledState] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const stored = localStorage.getItem(TTS_KEY);
+    return stored === null ? true : stored === "true";
+  });
   const supported = typeof window !== "undefined" && "speechSynthesis" in window;
+
+  const setEnabled = useCallback((v: boolean) => {
+    setEnabledState(v);
+    if (typeof window !== "undefined") localStorage.setItem(TTS_KEY, String(v));
+    if (!v && supported) window.speechSynthesis.cancel();
+  }, [supported]);
 
   const stop = useCallback(() => {
     if (supported) window.speechSynthesis.cancel();
@@ -117,5 +132,5 @@ export function useTTS(): UseTTSReturn {
     return () => { if (supported) window.speechSynthesis.cancel(); };
   }, [supported]);
 
-  return { speaking, supported, speak, stop };
+  return { speaking, supported, enabled, setEnabled, speak, stop };
 }
