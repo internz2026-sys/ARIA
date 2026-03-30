@@ -27,14 +27,22 @@ def _build_mime_message(to: str, subject: str, html_body: str, from_email: str) 
     return base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
 
 
+class TokenRefreshError(Exception):
+    """Raised when a Google token refresh fails."""
+    def __init__(self, message: str, is_revoked: bool = False):
+        super().__init__(message)
+        self.is_revoked = is_revoked  # True only when Google says token is invalid/revoked
+
+
 async def refresh_access_token(refresh_token: str) -> str:
     """Exchange a refresh token for a fresh access token."""
     client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
     if not client_id or not client_secret:
-        raise RuntimeError(
-            "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env to refresh Gmail tokens"
+        raise TokenRefreshError(
+            "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set in .env to refresh Gmail tokens",
+            is_revoked=False,
         )
 
     async with httpx.AsyncClient() as client:
@@ -45,10 +53,19 @@ async def refresh_access_token(refresh_token: str) -> str:
             "client_secret": client_secret,
         })
         if resp.status_code != 200:
-            error_detail = resp.json().get("error_description", resp.text[:200]) if resp.text else "unknown"
-            raise RuntimeError(
+            error_body = {}
+            try:
+                error_body = resp.json()
+            except Exception:
+                pass
+            error_code = error_body.get("error", "")
+            error_detail = error_body.get("error_description", resp.text[:200]) if resp.text else "unknown"
+            # Only mark as revoked when Google explicitly says the grant is bad
+            is_revoked = error_code in ("invalid_grant", "unauthorized_client")
+            raise TokenRefreshError(
                 f"Google token refresh failed ({resp.status_code}): {error_detail}. "
-                "The user needs to reconnect Gmail in Settings > Integrations."
+                "The user needs to reconnect Gmail in Settings > Integrations.",
+                is_revoked=is_revoked,
             )
         return resp.json()["access_token"]
 

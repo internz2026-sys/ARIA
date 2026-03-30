@@ -395,10 +395,27 @@ async def save_google_tokens(tenant_id: str, body: GoogleTokens):
 
 @app.get("/api/integrations/{tenant_id}/gmail-status")
 async def gmail_status(tenant_id: str):
-    """Check if Gmail is connected for a tenant."""
+    """Check if Gmail is connected for a tenant.
+
+    Connected = has a valid access_token OR a refresh_token that can mint one.
+    """
     try:
         config = get_tenant_config(tenant_id)
-        connected = bool(config.integrations.google_access_token)
+        has_access = bool(config.integrations.google_access_token)
+        has_refresh = bool(config.integrations.google_refresh_token)
+
+        # If we have a refresh token but no access token, try to refresh now
+        if not has_access and has_refresh:
+            try:
+                from backend.tools import gmail_tool
+                new_token = await gmail_tool.refresh_access_token(config.integrations.google_refresh_token)
+                config.integrations.google_access_token = new_token
+                save_tenant_config(config)
+                has_access = True
+            except Exception:
+                pass  # Refresh failed — still report based on what we have
+
+        connected = has_access or has_refresh
         return {"connected": connected, "email": config.owner_email if connected else None}
     except Exception:
         return {"connected": False, "email": None}
@@ -419,6 +436,15 @@ async def send_gmail_email(tenant_id: str, body: GmailSendRequest):
     config = get_tenant_config(tenant_id)
     access_token = config.integrations.google_access_token
     refresh_token = config.integrations.google_refresh_token
+
+    # Proactively refresh if we have a refresh token but no access token
+    if not access_token and refresh_token:
+        try:
+            access_token = await gmail_tool.refresh_access_token(refresh_token)
+            config.integrations.google_access_token = access_token
+            save_tenant_config(config)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Gmail not connected. Please log in with Google to grant email access.")
 
     if not access_token:
         raise HTTPException(status_code=400, detail="Gmail not connected. Please log in with Google to grant email access.")
@@ -444,11 +470,16 @@ async def send_gmail_email(tenant_id: str, body: GmailSendRequest):
                 html_body=body.html_body,
                 from_email=config.owner_email,
             )
-        except Exception:
+        except Exception as e:
+            config.integrations.google_access_token = None
+            if getattr(e, "is_revoked", False):
+                config.integrations.google_refresh_token = None
+            save_tenant_config(config)
             raise HTTPException(status_code=401, detail="Gmail token expired. Please log in again to reconnect.")
 
     if result.get("error"):
-        raise HTTPException(status_code=401, detail="Gmail token expired. Please log in again to reconnect.")
+        detail = result.get("detail", "Gmail API error")
+        raise HTTPException(status_code=result.get("status_code", 401), detail=detail)
 
     return {"status": "sent", "message_id": result.get("message_id", "")}
 
@@ -501,6 +532,16 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
     access_token = config.integrations.google_access_token
     refresh_token = config.integrations.google_refresh_token
 
+    # Proactively refresh if we have a refresh token but no access token
+    if not access_token and refresh_token:
+        try:
+            from backend.tools import gmail_tool as _gt
+            access_token = await _gt.refresh_access_token(refresh_token)
+            config.integrations.google_access_token = access_token
+            save_tenant_config(config)
+        except Exception:
+            pass  # Fall through to the not-connected error
+
     if not access_token:
         sb.table("inbox_items").update({
             "status": "failed",
@@ -529,7 +570,11 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
                 html_body=html_body,
                 from_email=config.owner_email,
             )
-        except Exception:
+        except Exception as e:
+            config.integrations.google_access_token = None
+            if getattr(e, "is_revoked", False):
+                config.integrations.google_refresh_token = None
+            save_tenant_config(config)
             sb.table("inbox_items").update({
                 "status": "failed",
                 "updated_at": datetime.now(timezone.utc).isoformat(),

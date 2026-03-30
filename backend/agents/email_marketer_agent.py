@@ -133,6 +133,15 @@ async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict
     access_token = config.integrations.google_access_token
     refresh_token = config.integrations.google_refresh_token
 
+    # Proactively refresh if we have a refresh token but no access token
+    if not access_token and refresh_token:
+        try:
+            access_token = await gmail_tool.refresh_access_token(refresh_token)
+            config.integrations.google_access_token = access_token
+            save_tenant_config(config)
+        except Exception as e:
+            logger.warning("Gmail proactive refresh failed for tenant %s: %s", tenant_id, e)
+
     if not access_token:
         logger.warning("Gmail not connected for tenant %s", tenant_id)
         return [{"error": "Gmail not connected"}]
@@ -167,11 +176,15 @@ async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict
                         from_email=config.owner_email,
                     )
                 except Exception as e:
-                    # Refresh failed — clear stale tokens so status shows disconnected
+                    # Refresh failed — clear access token but preserve refresh_token
+                    # unless Google explicitly revoked it
                     config.integrations.google_access_token = None
-                    config.integrations.google_refresh_token = None
+                    if getattr(e, "is_revoked", False):
+                        config.integrations.google_refresh_token = None
+                        logger.warning("Google revoked refresh token for tenant %s — user must reconnect", tenant_id)
+                    else:
+                        logger.warning("Gmail token refresh failed (transient) for tenant %s: %s", tenant_id, e)
                     save_tenant_config(config)
-                    logger.warning("Cleared stale Gmail tokens for tenant %s", tenant_id)
                     result = {"error": "Gmail session expired. Please reconnect Gmail in Settings > Integrations."}
         except Exception as e:
             logger.error("Gmail send exception to=%s: %s", email["to"], e)

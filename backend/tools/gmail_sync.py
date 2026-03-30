@@ -51,7 +51,10 @@ async def _ensure_access_token(config) -> str | None:
         except Exception as e:
             logger.warning("Gmail token refresh failed for tenant %s: %s", config.tenant_id, e)
             config.integrations.google_access_token = None
-            config.integrations.google_refresh_token = None
+            # Only clear refresh_token if Google explicitly revoked it
+            if getattr(e, "is_revoked", False):
+                config.integrations.google_refresh_token = None
+                logger.warning("Google revoked refresh token for tenant %s — user must reconnect", config.tenant_id)
             save_tenant_config(config)
             return None
     elif profile.get("error"):
