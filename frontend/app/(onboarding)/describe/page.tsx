@@ -53,7 +53,8 @@ export default function DescribePage() {
   const [skipping, setSkipping] = useState(false);
   const [isRestart, setIsRestart] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const stt = useSpeechToText(useCallback((text: string) => setInput(prev => prev ? prev + " " + text : text), []));
+  const sendVoiceRef = useRef<(text: string) => void>(() => {});
+  const stt = useSpeechToText(useCallback((text: string) => { if (text.trim()) sendVoiceRef.current(text.trim()); }, []));
   const tts = useTTS();
   const prevMsgCount = useRef(0);
 
@@ -88,11 +89,8 @@ export default function DescribePage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault();
-    const text = input.trim();
+  async function sendMessage(text: string) {
     if (!text || loading || !sessionId) return;
-
     setInput("");
     setMessages(prev => [...prev, { role: "user", text }]);
     setLoading(true);
@@ -130,6 +128,13 @@ export default function DescribePage() {
     }
 
     setLoading(false);
+  }
+
+  sendVoiceRef.current = sendMessage;
+
+  function handleSend(e: React.FormEvent) {
+    e.preventDefault();
+    sendMessage(input.trim());
   }
 
   function handleContinue() {

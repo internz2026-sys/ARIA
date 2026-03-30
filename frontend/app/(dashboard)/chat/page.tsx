@@ -38,7 +38,9 @@ export default function CEOChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const { messages, sessions, sessionId, sending, send, switchSession, startNewChat } = useCeoChat();
-  const stt = useSpeechToText(useCallback((text: string) => setInput(prev => prev ? prev + " " + text : text), []));
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const stt = useSpeechToText(useCallback((text: string) => { if (text.trim()) sendRef.current(text.trim()); }, []));
   const tts = useTTS();
   const prevMsgCount = useRef(0);
 
