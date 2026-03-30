@@ -1,7 +1,7 @@
 """Social Manager Agent — platform-specific social media content."""
 from __future__ import annotations
 
-from backend.agents.base import BaseAgent
+from backend.agents.base import BaseAgent, MODEL_HAIKU
 
 _agent = None
 
@@ -10,12 +10,15 @@ class SocialManagerAgent(BaseAgent):
     AGENT_NAME = "social_manager"
     CONTEXT_KEY = "action"
     DEFAULT_CONTEXT = "content_calendar"
+    MODEL = MODEL_HAIKU
+    MAX_TOKENS = 1500
+    CONTEXT_FIELDS = {"business", "audience", "hangouts", "voice"}
 
     def build_system_prompt(self, config, action: str) -> str:
         return f"""You are the Social Media Manager for {config.business_name}, an AI marketing agent
 specializing in social media for developer-focused products.
 
-{self.business_context(config)}
+{self.business_context(config, self.CONTEXT_FIELDS)}
 Positioning: {config.gtm_playbook.positioning}
 Content themes: {', '.join(config.gtm_playbook.content_themes)}
 

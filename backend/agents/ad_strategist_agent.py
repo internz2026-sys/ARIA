@@ -1,7 +1,7 @@
 """Ad Strategist Agent — Facebook/Meta ads advisor with copy-paste setup guides."""
 from __future__ import annotations
 
-from backend.agents.base import BaseAgent
+from backend.agents.base import BaseAgent, MODEL_HAIKU
 
 _agent = None
 
@@ -10,12 +10,15 @@ class AdStrategistAgent(BaseAgent):
     AGENT_NAME = "ad_strategist"
     CONTEXT_KEY = "action"
     DEFAULT_CONTEXT = "campaign_plan"
+    MODEL = MODEL_HAIKU
+    MAX_TOKENS = 2000
+    CONTEXT_FIELDS = {"business", "product", "differentiators", "audience", "pain_points"}
 
     def build_system_prompt(self, config, action: str) -> str:
         return f"""You are the Ad Strategist for {config.business_name}, an AI marketing agent
 specializing in paid acquisition for developer-focused products.
 
-{self.business_context(config)}
+{self.business_context(config, self.CONTEXT_FIELDS)}
 Pricing: {config.product.pricing_info}
 Positioning: {config.gtm_playbook.positioning}
 

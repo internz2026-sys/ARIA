@@ -183,11 +183,20 @@ class SaveConfig(BaseModel):
 
 @app.post("/api/onboarding/save-config")
 async def save_config(body: SaveConfig):
+    from backend.config.brief import generate_agent_brief
+
     agent = onboarding_sessions.get(body.session_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Session not found")
     tenant_id = str(uuid.uuid4())
     config = await agent.build_tenant_config(tenant_id, body.owner_email, body.owner_name, body.active_agents)
+
+    # Generate condensed brief — all agents use this instead of full context
+    try:
+        config.agent_brief = await generate_agent_brief(config)
+    except Exception as e:
+        logger.warning("Brief generation failed (will use full context): %s", e)
+
     save_tenant_config(config)
     del onboarding_sessions[body.session_id]
     return {"tenant_id": tenant_id, "config": config.model_dump(mode="json")}
@@ -208,6 +217,8 @@ async def save_config_direct(body: SaveConfigDirect):
     from backend.config.tenant_schema import (
         TenantConfig, ICPConfig, ProductConfig, GTMPlaybook, BrandVoice,
     )
+    from backend.config.brief import generate_agent_brief
+
     extracted = body.config
     has_skips = bool(body.skipped_topics)
     tenant_id = str(uuid.uuid4())
@@ -228,8 +239,32 @@ async def save_config_direct(body: SaveConfigDirect):
         onboarding_status="completed" if not has_skips else "in_progress",
         skipped_fields=body.skipped_topics or [],
     )
+
+    # Generate condensed brief — all agents use this instead of full context
+    try:
+        config.agent_brief = await generate_agent_brief(config)
+    except Exception as e:
+        logger.warning("Brief generation failed (will use full context): %s", e)
+
     save_tenant_config(config)
     return {"tenant_id": tenant_id, "config": config.model_dump(mode="json")}
+
+
+# ─── Agent Brief (re)generation ───
+
+@app.post("/api/tenants/{tenant_id}/regenerate-brief")
+async def regenerate_brief(tenant_id: str):
+    """Regenerate the condensed agent brief for an existing tenant.
+
+    Call this after the user updates their business info in settings,
+    or to backfill briefs for tenants who onboarded before this feature.
+    """
+    from backend.config.brief import generate_agent_brief
+
+    config = get_tenant_config(tenant_id)
+    config.agent_brief = await generate_agent_brief(config)
+    save_tenant_config(config)
+    return {"agent_brief": config.agent_brief}
 
 
 # ─── Google OAuth Token Storage ───

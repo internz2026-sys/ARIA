@@ -10,6 +10,7 @@ class CEOAgent(BaseAgent):
     AGENT_NAME = "ceo"
     CONTEXT_KEY = "action"
     DEFAULT_CONTEXT = "strategy_review"
+    MAX_TOKENS = 2000
 
     def build_system_prompt(self, config, action: str) -> str:
         return f"""You are ARIA's Chief Marketing Strategist — the AI marketing co-founder

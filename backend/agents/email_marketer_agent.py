@@ -19,6 +19,8 @@ class EmailMarketerAgent(BaseAgent):
     AGENT_NAME = "email_marketer"
     CONTEXT_KEY = "action"  # tasks come in via context={"action": "..."}
     DEFAULT_CONTEXT = "draft a newsletter"
+    MAX_TOKENS = 2000
+    CONTEXT_FIELDS = {"business", "product", "audience", "pain_points", "voice"}
 
     def build_system_prompt(self, config, action: str) -> str:
         # Detect if this is a send task with a recipient
@@ -40,7 +42,7 @@ Make the HTML body professional with proper formatting. Do NOT include placehold
         return f"""You are the Email Marketer for {config.business_name}, an AI marketing agent
 that creates complete email campaigns for developer-focused products.
 
-{self.business_context(config)}
+{self.business_context(config, self.CONTEXT_FIELDS)}
 Positioning: {config.gtm_playbook.positioning}
 
 Campaign types:

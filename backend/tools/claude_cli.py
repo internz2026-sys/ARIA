@@ -15,6 +15,10 @@ import anthropic
 
 logger = logging.getLogger("aria.claude")
 
+# ── Model constants ────────────────────────────────────────────────────────────
+MODEL_SONNET = "claude-sonnet-4-20250514"
+MODEL_HAIKU = "claude-haiku-4-5-20251001"
+
 # ── Anthropic client (initialized once) ─────────────────────────────────────
 _client: anthropic.AsyncAnthropic | None = None
 
@@ -129,33 +133,45 @@ def get_usage(tenant_id: str = "global") -> dict:
 
 # ── Main API call ───────────────────────────────────────────────────────────
 
-MODEL = os.getenv("ARIA_MODEL", "claude-sonnet-4-20250514")
+DEFAULT_MODEL = os.getenv("ARIA_MODEL", MODEL_SONNET)
 
 
 async def call_claude(
     system_prompt: str,
-    user_message: str,
+    user_message: str = "",
+    *,
     max_tokens: int = 4000,
     tenant_id: str = "global",
+    model: str | None = None,
+    messages: list[dict] | None = None,
 ) -> str:
     """Call Anthropic API with a system prompt and user message.
 
     Args:
         system_prompt: Instructions for Claude's behavior
-        user_message: The user's message / conversation
+        user_message: The user's message (ignored if messages is provided)
         max_tokens: Maximum response tokens (default 4000)
         tenant_id: For per-tenant rate limiting
+        model: Override model (defaults to ARIA_MODEL env or Sonnet)
+        messages: Multi-turn message list; if provided, replaces user_message
     """
     _check_limits(tenant_id)
 
     client = _get_client()
+    use_model = model or DEFAULT_MODEL
+
+    # Build messages array — multi-turn if provided, else single-turn
+    msg_array = messages if messages else [{"role": "user", "content": user_message}]
+
+    # Prompt caching: wrap system prompt so repeated calls reuse cached tokens
+    system_block = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
 
     try:
         response = await client.messages.create(
-            model=MODEL,
+            model=use_model,
             max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
+            system=system_block,
+            messages=msg_array,
         )
     except anthropic.RateLimitError:
         logger.warning("Anthropic API rate limit hit")
@@ -184,10 +200,13 @@ async def call_claude(
         _save_usage("global", global_usage)
 
     result = response.content[0].text
+    cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
     logger.info(
-        "API call: %d in + %d out tokens (tenant=%s)",
+        "API call: %d in (%d cached) + %d out tokens (model=%s, tenant=%s)",
         response.usage.input_tokens,
+        cache_read,
         response.usage.output_tokens,
+        use_model,
         tenant_id,
     )
     return result

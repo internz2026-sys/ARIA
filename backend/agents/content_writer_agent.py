@@ -10,12 +10,13 @@ class ContentWriterAgent(BaseAgent):
     AGENT_NAME = "content_writer"
     CONTEXT_KEY = "type"
     DEFAULT_CONTEXT = "blog_post"
+    CONTEXT_FIELDS = {"business", "product", "value_props", "differentiators", "audience", "pain_points", "voice"}
 
     def build_system_prompt(self, config, content_type: str) -> str:
         return f"""You are the Content Writer for {config.business_name}, an AI marketing agent
 specializing in content for developer-focused products.
 
-{self.business_context(config)}
+{self.business_context(config, self.CONTEXT_FIELDS)}
 
 GTM context:
 {self.gtm_context(config)}

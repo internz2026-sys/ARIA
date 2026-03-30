@@ -11,7 +11,7 @@ import json
 from backend.config.tenant_schema import (
     TenantConfig, ICPConfig, ProductConfig, GTMPlaybook, BrandVoice,
 )
-from backend.tools.claude_cli import call_claude
+from backend.tools.claude_cli import call_claude, MODEL_HAIKU
 
 SYSTEM_PROMPT = """You are ARIA's onboarding agent.
 
@@ -212,20 +212,22 @@ class OnboardingAgent:
         if self.questions_answered >= self.max_questions:
             self._complete = True
 
-        conversation_text = "\n".join(
-            f"{'ARIA' if m['role'] == 'assistant' else 'User'}: {m['content']}"
-            for m in self.messages
-        )
-
+        # Build progress directive injected into system prompt
         progress = f"Topics answered: {self.questions_answered}/{self.max_questions}. "
         if self._complete:
             progress += "All topics complete — produce the final summary now. Do NOT ask another question."
         else:
             progress += f"Next topic: {ONBOARDING_TOPICS[self.current_topic_index] if self.current_topic_index < len(ONBOARDING_TOPICS) else 'done'}."
 
+        # Use native multi-turn messages instead of flattening the whole
+        # conversation into a single user message. This enables prompt caching
+        # on the system prompt + earlier turns, so each turn only pays for
+        # the new message instead of re-processing the entire history.
         assistant_text = await call_claude(
-            SYSTEM_PROMPT,
-            f"{progress}\n\nConversation so far:\n{conversation_text}",
+            SYSTEM_PROMPT + "\n\n" + progress,
+            messages=self.messages,
+            max_tokens=500,
+            model=MODEL_HAIKU,
         )
 
         self.messages.append({"role": "assistant", "content": assistant_text})
@@ -272,6 +274,8 @@ class OnboardingAgent:
         raw = await call_claude(
             "You are a structured data extraction assistant. Return ONLY valid JSON, no other text.",
             EXTRACTION_PROMPT + conversation_text,
+            max_tokens=2000,
+            model=MODEL_HAIKU,
         )
 
         start = raw.find("{")

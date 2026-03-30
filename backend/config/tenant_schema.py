@@ -92,3 +92,4 @@ class TenantConfig(BaseModel):
     owner_name: str = ""
     onboarding_status: str = "not_started"  # not_started | in_progress | completed
     skipped_fields: list[str] = Field(default_factory=list)  # e.g. ["brand_voice", "competitors"]
+    agent_brief: str = ""  # Condensed ~150 token context for all agents (generated after onboarding)
