@@ -261,12 +261,14 @@ export default function InboxPage() {
 
           {/* Email envelope fields */}
           <div className="bg-[#F8F8F6] rounded-lg p-4 space-y-2 mb-3">
-            {draft.to && (
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs font-semibold text-[#5F5E5A] uppercase w-16 shrink-0">To</span>
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs font-semibold text-[#5F5E5A] uppercase w-16 shrink-0">To</span>
+              {draft.to ? (
                 <span className="text-sm text-[#2C2C2A]">{draft.to}</span>
-              </div>
-            )}
+              ) : (
+                <span className="text-sm text-[#D85A30] font-medium">No recipient — tell the CEO who to send to</span>
+              )}
+            </div>
             <div className="flex items-baseline gap-2">
               <span className="text-xs font-semibold text-[#5F5E5A] uppercase w-16 shrink-0">Subject</span>
               <span className="text-sm font-medium text-[#2C2C2A]">{draft.subject}</span>
@@ -336,7 +338,8 @@ export default function InboxPage() {
             <>
               <button
                 onClick={() => handleApproveSend(item)}
-                disabled={actionLoading === "approve"}
+                disabled={actionLoading === "approve" || !item.email_draft?.to}
+                title={!item.email_draft?.to ? "No recipient — tell the CEO who to send this to" : ""}
                 className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#1D9E75] text-white hover:bg-[#178a64] transition-colors disabled:opacity-60"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

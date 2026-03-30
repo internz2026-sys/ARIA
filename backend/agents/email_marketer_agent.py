@@ -207,6 +207,15 @@ async def run(tenant_id: str, context: dict | None = None) -> dict:
     task_desc = (context or {}).get("action", "")
     recipient = _extract_recipient(task_desc)
 
+    # Also try to extract recipient from agent output if not found in task
+    if not recipient:
+        recipient = _extract_recipient(content)
+        if recipient:
+            logger.info("Extracted recipient from agent output: %s", recipient)
+
+    if not recipient:
+        logger.warning("No recipient email found in task or output for tenant %s. Task: %s", tenant_id, task_desc[:100])
+
     # Parse subject/body from agent output
     subject, body = _extract_subject_and_body(content)
     html_body = _wrap_html(body)

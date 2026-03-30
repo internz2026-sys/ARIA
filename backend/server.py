@@ -1671,12 +1671,16 @@ async def ceo_chat(body: CEOChatMessage):
     if tenant_id:
         try:
             _tc = get_tenant_config(tenant_id)
-            if _tc.integrations.google_access_token:
+            _gmail_connected = bool(
+                _tc.integrations.google_access_token or _tc.integrations.google_refresh_token
+            )
+            if _gmail_connected:
                 gmail_note = f"""
 5. **Gmail is connected** ({_tc.owner_email}). When the user asks you to SEND an email (not just draft),
    delegate to email_marketer with a task that starts with "SEND:" followed by the details including the
    recipient email address. Example: "SEND: Send a welcome email to user@example.com introducing our product"
-   The Email Marketer will compose AND send it from {_tc.owner_email} automatically."""
+   The Email Marketer will compose the draft and the user can approve it to send from {_tc.owner_email}.
+   IMPORTANT: Always include the recipient's full email address in the task description."""
         except Exception:
             pass
 
