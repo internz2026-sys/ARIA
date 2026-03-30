@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { API_URL } from "@/lib/api";
 import { AGENT_DEFS } from "@/lib/agent-config";
 
@@ -42,7 +42,6 @@ interface AgentState {
   slug: string;
   status: AgentStatus;
   lastRun: string | null;
-  loading: boolean;
 }
 
 const statusDisplay: Record<AgentStatus, { label: string; color: string; bg: string; pulse: boolean }> = {
@@ -56,50 +55,9 @@ const statusDisplay: Record<AgentStatus, { label: string; color: string; bg: str
 export default function AgentsPage() {
   const [agentStates, setAgentStates] = useState<Record<string, AgentState>>(
     Object.fromEntries(
-      AGENTS.map((a) => [a.slug, { slug: a.slug, status: "idle" as AgentStatus, lastRun: null, loading: false }])
+      AGENTS.map((a) => [a.slug, { slug: a.slug, status: "idle" as AgentStatus, lastRun: null }])
     )
   );
-  const [paperclipStatus, setPaperclipStatus] = useState<{
-    connected: boolean;
-    agents_registered: number;
-    url: string;
-  } | null>(null);
-
-  // Fetch Paperclip connection status
-  useEffect(() => {
-    fetch(`${API_URL}/api/paperclip/status`)
-      .then((r) => r.json())
-      .then(setPaperclipStatus)
-      .catch(() => setPaperclipStatus({ connected: false, agents_registered: 0, url: "http://127.0.0.1:3100" }));
-  }, []);
-
-  async function handleRun(slug: string) {
-    setAgentStates((prev) => ({
-      ...prev,
-      [slug]: { ...prev[slug], status: "running", loading: true },
-    }));
-
-    try {
-      // Use a demo tenant_id for now
-      const res = await fetch(`${API_URL}/api/agents/demo/${slug}/run`, { method: "POST" });
-      const data = await res.json();
-      setAgentStates((prev) => ({
-        ...prev,
-        [slug]: {
-          ...prev[slug],
-          status: data.status === "completed" ? "active" : "error",
-          lastRun: new Date().toLocaleTimeString(),
-          loading: false,
-        },
-      }));
-    } catch {
-      setAgentStates((prev) => ({
-        ...prev,
-        [slug]: { ...prev[slug], status: "error", loading: false },
-      }));
-    }
-  }
-
   async function handleToggle(slug: string) {
     const current = agentStates[slug];
     const newStatus = current.status === "paused" ? "idle" : "paused";
@@ -110,7 +68,8 @@ export default function AgentsPage() {
 
     try {
       const action = newStatus === "paused" ? "pause" : "resume";
-      await fetch(`${API_URL}/api/agents/demo/${slug}/${action}`, { method: "POST" });
+      const tenantId = localStorage.getItem("aria_tenant_id") || "";
+      await fetch(`${API_URL}/api/agents/${tenantId}/${slug}/${action}`, { method: "POST" });
     } catch {
       // revert on error
       setAgentStates((prev) => ({
@@ -123,32 +82,9 @@ export default function AgentsPage() {
   return (
     <div className="max-w-[1200px] space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-[#2C2C2A]">Marketing Agents</h1>
-          <p className="text-sm text-[#5F5E5A] mt-1">Your AI marketing team — 5 agents working together</p>
-        </div>
-
-        {/* Paperclip status */}
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-[#E0DED8]">
-          <span
-            className="h-2 w-2 rounded-full"
-            style={{ backgroundColor: paperclipStatus?.connected ? "#1D9E75" : "#D85A30" }}
-          />
-          <span className="text-xs font-medium text-[#5F5E5A]">
-            Paperclip AI {paperclipStatus?.connected ? "Connected" : "Disconnected"}
-          </span>
-          {paperclipStatus?.connected && (
-            <a
-              href="http://localhost:3100"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-[#534AB7] hover:underline ml-1"
-            >
-              Dashboard
-            </a>
-          )}
-        </div>
+      <div>
+        <h1 className="text-2xl font-semibold text-[#2C2C2A]">Marketing Agents</h1>
+        <p className="text-sm text-[#5F5E5A] mt-1">Your AI marketing team — 5 agents working together</p>
       </div>
 
       {/* Org Chart Header */}
@@ -159,7 +95,7 @@ export default function AgentsPage() {
           </div>
           <div>
             <h2 className="text-sm font-semibold text-[#2C2C2A]">ARIA Marketing Team</h2>
-            <p className="text-xs text-[#5F5E5A]">CEO orchestrates all agents via Paperclip AI</p>
+            <p className="text-xs text-[#5F5E5A]">CEO orchestrates all agents</p>
           </div>
         </div>
 
@@ -268,7 +204,7 @@ export default function AgentsPage() {
               </div>
 
               {/* Actions */}
-              <div className="flex items-center justify-between pt-3 border-t border-[#E0DED8]">
+              <div className="flex items-center pt-3 border-t border-[#E0DED8]">
                 {/* Toggle */}
                 <button
                   onClick={() => handleToggle(agent.slug)}
@@ -282,52 +218,12 @@ export default function AgentsPage() {
                     }`}
                   />
                 </button>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleRun(agent.slug)}
-                    disabled={state.loading || state.status === "paused"}
-                    className="text-xs font-medium px-3 py-1.5 rounded-lg bg-[#EEEDFE] text-[#534AB7] hover:bg-[#E0DEFE] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    {state.loading ? (
-                      <span className="flex items-center gap-1.5">
-                        <span className="w-3 h-3 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
-                        Running...
-                      </span>
-                    ) : (
-                      "Run Now"
-                    )}
-                  </button>
-                </div>
               </div>
             </div>
           );
         })}
       </div>
 
-      {/* Paperclip info footer */}
-      <div className="bg-[#F8F8F6] rounded-xl border border-[#E0DED8] p-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-[#2C2C2A] flex items-center justify-center">
-            <span className="text-white text-xs font-bold">P</span>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-[#2C2C2A]">Paperclip AI Orchestration</p>
-            <p className="text-xs text-[#5F5E5A]">
-              Agents are scheduled and coordinated via Paperclip at{" "}
-              <code className="text-[#534AB7]">localhost:3100</code>
-            </p>
-          </div>
-        </div>
-        <a
-          href="http://localhost:3100"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs font-semibold px-4 py-2 bg-[#2C2C2A] text-white rounded-lg hover:bg-[#1a1a19] transition-colors"
-        >
-          Open Paperclip
-        </a>
-      </div>
     </div>
   );
 }
