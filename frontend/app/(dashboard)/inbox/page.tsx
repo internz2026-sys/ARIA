@@ -1,8 +1,17 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { API_URL, inbox } from "@/lib/api";
 import { AGENT_NAMES, AGENT_COLORS } from "@/lib/agent-config";
+
+interface EmailDraft {
+  to: string;
+  subject: string;
+  html_body: string;
+  text_body: string;
+  preview_snippet: string;
+  status: string;
+}
 
 interface InboxItem {
   id: string;
@@ -13,18 +22,22 @@ interface InboxItem {
   status: string;
   priority: string;
   created_at: string;
+  email_draft?: EmailDraft | null;
 }
 
 const STATUS_TABS = [
   { key: "", label: "All" },
   { key: "ready", label: "Content ready" },
+  { key: "draft_pending_approval", label: "Pending approval" },
   { key: "needs_review", label: "Needs review" },
+  { key: "sent", label: "Sent" },
   { key: "completed", label: "Completed" },
 ];
 
 const TYPE_LABELS: Record<string, string> = {
   blog_post: "Blog Post",
-  email_sequence: "Email Sequence",
+  email_sequence: "Email",
+  email_reply: "Email Reply",
   social_post: "Social Post",
   ad_campaign: "Ad Campaign",
   strategy_update: "Strategy Update",
@@ -35,6 +48,17 @@ const PRIORITY_DOT: Record<string, string> = {
   high: "bg-red-500",
   medium: "bg-amber-400",
   low: "bg-green-500",
+};
+
+const STATUS_BADGES: Record<string, { label: string; bg: string; text: string; border: string }> = {
+  ready: { label: "Ready", bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200" },
+  draft_pending_approval: { label: "Pending approval", bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-200" },
+  needs_review: { label: "Needs review", bg: "bg-orange-50", text: "text-orange-600", border: "border-orange-200" },
+  sending: { label: "Sending...", bg: "bg-blue-50", text: "text-blue-600", border: "border-blue-200" },
+  sent: { label: "Sent", bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200" },
+  completed: { label: "Completed", bg: "bg-blue-50", text: "text-blue-600", border: "border-blue-200" },
+  failed: { label: "Failed", bg: "bg-red-50", text: "text-red-600", border: "border-red-200" },
+  cancelled: { label: "Cancelled", bg: "bg-gray-50", text: "text-gray-500", border: "border-gray-200" },
 };
 
 function timeAgo(dateStr: string): string {
@@ -54,6 +78,9 @@ export default function InboxPage() {
   const [selected, setSelected] = useState<InboxItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [showHtmlSource, setShowHtmlSource] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
@@ -80,11 +107,10 @@ export default function InboxPage() {
     try {
       const { getSocket } = require("@/lib/socket");
       socket = getSocket();
-      const handler = () => {
-        fetchItems();
-      };
+      const handler = () => { fetchItems(); };
       socket.on("inbox_new_item", handler);
-      return () => { socket.off("inbox_new_item", handler); };
+      socket.on("inbox_item_updated", handler);
+      return () => { socket.off("inbox_new_item", handler); socket.off("inbox_item_updated", handler); };
     } catch {
       // socket lib may not be available
     }
@@ -112,13 +138,267 @@ export default function InboxPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleApproveSend = async (item: InboxItem) => {
+    if (!tenantId || actionLoading) return;
+    setActionLoading("approve");
+    try {
+      await inbox.approveSend(tenantId, item.id);
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "sent" } : i)));
+      if (selected?.id === item.id) setSelected({ ...item, status: "sent" });
+    } catch (err: any) {
+      alert(err?.message || "Failed to send email. Check Gmail connection in Settings.");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleCancelDraft = async (item: InboxItem) => {
+    if (!tenantId || actionLoading) return;
+    setActionLoading("cancel");
+    try {
+      await inbox.cancelDraft(tenantId, item.id);
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "cancelled" } : i)));
+      if (selected?.id === item.id) setSelected({ ...item, status: "cancelled" });
+    } catch {}
+    setActionLoading(null);
+  };
+
+  const isEmailDraft = (item: InboxItem) => !!item.email_draft;
+  const isPendingApproval = (item: InboxItem) => item.status === "draft_pending_approval";
+
   const tabCounts = STATUS_TABS.map((tab) => ({
     ...tab,
     count: tab.key ? items.filter((i) => i.status === tab.key).length : items.length,
   }));
 
-  // When filtering by tab, show all items if "All", otherwise filter
   const filteredItems = activeTab ? items.filter((i) => i.status === activeTab) : items;
+
+  // ─── Email Draft Preview Detail ───
+  const renderEmailPreview = (item: InboxItem) => {
+    const draft = item.email_draft!;
+    return (
+      <div className="flex flex-col w-full">
+        {/* Email header */}
+        <div className="border-b border-[#E0DED8] p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: AGENT_COLORS[item.agent] || "#999" }} />
+            <span className="text-sm font-medium" style={{ color: AGENT_COLORS[item.agent] || "#999" }}>
+              {AGENT_NAMES[item.agent] || item.agent}
+            </span>
+            <span className="text-xs text-[#9E9C95]">Email Draft</span>
+            <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
+          </div>
+
+          {/* Email envelope fields */}
+          <div className="bg-[#F8F8F6] rounded-lg p-4 space-y-2 mb-3">
+            {draft.to && (
+              <div className="flex items-baseline gap-2">
+                <span className="text-xs font-semibold text-[#5F5E5A] uppercase w-16 shrink-0">To</span>
+                <span className="text-sm text-[#2C2C2A]">{draft.to}</span>
+              </div>
+            )}
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs font-semibold text-[#5F5E5A] uppercase w-16 shrink-0">Subject</span>
+              <span className="text-sm font-medium text-[#2C2C2A]">{draft.subject}</span>
+            </div>
+          </div>
+
+          {/* Status badge */}
+          {(() => {
+            const badge = STATUS_BADGES[item.status];
+            return badge ? (
+              <span className={`inline-flex items-center text-[11px] px-2.5 py-1 rounded-full border ${badge.bg} ${badge.text} ${badge.border} font-medium`}>
+                {badge.label}
+              </span>
+            ) : null;
+          })()}
+        </div>
+
+        {/* Preview / Source toggle */}
+        <div className="border-b border-[#E0DED8] px-5 flex items-center gap-1">
+          <button
+            onClick={() => setShowHtmlSource(false)}
+            className={`px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              !showHtmlSource ? "border-[#534AB7] text-[#534AB7]" : "border-transparent text-[#5F5E5A] hover:text-[#2C2C2A]"
+            }`}
+          >
+            Preview
+          </button>
+          <button
+            onClick={() => setShowHtmlSource(true)}
+            className={`px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              showHtmlSource ? "border-[#534AB7] text-[#534AB7]" : "border-transparent text-[#5F5E5A] hover:text-[#2C2C2A]"
+            }`}
+          >
+            HTML Source
+          </button>
+        </div>
+
+        {/* Content area */}
+        <div className="flex-1 overflow-auto p-5">
+          {showHtmlSource ? (
+            <pre className="text-xs text-[#5F5E5A] bg-[#F8F8F6] rounded-lg p-4 overflow-auto whitespace-pre-wrap font-mono border border-[#E0DED8]">
+              {draft.html_body}
+            </pre>
+          ) : (
+            <div className="bg-white rounded-lg border border-[#E0DED8] overflow-hidden">
+              <iframe
+                ref={iframeRef}
+                srcDoc={draft.html_body}
+                title="Email preview"
+                className="w-full min-h-[300px] border-0"
+                sandbox="allow-same-origin"
+                onLoad={() => {
+                  // Auto-resize iframe to content height
+                  if (iframeRef.current?.contentDocument) {
+                    const h = iframeRef.current.contentDocument.body.scrollHeight;
+                    iframeRef.current.style.height = `${Math.max(h + 20, 300)}px`;
+                  }
+                }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Action buttons */}
+        <div className="border-t border-[#E0DED8] px-5 py-4 flex items-center gap-2">
+          {isPendingApproval(item) && (
+            <>
+              <button
+                onClick={() => handleApproveSend(item)}
+                disabled={actionLoading === "approve"}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#1D9E75] text-white hover:bg-[#178a64] transition-colors disabled:opacity-60"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                </svg>
+                {actionLoading === "approve" ? "Sending..." : "Approve & Send"}
+              </button>
+              <button
+                onClick={() => handleCopy(draft.html_body)}
+                className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" />
+                </svg>
+                Copy HTML
+              </button>
+              <button
+                onClick={() => handleCancelDraft(item)}
+                disabled={actionLoading === "cancel"}
+                className="ml-auto px-3 py-2 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors disabled:opacity-60"
+              >
+                {actionLoading === "cancel" ? "Cancelling..." : "Cancel"}
+              </button>
+            </>
+          )}
+
+          {item.status === "sent" && (
+            <span className="flex items-center gap-1.5 text-sm font-medium text-[#1D9E75]">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Email sent successfully
+            </span>
+          )}
+
+          {item.status === "failed" && (
+            <>
+              <span className="flex items-center gap-1.5 text-sm font-medium text-red-500">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                </svg>
+                Send failed
+              </span>
+              <button
+                onClick={() => handleApproveSend({ ...item, status: "draft_pending_approval" })}
+                className="px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors"
+              >
+                Retry
+              </button>
+            </>
+          )}
+
+          {!isEmailDraft(item) && (
+            <>
+              <button
+                onClick={() => handleCopy(item.content)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                {copied ? "Copied!" : "Copy content"}
+              </button>
+              {item.status === "ready" && (
+                <button onClick={() => handleStatusChange(item, "completed")} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors">
+                  Mark complete
+                </button>
+              )}
+              {item.status === "completed" && (
+                <button onClick={() => handleStatusChange(item, "ready")} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors">
+                  Reopen
+                </button>
+              )}
+            </>
+          )}
+
+          <button
+            onClick={() => handleDelete(selected!)}
+            className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // ─── Standard (non-email) detail view ───
+  const renderStandardDetail = (item: InboxItem) => (
+    <div className="flex flex-col w-full">
+      <div className="border-b border-[#E0DED8] p-5">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: AGENT_COLORS[item.agent] || "#999" }} />
+          <span className="text-sm font-medium" style={{ color: AGENT_COLORS[item.agent] || "#999" }}>
+            {AGENT_NAMES[item.agent] || item.agent}
+          </span>
+          <span className="text-xs text-[#9E9C95]">{TYPE_LABELS[item.type] || item.type}</span>
+          <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
+        </div>
+        <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
+        <div className="flex items-center gap-2 mt-3">
+          <button
+            onClick={() => handleCopy(item.content)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+            {copied ? "Copied!" : "Copy content"}
+          </button>
+          {item.status === "ready" && (
+            <button onClick={() => handleStatusChange(item, "completed")} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors">
+              Mark complete
+            </button>
+          )}
+          {item.status === "completed" && (
+            <button onClick={() => handleStatusChange(item, "ready")} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors">
+              Reopen
+            </button>
+          )}
+          <button onClick={() => handleDelete(item)} className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors">
+            Delete
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-auto p-5">
+        <div className="prose prose-sm max-w-none text-[#2C2C2A] whitespace-pre-wrap">
+          {item.content}
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="max-w-[1400px] space-y-4">
@@ -132,7 +412,7 @@ export default function InboxPage() {
         {tabCounts.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => { setActiveTab(tab.key); setSelected(null); }}
+            onClick={() => { setActiveTab(tab.key); setSelected(null); setShowHtmlSource(false); }}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
               activeTab === tab.key
                 ? "bg-[#EEEDFE] text-[#534AB7]"
@@ -140,15 +420,17 @@ export default function InboxPage() {
             }`}
           >
             {tab.label}
-            <span
-              className={`text-xs px-1.5 py-0.5 rounded-full ${
-                activeTab === tab.key
-                  ? "bg-[#534AB7] text-white"
-                  : "bg-[#F8F8F6] text-[#5F5E5A]"
-              }`}
-            >
-              {tab.count}
-            </span>
+            {tab.count > 0 && (
+              <span
+                className={`text-xs px-1.5 py-0.5 rounded-full ${
+                  activeTab === tab.key
+                    ? "bg-[#534AB7] text-white"
+                    : "bg-[#F8F8F6] text-[#5F5E5A]"
+                }`}
+              >
+                {tab.count}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -179,107 +461,51 @@ export default function InboxPage() {
         <div className="flex gap-4 min-h-[500px]">
           {/* Item list */}
           <div className="w-full md:w-[380px] shrink-0 space-y-2">
-            {filteredItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setSelected(item)}
-                className={`w-full text-left p-4 rounded-xl border transition-all ${
-                  selected?.id === item.id
-                    ? "border-[#534AB7] bg-[#FAFAFF] shadow-sm"
-                    : "border-[#E0DED8] bg-white hover:border-[#C5C3BC]"
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-1.5">
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0"
-                    style={{ backgroundColor: AGENT_COLORS[item.agent] || "#999" }}
-                  />
-                  <span className="text-xs font-medium" style={{ color: AGENT_COLORS[item.agent] || "#999" }}>
-                    {AGENT_NAMES[item.agent] || item.agent}
-                  </span>
-                  <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
-                </div>
-                <h4 className="text-sm font-semibold text-[#2C2C2A] truncate">{item.title}</h4>
-                <div className="flex items-center gap-2 mt-2">
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#F8F8F6] text-[#5F5E5A] border border-[#E0DED8]">
-                    {TYPE_LABELS[item.type] || item.type}
-                  </span>
-                  <span className={`w-1.5 h-1.5 rounded-full ${PRIORITY_DOT[item.priority] || "bg-gray-400"}`} />
-                  <span className="text-[11px] text-[#9E9C95] capitalize">{item.priority}</span>
-                  {item.status === "ready" && (
-                    <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                      Ready
+            {filteredItems.map((item) => {
+              const badge = STATUS_BADGES[item.status];
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => { setSelected(item); setShowHtmlSource(false); }}
+                  className={`w-full text-left p-4 rounded-xl border transition-all ${
+                    selected?.id === item.id
+                      ? "border-[#534AB7] bg-[#FAFAFF] shadow-sm"
+                      : "border-[#E0DED8] bg-white hover:border-[#C5C3BC]"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: AGENT_COLORS[item.agent] || "#999" }} />
+                    <span className="text-xs font-medium" style={{ color: AGENT_COLORS[item.agent] || "#999" }}>
+                      {AGENT_NAMES[item.agent] || item.agent}
                     </span>
+                    <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
+                  </div>
+                  <h4 className="text-sm font-semibold text-[#2C2C2A] truncate">{item.title}</h4>
+                  {/* Email draft snippet */}
+                  {item.email_draft?.preview_snippet && (
+                    <p className="text-xs text-[#9E9C95] mt-1 line-clamp-2">{item.email_draft.preview_snippet}</p>
                   )}
-                  {item.status === "completed" && (
-                    <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-200">
-                      Completed
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#F8F8F6] text-[#5F5E5A] border border-[#E0DED8]">
+                      {TYPE_LABELS[item.type] || item.type}
                     </span>
-                  )}
-                </div>
-              </button>
-            ))}
+                    <span className={`w-1.5 h-1.5 rounded-full ${PRIORITY_DOT[item.priority] || "bg-gray-400"}`} />
+                    <span className="text-[11px] text-[#9E9C95] capitalize">{item.priority}</span>
+                    {badge && (
+                      <span className={`ml-auto text-[11px] px-2 py-0.5 rounded-full border ${badge.bg} ${badge.text} ${badge.border}`}>
+                        {badge.label}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
           </div>
 
           {/* Detail pane */}
           <div className="hidden md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
             {selected ? (
-              <div className="flex flex-col w-full">
-                {/* Header */}
-                <div className="border-b border-[#E0DED8] p-5">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span
-                      className="w-2.5 h-2.5 rounded-full"
-                      style={{ backgroundColor: AGENT_COLORS[selected.agent] || "#999" }}
-                    />
-                    <span className="text-sm font-medium" style={{ color: AGENT_COLORS[selected.agent] || "#999" }}>
-                      {AGENT_NAMES[selected.agent] || selected.agent}
-                    </span>
-                    <span className="text-xs text-[#9E9C95]">{TYPE_LABELS[selected.type] || selected.type}</span>
-                    <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(selected.created_at)}</span>
-                  </div>
-                  <h2 className="text-lg font-semibold text-[#2C2C2A]">{selected.title}</h2>
-                  <div className="flex items-center gap-2 mt-3">
-                    <button
-                      onClick={() => handleCopy(selected.content)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                      </svg>
-                      {copied ? "Copied!" : "Copy content"}
-                    </button>
-                    {selected.status === "ready" && (
-                      <button
-                        onClick={() => handleStatusChange(selected, "completed")}
-                        className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors"
-                      >
-                        Mark complete
-                      </button>
-                    )}
-                    {selected.status === "completed" && (
-                      <button
-                        onClick={() => handleStatusChange(selected, "ready")}
-                        className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors"
-                      >
-                        Reopen
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleDelete(selected)}
-                      className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-                {/* Content */}
-                <div className="flex-1 overflow-auto p-5">
-                  <div className="prose prose-sm max-w-none text-[#2C2C2A] whitespace-pre-wrap">
-                    {selected.content}
-                  </div>
-                </div>
-              </div>
+              isEmailDraft(selected) ? renderEmailPreview(selected) : renderStandardDetail(selected)
             ) : (
               <div className="flex items-center justify-center w-full text-sm text-[#9E9C95]">
                 Select an item to view its content

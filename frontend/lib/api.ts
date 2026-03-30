@@ -37,6 +37,32 @@ export const inbox = {
     fetchAPI(`/api/inbox/${itemId}`, { method: "PATCH", body: JSON.stringify(updates) }),
   remove: (itemId: string) =>
     fetchAPI(`/api/inbox/${itemId}`, { method: "DELETE" }),
+  approveSend: (tenantId: string, inboxItemId: string) =>
+    fetchAPI(`/api/email/${tenantId}/approve-send`, {
+      method: "POST",
+      body: JSON.stringify({ inbox_item_id: inboxItemId }),
+    }),
+  cancelDraft: (tenantId: string, inboxItemId: string) =>
+    fetchAPI(`/api/email/${tenantId}/cancel-draft`, {
+      method: "POST",
+      body: JSON.stringify({ inbox_item_id: inboxItemId }),
+    }),
+};
+
+export const emailThreads = {
+  list: (tenantId: string, status?: string) =>
+    fetchAPI(`/api/email/${tenantId}/threads${status ? `?status=${status}` : ""}`),
+  get: (tenantId: string, threadId: string) =>
+    fetchAPI(`/api/email/${tenantId}/threads/${threadId}`),
+  markRead: (tenantId: string, threadId: string) =>
+    fetchAPI(`/api/email/${tenantId}/threads/${threadId}/mark-read`, { method: "POST" }),
+  draftReply: (tenantId: string, threadId: string, customInstructions?: string) =>
+    fetchAPI(`/api/email/${tenantId}/draft-reply`, {
+      method: "POST",
+      body: JSON.stringify({ thread_id: threadId, custom_instructions: customInstructions || "" }),
+    }),
+  sync: (tenantId: string) =>
+    fetchAPI(`/api/email/${tenantId}/sync`, { method: "POST" }),
 };
 
 export const analytics = {

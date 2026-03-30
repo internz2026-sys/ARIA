@@ -77,9 +77,11 @@ class IntegrationsConfig(BaseModel):
     instagram_access_token: Optional[str] = None
     # Ads
     facebook_ad_account_id: Optional[str] = None
-    # Google OAuth (Gmail sending)
+    # Google OAuth (Gmail sending + inbox sync)
     google_access_token: Optional[str] = None
     google_refresh_token: Optional[str] = None
+    gmail_last_sync_at: Optional[str] = None  # ISO timestamp of last inbound sync
+    gmail_history_id: Optional[str] = None    # Gmail history ID for incremental sync
     # Payments
     stripe_customer_id: Optional[str] = None
 

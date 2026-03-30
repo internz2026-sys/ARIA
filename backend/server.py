@@ -453,6 +453,385 @@ async def send_gmail_email(tenant_id: str, body: GmailSendRequest):
     return {"status": "sent", "message_id": result.get("message_id", "")}
 
 
+# ─── Email Draft Approval ───
+class EmailApproveRequest(BaseModel):
+    inbox_item_id: str
+
+
+@app.post("/api/email/{tenant_id}/approve-send")
+async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
+    """Approve a pending email draft and send it via Gmail.
+
+    Only sends drafts in 'draft_pending_approval' status.
+    Updates the inbox item status through the lifecycle:
+    draft_pending_approval → sending → sent / failed.
+    """
+    from backend.config.loader import _get_supabase
+    from backend.tools import gmail_tool
+
+    sb = _get_supabase()
+
+    # Fetch the inbox item
+    item_result = sb.table("inbox_items").select("*").eq("id", body.inbox_item_id).single().execute()
+    item = item_result.data
+    if not item:
+        raise HTTPException(status_code=404, detail="Inbox item not found")
+    if item.get("status") != "draft_pending_approval":
+        raise HTTPException(status_code=400, detail=f"Item is not a pending draft (status: {item.get('status')})")
+    if item.get("tenant_id") != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+
+    # Extract email draft metadata from the item
+    meta = item.get("email_draft") or {}
+    to = meta.get("to", "")
+    subject = meta.get("subject", "")
+    html_body = meta.get("html_body", "")
+
+    if not to or not subject or not html_body:
+        raise HTTPException(status_code=400, detail="Email draft is missing required fields (to, subject, or body)")
+
+    # Mark as sending
+    sb.table("inbox_items").update({
+        "status": "sending",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", body.inbox_item_id).execute()
+
+    # Send via Gmail
+    config = get_tenant_config(tenant_id)
+    access_token = config.integrations.google_access_token
+    refresh_token = config.integrations.google_refresh_token
+
+    if not access_token:
+        sb.table("inbox_items").update({
+            "status": "failed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", body.inbox_item_id).execute()
+        raise HTTPException(status_code=400, detail="Gmail not connected. Please log in with Google to grant email access.")
+
+    result = await gmail_tool.send_email(
+        access_token=access_token,
+        to=to,
+        subject=subject,
+        html_body=html_body,
+        from_email=config.owner_email,
+    )
+
+    # Token expired — try refresh
+    if result.get("error") == "token_expired" and refresh_token:
+        try:
+            new_token = await gmail_tool.refresh_access_token(refresh_token)
+            config.integrations.google_access_token = new_token
+            save_tenant_config(config)
+            result = await gmail_tool.send_email(
+                access_token=new_token,
+                to=to,
+                subject=subject,
+                html_body=html_body,
+                from_email=config.owner_email,
+            )
+        except Exception:
+            sb.table("inbox_items").update({
+                "status": "failed",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", body.inbox_item_id).execute()
+            raise HTTPException(status_code=401, detail="Gmail token expired. Please reconnect Gmail in Settings.")
+
+    if result.get("error"):
+        sb.table("inbox_items").update({
+            "status": "failed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", body.inbox_item_id).execute()
+        raise HTTPException(status_code=500, detail=f"Email send failed: {result['error']}")
+
+    # Mark as sent
+    sb.table("inbox_items").update({
+        "status": "sent",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", body.inbox_item_id).execute()
+
+    # ── Thread tracking: persist outbound message for future reply matching ──
+    gmail_message_id = result.get("message_id", "")
+    gmail_thread_id = result.get("thread_id", "")
+    thread_db_id = None
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        # Find or create thread
+        if gmail_thread_id:
+            existing = sb.table("email_threads").select("id").eq(
+                "tenant_id", tenant_id
+            ).eq("gmail_thread_id", gmail_thread_id).limit(1).execute()
+            if existing.data:
+                thread_db_id = existing.data[0]["id"]
+                sb.table("email_threads").update({
+                    "last_message_at": now_iso,
+                    "status": "awaiting_reply",
+                    "updated_at": now_iso,
+                }).eq("id", thread_db_id).execute()
+
+        if not thread_db_id:
+            thread_row = {
+                "tenant_id": tenant_id,
+                "gmail_thread_id": gmail_thread_id or None,
+                "contact_email": to,
+                "subject": subject,
+                "status": "awaiting_reply",
+                "last_message_at": now_iso,
+                "inbox_item_id": body.inbox_item_id,
+            }
+            t_result = sb.table("email_threads").insert(thread_row).execute()
+            if t_result.data:
+                thread_db_id = t_result.data[0]["id"]
+
+        # Save the outbound message record
+        if thread_db_id:
+            text_body = meta.get("text_body", "")
+            preview = meta.get("preview_snippet", "")
+            sb.table("email_messages").insert({
+                "thread_id": thread_db_id,
+                "tenant_id": tenant_id,
+                "gmail_message_id": gmail_message_id or None,
+                "direction": "outbound",
+                "sender": config.owner_email,
+                "recipients": to,
+                "subject": subject,
+                "text_body": text_body,
+                "html_body": html_body,
+                "preview_snippet": preview,
+                "message_timestamp": now_iso,
+                "approval_status": "sent",
+            }).execute()
+    except Exception as e:
+        logger.warning("Thread tracking failed (email still sent): %s", e)
+
+    await sio.emit("inbox_item_updated", {
+        "id": body.inbox_item_id,
+        "status": "sent",
+    }, room=tenant_id)
+
+    return {"status": "sent", "message_id": gmail_message_id, "thread_id": gmail_thread_id}
+
+
+@app.post("/api/email/{tenant_id}/cancel-draft")
+async def cancel_email_draft(tenant_id: str, body: EmailApproveRequest):
+    """Cancel a pending email draft."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    sb.table("inbox_items").update({
+        "status": "cancelled",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", body.inbox_item_id).eq("tenant_id", tenant_id).execute()
+    return {"ok": True}
+
+
+# ─── Email Threads & Sync ───
+
+@app.get("/api/email/{tenant_id}/threads")
+async def list_email_threads(tenant_id: str, status: str = ""):
+    """List email conversation threads for a tenant."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    query = sb.table("email_threads").select("*").eq("tenant_id", tenant_id)
+    if status:
+        query = query.eq("status", status)
+    result = query.order("last_message_at", desc=True).execute()
+    return {"threads": result.data or []}
+
+
+@app.get("/api/email/{tenant_id}/threads/{thread_id}")
+async def get_email_thread(tenant_id: str, thread_id: str):
+    """Get a single thread with all its messages."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    thread_result = sb.table("email_threads").select("*").eq(
+        "id", thread_id
+    ).eq("tenant_id", tenant_id).single().execute()
+    if not thread_result.data:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    messages_result = sb.table("email_messages").select("*").eq(
+        "thread_id", thread_id
+    ).order("message_timestamp", desc=False).execute()
+
+    return {
+        "thread": thread_result.data,
+        "messages": messages_result.data or [],
+    }
+
+
+@app.post("/api/email/{tenant_id}/threads/{thread_id}/mark-read")
+async def mark_thread_read(tenant_id: str, thread_id: str):
+    """Mark a thread as read (status → open)."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    sb.table("email_threads").update({
+        "status": "open",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", thread_id).eq("tenant_id", tenant_id).execute()
+    return {"ok": True}
+
+
+class DraftReplyRequest(BaseModel):
+    thread_id: str
+    custom_instructions: str = ""
+
+
+@app.post("/api/email/{tenant_id}/draft-reply")
+async def generate_draft_reply(tenant_id: str, body: DraftReplyRequest):
+    """Generate a suggested reply draft for an email thread.
+
+    Uses the email marketer agent to draft a contextual reply based on the
+    thread history. The draft is saved as draft_pending_approval — never sent.
+    """
+    from backend.config.loader import _get_supabase
+    from backend.tools.claude_cli import call_claude, MODEL_HAIKU
+
+    sb = _get_supabase()
+
+    # Fetch thread and messages
+    thread_result = sb.table("email_threads").select("*").eq(
+        "id", body.thread_id
+    ).eq("tenant_id", tenant_id).single().execute()
+    if not thread_result.data:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    thread = thread_result.data
+
+    messages_result = sb.table("email_messages").select("*").eq(
+        "thread_id", body.thread_id
+    ).order("message_timestamp", desc=False).execute()
+    messages = messages_result.data or []
+
+    if not messages:
+        raise HTTPException(status_code=400, detail="No messages in this thread to reply to")
+
+    # Build conversation context
+    config = get_tenant_config(tenant_id)
+    conversation = ""
+    for msg in messages:
+        direction = "SENT" if msg["direction"] == "outbound" else "RECEIVED"
+        sender = msg.get("sender", "")
+        body_text = msg.get("text_body", "") or msg.get("preview_snippet", "")
+        conversation += f"\n[{direction}] From: {sender}\nSubject: {msg.get('subject', '')}\n{body_text}\n---\n"
+
+    # Find the latest inbound message to reply to
+    latest_inbound = None
+    for msg in reversed(messages):
+        if msg["direction"] == "inbound":
+            latest_inbound = msg
+            break
+    if not latest_inbound:
+        raise HTTPException(status_code=400, detail="No inbound message to reply to")
+
+    instructions = body.custom_instructions or "Write a helpful, professional reply."
+
+    system_prompt = f"""You are the Email Marketer for {config.business_name}.
+Brand voice: {config.brand_voice.tone}
+Business: {config.description}
+
+Write a reply email based on the conversation thread below.
+{instructions}
+
+Output format:
+SUBJECT: Re: <original subject>
+---
+<email body in HTML>
+
+Keep it professional, concise, and on-brand. Do not include placeholder text."""
+
+    user_prompt = f"Thread conversation:\n{conversation}\n\nDraft a reply to the latest inbound message."
+
+    raw = await call_claude(system_prompt, user_prompt, max_tokens=1500, model=MODEL_HAIKU)
+
+    # Parse the draft
+    import re as _re
+    subject_match = _re.match(r"(?:SUBJECT:\s*)(.+?)(?:\n---\n|\n\n)(.*)", raw, _re.DOTALL | _re.IGNORECASE)
+    if subject_match:
+        reply_subject = subject_match.group(1).strip()
+        reply_body = subject_match.group(2).strip()
+    else:
+        reply_subject = f"Re: {thread.get('subject', '')}"
+        reply_body = raw.strip()
+
+    # Ensure HTML wrapping
+    from backend.agents.email_marketer_agent import _wrap_html
+    html_body = _wrap_html(reply_body)
+    text_body = _re.sub(r'<[^>]+>', '', reply_body).strip()
+    preview_snippet = text_body[:200]
+
+    # Save draft message in the thread
+    now_iso = datetime.now(timezone.utc).isoformat()
+    draft_row = {
+        "thread_id": body.thread_id,
+        "tenant_id": tenant_id,
+        "direction": "outbound",
+        "sender": config.owner_email,
+        "recipients": thread.get("contact_email", ""),
+        "subject": reply_subject,
+        "text_body": text_body,
+        "html_body": html_body,
+        "preview_snippet": preview_snippet,
+        "message_timestamp": now_iso,
+        "approval_status": "draft_pending_approval",
+    }
+    msg_result = sb.table("email_messages").insert(draft_row).execute()
+    draft_msg = msg_result.data[0] if msg_result.data else {}
+
+    # Also create an inbox item for visibility
+    inbox_row = {
+        "tenant_id": tenant_id,
+        "agent": "email_marketer",
+        "type": "email_sequence",
+        "title": f"Draft Reply: {reply_subject}",
+        "content": preview_snippet,
+        "status": "draft_pending_approval",
+        "priority": "high",
+        "email_draft": {
+            "to": thread.get("contact_email", ""),
+            "subject": reply_subject,
+            "html_body": html_body,
+            "text_body": text_body,
+            "preview_snippet": preview_snippet,
+            "status": "draft_pending_approval",
+            "reply_to_thread_id": body.thread_id,
+            "reply_to_message_id": draft_msg.get("id", ""),
+        },
+    }
+    inbox_result = sb.table("inbox_items").insert(inbox_row).execute()
+    inbox_item = inbox_result.data[0] if inbox_result.data else {}
+
+    # Update thread status
+    sb.table("email_threads").update({
+        "status": "replied",
+        "updated_at": now_iso,
+    }).eq("id", body.thread_id).execute()
+
+    return {
+        "draft": {
+            "message_id": draft_msg.get("id", ""),
+            "inbox_item_id": inbox_item.get("id", ""),
+            "to": thread.get("contact_email", ""),
+            "subject": reply_subject,
+            "preview_snippet": preview_snippet,
+            "status": "draft_pending_approval",
+        },
+    }
+
+
+@app.post("/api/email/{tenant_id}/sync")
+async def trigger_email_sync(tenant_id: str):
+    """Manually trigger Gmail inbound reply sync for a tenant."""
+    from backend.tools.gmail_sync import sync_tenant_replies
+    result = await sync_tenant_replies(tenant_id)
+    return result
+
+
+@app.post("/api/email/sync-all")
+async def trigger_sync_all():
+    """Trigger Gmail sync for all active tenants. Called by cron."""
+    from backend.tools.gmail_sync import sync_all_tenants
+    results = await sync_all_tenants()
+    return {"tenants_synced": len(results), "results": results}
+
+
 # ─── Webhook Endpoints ───
 @app.post("/api/webhooks/sendgrid")
 async def sendgrid_webhook(request: Request):
@@ -836,7 +1215,24 @@ async def ceo_triage(body: TriageRequest):
 @app.post("/api/cron/run-scheduled")
 async def cron_trigger():
     results = await run_scheduled_agents()
-    return {"status": "completed", "tasks_run": len(results) if results else 0}
+
+    # Also run Gmail inbound reply sync for all connected tenants
+    sync_results = []
+    try:
+        from backend.tools.gmail_sync import sync_all_tenants
+        sync_results = await sync_all_tenants()
+    except Exception as e:
+        logger.warning("Gmail sync during cron failed: %s", e)
+
+    total_imported = sum(r.get("imported", 0) for r in sync_results)
+    return {
+        "status": "completed",
+        "tasks_run": len(results) if results else 0,
+        "email_sync": {
+            "tenants_synced": len(sync_results),
+            "total_imported": total_imported,
+        },
+    }
 
 
 # ─── Inbox helpers ───
@@ -877,6 +1273,8 @@ def _save_inbox_item(
     priority: str = "medium",
     task_id: str | None = None,
     chat_session_id: str | None = None,
+    status: str = "ready",
+    email_draft: dict | None = None,
 ) -> dict | None:
     """Save an agent output to the inbox_items table. Returns the saved row."""
     try:
@@ -888,13 +1286,15 @@ def _save_inbox_item(
             "type": content_type,
             "title": title,
             "content": content,
-            "status": "ready",
+            "status": status,
             "priority": priority,
         }
         if task_id:
             row["task_id"] = task_id
         if chat_session_id:
             row["chat_session_id"] = chat_session_id
+        if email_draft:
+            row["email_draft"] = email_draft
         result = sb.table("inbox_items").insert(row).execute()
         return result.data[0] if result.data else None
     except Exception as e:
@@ -969,16 +1369,17 @@ async def _run_agent_to_inbox(
         content_type = _infer_content_type(agent_id, content)
         title = _extract_title(agent_id, task_desc, content)
 
-        # Append email send status to content so users see what happened
-        emails_sent = result.get("emails_sent")
-        if emails_sent:
-            send_count = result.get("send_count", 0)
-            if send_count > 0:
-                content += f"\n\n---\n✅ Email sent successfully ({send_count} delivered)"
-            else:
-                errors = [r.get("error", "unknown error") for r in emails_sent if r.get("error")]
-                error_msg = errors[0] if errors else "unknown error"
-                content += f"\n\n---\n⚠️ Email sending failed: {error_msg}"
+        # If the agent returned an email draft, save as pending approval
+        email_draft = result.get("email_draft")
+        if email_draft:
+            item_status = "draft_pending_approval"
+            # Use the draft subject as title if available
+            if email_draft.get("subject"):
+                title = f"Email: {email_draft['subject']}"
+            # Use preview snippet for the display content
+            content = email_draft.get("preview_snippet", content)
+        else:
+            item_status = "ready"
 
         saved = _save_inbox_item(
             tenant_id=tenant_id,
@@ -989,6 +1390,8 @@ async def _run_agent_to_inbox(
             priority=priority,
             task_id=task_id,
             chat_session_id=session_id,
+            status=item_status,
+            email_draft=email_draft,
         )
 
         # Emit real-time notification to frontend
@@ -998,7 +1401,7 @@ async def _run_agent_to_inbox(
                 "agent": agent_id,
                 "type": content_type,
                 "title": title,
-                "status": "ready",
+                "status": item_status,
                 "priority": priority,
                 "created_at": saved.get("created_at", ""),
             }, room=tenant_id)

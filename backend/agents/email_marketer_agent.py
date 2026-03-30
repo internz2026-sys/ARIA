@@ -194,18 +194,23 @@ async def run(tenant_id: str, context: dict | None = None) -> dict:
     task_desc = (context or {}).get("action", "")
     recipient = _extract_recipient(task_desc)
 
-    if recipient:
-        # Task has a recipient email — parse the draft and send it
-        subject, body = _extract_subject_and_body(content)
-        html_body = _wrap_html(body)
+    # Parse subject/body from agent output
+    subject, body = _extract_subject_and_body(content)
+    html_body = _wrap_html(body)
 
-        logger.info("Auto-sending email to %s (subject: %s)", recipient, subject)
-        send_results = await send_emails_via_gmail(tenant_id, [{
-            "to": recipient,
-            "subject": subject,
-            "html_body": html_body,
-        }])
-        result["emails_sent"] = send_results
-        result["send_count"] = len([r for r in send_results if "message_id" in r])
+    # Build a plain-text preview snippet (first 200 chars of body text)
+    text_body = re.sub(r'<[^>]+>', '', body).strip()
+    preview_snippet = text_body[:200] + ("..." if len(text_body) > 200 else "")
+
+    # Always return a structured draft — NEVER auto-send.
+    # The user must explicitly approve before any email is sent.
+    result["email_draft"] = {
+        "to": recipient or "",
+        "subject": subject,
+        "html_body": html_body,
+        "text_body": text_body,
+        "preview_snippet": preview_snippet,
+        "status": "draft_pending_approval",
+    }
 
     return result

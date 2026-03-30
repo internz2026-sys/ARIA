@@ -24,6 +24,21 @@ const TOPICS = [
 
 const TOPIC_LABELS: Record<string, string> = Object.fromEntries(TOPICS.map(t => [t.key, t.label]));
 
+/** Strip JSON blocks, code fences, and config keys from visible chat messages. */
+function sanitizeChatMessage(text: string): string {
+  let cleaned = text;
+  // Remove fenced code blocks (```json ... ``` or ``` ... ```)
+  cleaned = cleaned.replace(/```[\s\S]*?```/g, "");
+  // Remove standalone JSON objects
+  cleaned = cleaned.replace(/^\s*\{[\s\S]*?\}\s*$/gm, "");
+  // Remove config section headers
+  cleaned = cleaned.replace(/\*{0,2}Extracted Config:?\*{0,2}\s*/g, "");
+  cleaned = cleaned.replace(/\*{0,2}GTM Profile:?\*{0,2}\s*/g, "");
+  // Collapse excessive blank lines
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+  return cleaned.trim();
+}
+
 export default function DescribePage() {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -76,7 +91,7 @@ export default function DescribePage() {
         body: JSON.stringify({ session_id: sessionId, message: text }),
       });
       const data = await res.json();
-      setMessages(prev => [...prev, { role: "aria", text: data.message }]);
+      setMessages(prev => [...prev, { role: "aria", text: sanitizeChatMessage(data.message) }]);
       if (data.validated_fields) setValidatedFields(data.validated_fields);
       if (data.questions_answered != null) setQuestionsAnswered(data.questions_answered);
       if (data.is_complete) {

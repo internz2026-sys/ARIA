@@ -150,58 +150,40 @@ RE-ONBOARDING / EDIT MODE
 - Regenerate the full summary and GTM profile after edits.
 
 FINAL OUTPUT FORMAT
-After the 8th prompt is completed, output exactly this and nothing else:
+After the 8th prompt is completed, output ONLY a human-readable summary. Do NOT output any JSON, code blocks, config objects, or technical markup.
+
+Output exactly this and nothing else:
 
 **Onboarding Complete**
 
-**Summary:**
-- **Business name:** <value>
-- **Offer:** <value>
-- **Target audience:** <value>
-- **Problem solved:** <value>
-- **Differentiator:** <value>
-- **Channels:** <value>
-- **Brand voice:** <value>
-- **30-day goal:** <value>
+**Business Name:** <value>
+**Offer:** <value>
+**Target Audience:** <value>
+**Problem Solved:** <value>
+**Differentiator:** <value>
+**Channels:** <value>
+**Brand Voice:** <value>
+**30-Day Goal:** <value>
 
-**Extracted Config:**
-```json
-{
-  "business_name": "<value>",
-  "product_or_offer": "<value>",
-  "target_audience": "<value>",
-  "problem_solved": "<value>",
-  "differentiator": "<value>",
-  "channels": ["<value>"],
-  "brand_voice": "<value>",
-  "goal_30_days": "<value>"
-}
-```
+ARIA is ready for review.
 
-**GTM Profile:**
-```json
-{
-  "business_name": "<value>",
-  "offer": "<value>",
-  "audience": "<value>",
-  "problem": "<value>",
-  "differentiator": "<value>",
-  "positioning_summary": "<generated summary>",
-  "primary_channels": ["<value>"],
-  "brand_voice": "<value>",
-  "goal_30_days": "<value>",
-  "30_day_gtm_focus": "<generated GTM direction>"
-}
-```
+CRITICAL FORMATTING RULES:
+- Do NOT include any JSON blocks.
+- Do NOT include any code blocks (no triple backticks).
+- Do NOT include "Extracted Config:" or "GTM Profile:" sections.
+- Do NOT include curly braces, square brackets, or key-value pairs.
+- The summary must be plain text only — readable by a non-technical user.
+- The structured config extraction happens separately via the extract-config endpoint.
 
 TERMINATION RULE
-After producing the final Summary + Extracted Config + GTM Profile, output must end immediately.
+After producing the final summary, output must end immediately.
 No extra sentence may follow.
 No additional assistant turn should be generated from the onboarding agent.
 
 ABSOLUTE FINAL CONSTRAINT
-If the final structured output has been produced, your task is over.
-Do not send any additional message after it."""
+If the final summary has been produced, your task is over.
+Do not send any additional message after it.
+Do not output JSON under any circumstances in the chat."""
 
 EXTRACTION_PROMPT = """Based on the conversation below, extract a structured business configuration, GTM strategy, and GTM profile as JSON.
 
@@ -362,6 +344,24 @@ class OnboardingAgent:
         self.messages.append({"role": "assistant", "content": greeting})
         return greeting
 
+    @staticmethod
+    def _strip_json_from_chat(text: str) -> str:
+        """Remove JSON blocks, code fences, and raw config from visible chat text.
+
+        This is a safety net — the LLM is instructed not to output JSON, but
+        if it slips through, we strip it before showing to the user.
+        """
+        # Remove fenced code blocks (```json ... ``` or ``` ... ```)
+        cleaned = re.sub(r'```[\s\S]*?```', '', text)
+        # Remove standalone JSON objects (lines starting with { and ending with })
+        cleaned = re.sub(r'^\s*\{[\s\S]*?\}\s*$', '', cleaned, flags=re.MULTILINE)
+        # Remove section headers that precede JSON: "Extracted Config:", "GTM Profile:"
+        cleaned = re.sub(r'\*{0,2}Extracted Config:?\*{0,2}\s*', '', cleaned)
+        cleaned = re.sub(r'\*{0,2}GTM Profile:?\*{0,2}\s*', '', cleaned)
+        # Collapse excessive blank lines
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.strip()
+
     async def process_message(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
 
@@ -387,16 +387,17 @@ class OnboardingAgent:
         )
         if answered >= self.max_questions:
             progress += (
-                "All topics complete — produce the final structured output now. "
+                "All topics complete — produce the final human-readable summary now. "
                 "Do NOT ask another question. "
-                "Do NOT add any text after the GTM Profile JSON block."
+                "Do NOT output any JSON, code blocks, or config objects. "
+                "Output ONLY the plain-text summary."
             )
         else:
             next_field = ONBOARDING_FIELDS[self.current_topic_index]
             progress += f"Current question field: {next_field}."
 
-        # Use higher max_tokens for the final summary which includes JSON blocks.
-        tokens = 1500 if answered >= self.max_questions else 500
+        # Use higher max_tokens for the final summary.
+        tokens = 1000 if answered >= self.max_questions else 500
         assistant_text = await call_claude(
             SYSTEM_PROMPT + "\n\n" + progress,
             messages=self.messages,
@@ -407,6 +408,9 @@ class OnboardingAgent:
         # Strip the [VALIDATED: ...] tag if present (cleanup only — we
         # already advanced progress above so the tag is not required).
         cleaned_text, _tag_fields = _parse_validated_tag(assistant_text)
+
+        # Safety net: strip any JSON that leaked into the visible response.
+        cleaned_text = self._strip_json_from_chat(cleaned_text)
 
         # Store the cleaned text (without metadata) in conversation history.
         self.messages.append({"role": "assistant", "content": cleaned_text})
