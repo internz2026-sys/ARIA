@@ -1787,7 +1787,8 @@ async def _run_agent_to_inbox(
 import pathlib as _pathlib
 
 _AGENTS_DIR = _pathlib.Path(__file__).resolve().parent.parent / "docs" / "agents"
-_CEO_MD = (_AGENTS_DIR / "ceo.md").read_text(encoding="utf-8")
+_CEO_MD_FULL = (_AGENTS_DIR / "ceo.md").read_text(encoding="utf-8")
+_CEO_MD = _CEO_MD_FULL[:800]  # Truncate to ~200 tokens — prompt caching handles the rest
 _AGENT_MDS = {}
 for _f in _AGENTS_DIR.glob("*.md"):
     _AGENT_MDS[_f.stem] = _f.read_text(encoding="utf-8")
@@ -1865,43 +1866,32 @@ async def ceo_chat(body: CEOChatMessage):
                                  current_task="In meeting with user",
                                  action="meeting_with_user")
 
-    # Build system prompt from agent .md files only (not skill files — too large for chat context)
-    sub_agent_context = "\n\n".join(
-        f"--- {name}.md ---\n{content}"
+    # Include sub-agent docs only on first message (cached via prompt caching after that)
+    # Truncate each to 200 chars to save tokens — the CEO just needs to know capabilities
+    sub_agent_context = "\n".join(
+        f"- {name}: {content[:200].replace(chr(10), ' ')}"
         for name, content in _AGENT_MDS.items()
         if name != "ceo" and not name.startswith("skill_")
     )
 
-    # Load tenant config (onboarding data) if available
+    # Load tenant config — use compact agent_brief if available
     business_context = ""
     tenant_id = body.tenant_id
     if tenant_id:
         try:
             tc = get_tenant_config(tenant_id)
-            business_context = f"""
-## Business Context (from onboarding)
-- **Business:** {tc.business_name}
-- **Industry:** {tc.industry}
-- **Description:** {tc.description}
-- **Product:** {tc.product.name} — {tc.product.description}
-- **Value Props:** {', '.join(tc.product.value_props) if tc.product.value_props else 'N/A'}
-- **Competitors:** {', '.join(tc.product.competitors) if tc.product.competitors else 'N/A'}
-- **Differentiators:** {', '.join(tc.product.differentiators) if tc.product.differentiators else 'N/A'}
-- **Target Audience:** {', '.join(tc.icp.target_titles) if tc.icp.target_titles else 'N/A'}
-- **Target Industries:** {', '.join(tc.icp.target_industries) if tc.icp.target_industries else 'N/A'}
-- **Pain Points:** {', '.join(tc.icp.pain_points) if tc.icp.pain_points else 'N/A'}
-- **Online Hangouts:** {', '.join(tc.icp.online_hangouts) if tc.icp.online_hangouts else 'N/A'}
-- **Positioning:** {tc.gtm_playbook.positioning}
-- **Messaging Pillars:** {', '.join(tc.gtm_playbook.messaging_pillars) if tc.gtm_playbook.messaging_pillars else 'N/A'}
-- **Channel Strategy:** {', '.join(tc.gtm_playbook.channel_strategy) if tc.gtm_playbook.channel_strategy else 'N/A'}
-- **30-Day Plan:** {tc.gtm_playbook.action_plan_30}
-- **60-Day Plan:** {tc.gtm_playbook.action_plan_60}
-- **90-Day Plan:** {tc.gtm_playbook.action_plan_90}
-- **KPIs:** {', '.join(tc.gtm_playbook.kpis) if tc.gtm_playbook.kpis else 'N/A'}
-- **Brand Voice:** {tc.brand_voice.tone}
-- **Active Channels:** {', '.join(tc.channels) if tc.channels else 'N/A'}
-- **Active Agents:** {', '.join(tc.active_agents) if tc.active_agents else 'N/A'}
-- **Plan:** {tc.plan}
+            if tc.agent_brief:
+                # ~150 tokens (pre-generated compact summary)
+                business_context = f"\n## Business Context\n{tc.agent_brief}\nPositioning: {tc.gtm_playbook.positioning}\nChannels: {', '.join(tc.channels)}\n"
+            else:
+                # Fallback — compact fields only
+                business_context = f"""
+## Business Context
+{tc.business_name}: {tc.product.name} — {tc.product.description}
+Audience: {', '.join(tc.icp.target_titles) if tc.icp.target_titles else 'N/A'}
+Positioning: {tc.gtm_playbook.positioning}
+Voice: {tc.brand_voice.tone}
+Channels: {', '.join(tc.channels)}
 """
         except Exception:
             pass
@@ -1949,11 +1939,37 @@ Based on the conversation, you should:
 
 Keep responses concise and actionable. You are their Chief Marketing Strategist."""
 
-    # Build conversation for Claude
-    conversation = "\n".join(
-        f"{'User' if m['role'] == 'user' else 'CEO Agent'}: {m['content']}"
-        for m in session[-20:]  # last 20 messages for context
-    )
+    # Build conversation for Claude — compact old messages, keep recent ones full
+    _RECENT_WINDOW = 6  # keep last 6 messages in full
+    _MAX_SUMMARY_MSGS = 20  # max older messages to summarize
+
+    if len(session) <= _RECENT_WINDOW:
+        # Short conversation — send everything
+        conversation = "\n".join(
+            f"{'User' if m['role'] == 'user' else 'CEO'}: {m['content']}"
+            for m in session
+        )
+    else:
+        # Compact older messages into a summary, keep recent ones full
+        older = session[:-_RECENT_WINDOW][-_MAX_SUMMARY_MSGS:]
+        recent = session[-_RECENT_WINDOW:]
+
+        # Build compact summary of older messages (key points only)
+        summary_lines = []
+        for m in older:
+            role = "User" if m["role"] == "user" else "CEO"
+            # Truncate each old message to first 100 chars
+            text = m["content"][:100].replace("\n", " ")
+            if len(m["content"]) > 100:
+                text += "..."
+            summary_lines.append(f"- {role}: {text}")
+
+        summary = "EARLIER IN THIS CHAT (summary):\n" + "\n".join(summary_lines)
+        recent_text = "\n".join(
+            f"{'User' if m['role'] == 'user' else 'CEO'}: {m['content']}"
+            for m in recent
+        )
+        conversation = f"{summary}\n\nRECENT MESSAGES:\n{recent_text}"
 
     try:
         raw = await call_claude(system_prompt, conversation, tenant_id=tenant_id or "global")
