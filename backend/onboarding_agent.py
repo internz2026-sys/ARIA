@@ -446,6 +446,15 @@ class OnboardingAgent:
     def is_complete(self) -> bool:
         return self._complete
 
+    @staticmethod
+    def _repair_json(s: str) -> str:
+        """Best-effort fix for common LLM JSON mistakes (trailing commas, etc.)."""
+        # Remove trailing commas before } or ]
+        s = re.sub(r',\s*([}\]])', r'\1', s)
+        # Remove control characters that break JSON (except newlines/tabs)
+        s = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', s)
+        return s
+
     async def extract_config(self) -> dict:
         conversation_text = "\n".join(
             f"{'ARIA' if m['role'] == 'assistant' else 'Founder'}: {m['content']}"
@@ -461,7 +470,29 @@ class OnboardingAgent:
 
         start = raw.find("{")
         end = raw.rfind("}") + 1
-        result = json.loads(raw[start:end])
+        json_str = raw[start:end] if start != -1 and end > start else raw
+
+        # First try as-is, then try repaired JSON, then retry the LLM call once
+        for attempt, text in enumerate([json_str, self._repair_json(json_str)]):
+            try:
+                result = json.loads(text)
+                self._extracted_config = result
+                return result
+            except json.JSONDecodeError:
+                continue
+
+        # All local fixes failed — retry with a stricter prompt
+        raw2 = await call_claude(
+            "You are a JSON generator. Return ONLY a single valid JSON object. "
+            "No trailing commas. No comments. No text before or after the JSON.",
+            EXTRACTION_PROMPT + conversation_text,
+            max_tokens=2000,
+            model=MODEL_HAIKU,
+        )
+        start2 = raw2.find("{")
+        end2 = raw2.rfind("}") + 1
+        json_str2 = raw2[start2:end2] if start2 != -1 and end2 > start2 else raw2
+        result = json.loads(self._repair_json(json_str2))
         self._extracted_config = result
         return result
 

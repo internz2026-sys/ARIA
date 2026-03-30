@@ -83,7 +83,7 @@ async def connect(sid, environ):
 async def join_tenant(sid, data):
     tenant_id = data.get("tenant_id", "")
     if tenant_id:
-        sio.enter_room(sid, tenant_id)
+        await sio.enter_room(sid, tenant_id)
 
 
 # Active onboarding sessions
