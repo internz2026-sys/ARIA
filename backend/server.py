@@ -16,6 +16,8 @@ from typing import Optional
 
 load_dotenv()
 
+logger = logging.getLogger("aria.server")
+
 from backend.config.loader import get_tenant_config, save_tenant_config
 from backend.onboarding_agent import OnboardingAgent
 from backend.orchestrator import (
