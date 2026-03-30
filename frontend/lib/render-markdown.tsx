@@ -8,7 +8,8 @@ import React from "react";
 
 function inlineFormat(text: string, keyPrefix: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const re = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
+  // Matches: **bold**, __bold__, *italic*, _italic_, `code`
+  const re = /(\*\*(.+?)\*\*|__(.+?)__|(?<!\w)\*(.+?)\*(?!\w)|(?<!\w)_(.+?)_(?!\w)|`(.+?)`)/g;
   let last = 0;
   let m: RegExpExecArray | null;
   let idx = 0;
@@ -16,14 +17,16 @@ function inlineFormat(text: string, keyPrefix: string): React.ReactNode[] {
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) nodes.push(text.slice(last, m.index));
     if (m[2]) nodes.push(<strong key={`${keyPrefix}-b${idx}`}>{m[2]}</strong>);
-    else if (m[3]) nodes.push(<em key={`${keyPrefix}-i${idx}`}>{m[3]}</em>);
-    else if (m[4])
+    else if (m[3]) nodes.push(<strong key={`${keyPrefix}-b${idx}`}>{m[3]}</strong>);
+    else if (m[4]) nodes.push(<em key={`${keyPrefix}-i${idx}`}>{m[4]}</em>);
+    else if (m[5]) nodes.push(<em key={`${keyPrefix}-i${idx}`}>{m[5]}</em>);
+    else if (m[6])
       nodes.push(
         <code
           key={`${keyPrefix}-c${idx}`}
           className="px-1 py-0.5 bg-black/5 rounded text-[0.85em] font-mono"
         >
-          {m[4]}
+          {m[6]}
         </code>
       );
     last = m.index + m[0].length;
