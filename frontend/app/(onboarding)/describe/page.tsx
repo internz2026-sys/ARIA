@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { renderMarkdown } from "@/lib/render-markdown";
+import { useSpeechToText, useTTS } from "@/lib/use-voice";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -52,6 +53,18 @@ export default function DescribePage() {
   const [skipping, setSkipping] = useState(false);
   const [isRestart, setIsRestart] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const stt = useSpeechToText(useCallback((text: string) => setInput(prev => prev ? prev + " " + text : text), []));
+  const tts = useTTS();
+  const prevMsgCount = useRef(0);
+
+  // Auto-read new ARIA messages aloud
+  useEffect(() => {
+    if (messages.length > prevMsgCount.current) {
+      const last = messages[messages.length - 1];
+      if (last?.role === "aria") tts.speak(last.text);
+    }
+    prevMsgCount.current = messages.length;
+  }, [messages, tts]);
 
   useEffect(() => {
     // Detect restart mode
@@ -217,12 +230,31 @@ export default function DescribePage() {
                     <span className="text-white text-xs font-bold">A</span>
                   </div>
                 )}
-                <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                  msg.role === "user"
-                    ? "bg-[#534AB7] text-white rounded-br-md"
-                    : "bg-[#F8F8F6] text-[#2C2C2A] border border-[#E0DED8] rounded-bl-md"
-                }`}>
-                  {msg.role === "aria" ? renderMarkdown(msg.text) : msg.text}
+                <div>
+                  <div className={`max-w-full rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                    msg.role === "user"
+                      ? "bg-[#534AB7] text-white rounded-br-md"
+                      : "bg-[#F8F8F6] text-[#2C2C2A] border border-[#E0DED8] rounded-bl-md"
+                  }`}>
+                    {msg.role === "aria" ? renderMarkdown(msg.text) : msg.text}
+                  </div>
+                  {msg.role === "aria" && tts.supported && (
+                    <button
+                      onClick={() => tts.speaking ? tts.stop() : tts.speak(msg.text)}
+                      className="mt-1 p-1 rounded text-[#B0AFA8] hover:text-[#534AB7] transition-colors"
+                      title={tts.speaking ? "Stop reading" : "Read aloud"}
+                    >
+                      {tts.speaking ? (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+                        </svg>
+                      ) : (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                        </svg>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -257,6 +289,22 @@ export default function DescribePage() {
                 rows={1}
                 className="flex-1 min-h-[44px] max-h-[120px] rounded-lg border border-[#E0DED8] px-4 py-2.5 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60 resize-none"
               />
+              {stt.supported && (
+                <button
+                  type="button"
+                  onClick={stt.toggle}
+                  className={`h-11 w-11 flex items-center justify-center rounded-lg transition-colors flex-shrink-0 ${
+                    stt.listening
+                      ? "bg-red-500 text-white animate-pulse"
+                      : "border border-[#E0DED8] text-[#5F5E5A] hover:text-[#534AB7] hover:bg-[#F8F8F6]"
+                  }`}
+                  title={stt.listening ? "Stop recording" : "Voice input"}
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                  </svg>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleSkip}

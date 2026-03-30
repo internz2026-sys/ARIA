@@ -428,7 +428,7 @@ export default function InboxPage() {
         {STATUS_TABS.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => { setActiveTab(tab.key); setSelected(null); setShowHtmlSource(false); setCheckedIds(new Set()); setPage(1); }}
+            onClick={() => { setActiveTab(tab.key); setSelected(null); setCheckedIds(new Set()); setPage(1); }}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
               activeTab === tab.key
                 ? "bg-[#EEEDFE] text-[#534AB7]"
@@ -531,7 +531,7 @@ export default function InboxPage() {
                     className="w-4 h-4 mt-0.5 rounded border-[#C5C3BC] text-[#534AB7] focus:ring-[#534AB7] cursor-pointer shrink-0"
                   />
                   <button
-                    onClick={() => { setSelected(item); setShowHtmlSource(false); }}
+                    onClick={() => { setSelected(item); }}
                     className="flex-1 text-left min-w-0"
                   >
                     <div className="flex items-center gap-2 mb-1.5">
