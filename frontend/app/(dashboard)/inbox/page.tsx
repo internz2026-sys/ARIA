@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { API_URL, inbox } from "@/lib/api";
 import { AGENT_NAMES, AGENT_COLORS } from "@/lib/agent-config";
+import EmailEditor from "@/components/shared/EmailEditor";
 
 interface EmailDraft {
   to: string;
@@ -103,7 +104,6 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [showHtmlSource, setShowHtmlSource] = useState(false);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -243,39 +243,68 @@ export default function InboxPage() {
     setActionLoading(null);
   };
 
-  // ─── Email Draft Preview Detail ───
-  const renderEmailPreview = (item: InboxItem) => {
+  // ─── Save draft edits ───
+  const handleSaveDraft = async (item: InboxItem, data: { to: string; subject: string; html_body: string }) => {
+    if (!tenantId) return;
+    try {
+      const result = await inbox.updateDraft(tenantId, item.id, data);
+      // Update local state with saved draft
+      const updatedDraft = result.email_draft || { ...item.email_draft, ...data };
+      setItems((prev) =>
+        prev.map((i) => (i.id === item.id ? { ...i, email_draft: updatedDraft } : i))
+      );
+      if (selected?.id === item.id) {
+        setSelected({ ...item, email_draft: updatedDraft });
+      }
+    } catch (err: any) {
+      alert(err?.message || "Failed to save changes");
+      throw err;
+    }
+  };
+
+  // ─── Email Draft Editor (editable) ───
+  const renderEmailEditor = (item: InboxItem) => {
+    const draft = item.email_draft!;
+    return (
+      <EmailEditor
+        key={item.id}
+        to={draft.to || ""}
+        subject={draft.subject || ""}
+        htmlBody={draft.html_body || ""}
+        onSave={(data) => handleSaveDraft(item, data)}
+        onSend={() => handleApproveSend(item)}
+        onCancel={() => handleCancelDraft(item)}
+        sendDisabled={actionLoading === "approve"}
+        sendLoading={actionLoading === "approve"}
+        cancelLoading={actionLoading === "cancel"}
+      />
+    );
+  };
+
+  // ─── Email Draft Read-Only View (sent/failed/cancelled) ───
+  const renderEmailReadOnly = (item: InboxItem) => {
     const draft = item.email_draft!;
     return (
       <div className="flex flex-col w-full">
-        {/* Email header */}
         <div className="border-b border-[#E0DED8] p-5">
           <div className="flex items-center gap-2 mb-3">
             <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: AGENT_COLORS[item.agent] || "#999" }} />
             <span className="text-sm font-medium" style={{ color: AGENT_COLORS[item.agent] || "#999" }}>
               {AGENT_NAMES[item.agent] || item.agent}
             </span>
-            <span className="text-xs text-[#9E9C95]">Email Draft</span>
+            <span className="text-xs text-[#9E9C95]">Email</span>
             <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
           </div>
-
-          {/* Email envelope fields */}
           <div className="bg-[#F8F8F6] rounded-lg p-4 space-y-2 mb-3">
             <div className="flex items-baseline gap-2">
               <span className="text-xs font-semibold text-[#5F5E5A] uppercase w-16 shrink-0">To</span>
-              {draft.to ? (
-                <span className="text-sm text-[#2C2C2A]">{draft.to}</span>
-              ) : (
-                <span className="text-sm text-[#D85A30] font-medium">No recipient — tell the CEO who to send to</span>
-              )}
+              <span className="text-sm text-[#2C2C2A]">{draft.to || "—"}</span>
             </div>
             <div className="flex items-baseline gap-2">
               <span className="text-xs font-semibold text-[#5F5E5A] uppercase w-16 shrink-0">Subject</span>
               <span className="text-sm font-medium text-[#2C2C2A]">{draft.subject}</span>
             </div>
           </div>
-
-          {/* Status badge */}
           {(() => {
             const badge = STATUS_BADGES[item.status];
             return badge ? (
@@ -285,87 +314,24 @@ export default function InboxPage() {
             ) : null;
           })()}
         </div>
-
-        {/* Preview / Source toggle */}
-        <div className="border-b border-[#E0DED8] px-5 flex items-center gap-1">
-          <button
-            onClick={() => setShowHtmlSource(false)}
-            className={`px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              !showHtmlSource ? "border-[#534AB7] text-[#534AB7]" : "border-transparent text-[#5F5E5A] hover:text-[#2C2C2A]"
-            }`}
-          >
-            Preview
-          </button>
-          <button
-            onClick={() => setShowHtmlSource(true)}
-            className={`px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-              showHtmlSource ? "border-[#534AB7] text-[#534AB7]" : "border-transparent text-[#5F5E5A] hover:text-[#2C2C2A]"
-            }`}
-          >
-            HTML Source
-          </button>
-        </div>
-
-        {/* Content area */}
         <div className="flex-1 overflow-auto p-5">
-          {showHtmlSource ? (
-            <pre className="text-xs text-[#5F5E5A] bg-[#F8F8F6] rounded-lg p-4 overflow-auto whitespace-pre-wrap font-mono border border-[#E0DED8]">
-              {draft.html_body}
-            </pre>
-          ) : (
-            <div className="bg-white rounded-lg border border-[#E0DED8] overflow-hidden">
-              <iframe
-                ref={iframeRef}
-                srcDoc={draft.html_body}
-                title="Email preview"
-                className="w-full min-h-[300px] border-0"
-                sandbox="allow-same-origin"
-                onLoad={() => {
-                  // Auto-resize iframe to content height
-                  if (iframeRef.current?.contentDocument) {
-                    const h = iframeRef.current.contentDocument.body.scrollHeight;
-                    iframeRef.current.style.height = `${Math.max(h + 20, 300)}px`;
-                  }
-                }}
-              />
-            </div>
-          )}
+          <div className="bg-white rounded-lg border border-[#E0DED8] overflow-hidden">
+            <iframe
+              ref={iframeRef}
+              srcDoc={draft.html_body}
+              title="Email preview"
+              className="w-full min-h-[300px] border-0"
+              sandbox="allow-same-origin"
+              onLoad={() => {
+                if (iframeRef.current?.contentDocument) {
+                  const h = iframeRef.current.contentDocument.body.scrollHeight;
+                  iframeRef.current.style.height = `${Math.max(h + 20, 300)}px`;
+                }
+              }}
+            />
+          </div>
         </div>
-
-        {/* Action buttons */}
         <div className="border-t border-[#E0DED8] px-5 py-4 flex items-center gap-2">
-          {isPendingApproval(item) && (
-            <>
-              <button
-                onClick={() => handleApproveSend(item)}
-                disabled={actionLoading === "approve" || !item.email_draft?.to}
-                title={!item.email_draft?.to ? "No recipient — tell the CEO who to send this to" : ""}
-                className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#1D9E75] text-white hover:bg-[#178a64] transition-colors disabled:opacity-60"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-                </svg>
-                {actionLoading === "approve" ? "Sending..." : "Approve & Send"}
-              </button>
-              <button
-                onClick={() => handleCopy(draft.html_body)}
-                className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125" />
-                </svg>
-                Copy HTML
-              </button>
-              <button
-                onClick={() => handleCancelDraft(item)}
-                disabled={actionLoading === "cancel"}
-                className="ml-auto px-3 py-2 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors disabled:opacity-60"
-              >
-                {actionLoading === "cancel" ? "Cancelling..." : "Cancel"}
-              </button>
-            </>
-          )}
-
           {item.status === "sent" && (
             <span className="flex items-center gap-1.5 text-sm font-medium text-[#1D9E75]">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -374,7 +340,6 @@ export default function InboxPage() {
               Email sent successfully
             </span>
           )}
-
           {item.status === "failed" && (
             <>
               <span className="flex items-center gap-1.5 text-sm font-medium text-red-500">
@@ -384,40 +349,18 @@ export default function InboxPage() {
                 Send failed
               </span>
               <button
-                onClick={() => handleApproveSend({ ...item, status: "draft_pending_approval" })}
+                onClick={() => {
+                  setItems(prev => prev.map(i => i.id === item.id ? { ...i, status: "draft_pending_approval" } : i));
+                  setSelected({ ...item, status: "draft_pending_approval" });
+                }}
                 className="px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors"
               >
-                Retry
+                Edit & Retry
               </button>
             </>
           )}
-
-          {!isEmailDraft(item) && (
-            <>
-              <button
-                onClick={() => handleCopy(item.content)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                {copied ? "Copied!" : "Copy content"}
-              </button>
-              {item.status === "ready" && (
-                <button onClick={() => handleStatusChange(item, "completed")} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors">
-                  Mark complete
-                </button>
-              )}
-              {item.status === "completed" && (
-                <button onClick={() => handleStatusChange(item, "ready")} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors">
-                  Reopen
-                </button>
-              )}
-            </>
-          )}
-
           <button
-            onClick={() => handleDelete(selected!)}
+            onClick={() => handleDelete(item)}
             className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
           >
             Delete
@@ -666,7 +609,9 @@ export default function InboxPage() {
           {/* Detail pane */}
           <div className="hidden md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
             {selected ? (
-              isEmailDraft(selected) ? renderEmailPreview(selected) : renderStandardDetail(selected)
+              isEmailDraft(selected)
+                ? (isPendingApproval(selected) ? renderEmailEditor(selected) : renderEmailReadOnly(selected))
+                : renderStandardDetail(selected)
             ) : (
               <div className="flex items-center justify-center w-full text-sm text-[#9E9C95]">
                 Select an item to view its content

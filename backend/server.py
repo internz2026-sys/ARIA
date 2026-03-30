@@ -690,6 +690,49 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
     return {"status": "sent", "message_id": gmail_message_id, "thread_id": gmail_thread_id}
 
 
+class UpdateDraftRequest(BaseModel):
+    inbox_item_id: str
+    to: str = ""
+    subject: str = ""
+    html_body: str = ""
+
+
+@app.post("/api/email/{tenant_id}/update-draft")
+async def update_email_draft(tenant_id: str, body: UpdateDraftRequest):
+    """Update an email draft's to, subject, or body before sending."""
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+
+    item_result = sb.table("inbox_items").select("*").eq("id", body.inbox_item_id).single().execute()
+    item = item_result.data
+    if not item:
+        raise HTTPException(status_code=404, detail="Inbox item not found")
+    if item.get("tenant_id") != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+    if item.get("status") not in ("draft_pending_approval", "failed"):
+        raise HTTPException(status_code=400, detail="Draft is not editable")
+
+    draft = item.get("email_draft") or {}
+    if body.to:
+        draft["to"] = body.to
+    if body.subject:
+        draft["subject"] = body.subject
+    if body.html_body:
+        draft["html_body"] = body.html_body
+        # Update text_body and preview_snippet from the new HTML
+        import re
+        text = re.sub(r'<[^>]+>', '', body.html_body).strip()
+        draft["text_body"] = text
+        draft["preview_snippet"] = text[:200]
+
+    sb.table("inbox_items").update({
+        "email_draft": draft,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", body.inbox_item_id).execute()
+
+    return {"ok": True, "email_draft": draft}
+
+
 @app.post("/api/email/{tenant_id}/cancel-draft")
 async def cancel_email_draft(tenant_id: str, body: EmailApproveRequest):
     """Cancel a pending email draft."""

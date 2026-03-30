@@ -52,6 +52,11 @@ export const inbox = {
       method: "POST",
       body: JSON.stringify({ inbox_item_id: inboxItemId }),
     }),
+  updateDraft: (tenantId: string, inboxItemId: string, updates: { to?: string; subject?: string; html_body?: string }) =>
+    fetchAPI(`/api/email/${tenantId}/update-draft`, {
+      method: "POST",
+      body: JSON.stringify({ inbox_item_id: inboxItemId, ...updates }),
+    }),
 };
 
 export const emailThreads = {
