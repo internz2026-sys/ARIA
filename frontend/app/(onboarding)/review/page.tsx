@@ -42,37 +42,49 @@ export default function ReviewPage() {
     );
   }
 
+  // Helper: extract a display value from multiple possible paths in the config.
+  const g = (primary: any, ...fallbacks: any[]) => {
+    if (primary && primary !== "") {
+      return Array.isArray(primary) ? primary.join(", ") : String(primary);
+    }
+    for (const fb of fallbacks) {
+      if (fb && fb !== "") return Array.isArray(fb) ? fb.join(", ") : String(fb);
+    }
+    return "Not provided";
+  };
+
+  // Flat GTM profile (directly maps to the 8 onboarding answers).
+  const gp = config?.gtm_profile || {};
+
   const sections = [
     {
-      title: "Product",
+      title: "Business & Product",
       fields: [
-        { label: "Name", value: config?.product?.name || config?.business_name || "Not provided" },
-        { label: "Description", value: config?.product?.description || config?.description || "Not provided" },
-        { label: "Value proposition", value: config?.product?.value_props?.join(", ") || "Not provided" },
-        { label: "Type", value: config?.product?.product_type || "Not provided" },
+        { label: "Business name", value: g(gp.business_name, config?.business_name) },
+        { label: "Product / offer", value: g(gp.offer, config?.product?.description, config?.description) },
+        { label: "Differentiator", value: g(gp.differentiator, config?.product?.differentiators) },
       ],
     },
     {
       title: "Target Audience",
       fields: [
-        { label: "Target titles", value: config?.icp?.target_titles?.join(", ") || "Not provided" },
-        { label: "Industries", value: config?.icp?.target_industries?.join(", ") || "Not provided" },
-        { label: "Pain points", value: config?.icp?.pain_points?.join(", ") || "Not provided" },
+        { label: "Audience", value: g(gp.audience, config?.icp?.target_titles, config?.icp?.target_industries) },
+        { label: "Problem solved", value: g(gp.problem, config?.icp?.pain_points) },
       ],
     },
     {
       title: "GTM Strategy",
       fields: [
-        { label: "Positioning", value: config?.gtm_playbook?.positioning || "Not provided" },
-        { label: "Channels", value: config?.gtm_playbook?.channel_strategy?.join(", ") || config?.channels?.join(", ") || "Not provided" },
-        { label: "Messaging pillars", value: config?.gtm_playbook?.messaging_pillars?.join(", ") || "Not provided" },
+        { label: "Channels", value: g(gp.primary_channels, config?.channels, config?.gtm_playbook?.channel_strategy) },
+        { label: "Brand voice", value: g(gp.brand_voice, config?.brand_voice?.tone) },
+        { label: "30-day goal", value: g(gp.goal_30_days, config?.gtm_playbook?.action_plan_30) },
       ],
     },
     {
-      title: "Brand Voice",
+      title: "Generated Strategy",
       fields: [
-        { label: "Tone", value: config?.brand_voice?.tone || "Not provided" },
-        { label: "Example phrases", value: config?.brand_voice?.example_phrases?.join(", ") || "Not provided" },
+        { label: "Positioning", value: g(gp.positioning_summary, config?.gtm_playbook?.positioning) },
+        { label: "30-day GTM focus", value: g(gp["30_day_gtm_focus"]) },
       ],
     },
   ];

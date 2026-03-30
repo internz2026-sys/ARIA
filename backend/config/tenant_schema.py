@@ -49,6 +49,20 @@ class BrandVoice(BaseModel):
     dont_guidelines: list[str] = Field(default_factory=list)
 
 
+class GTMProfile(BaseModel):
+    """Flat GTM profile — directly maps to the 8 onboarding answers."""
+    business_name: str = ""
+    offer: str = ""
+    audience: str = ""
+    problem: str = ""
+    differentiator: str = ""
+    positioning_summary: str = ""
+    primary_channels: list[str] = Field(default_factory=list)
+    brand_voice: str = ""
+    goal_30_days: str = ""
+    thirty_day_gtm_focus: str = ""  # JSON key is "30_day_gtm_focus"
+
+
 class IntegrationsConfig(BaseModel):
     """Third-party integration credentials (stored encrypted)."""
     # Email providers
@@ -92,4 +106,5 @@ class TenantConfig(BaseModel):
     owner_name: str = ""
     onboarding_status: str = "not_started"  # not_started | in_progress | completed
     skipped_fields: list[str] = Field(default_factory=list)  # e.g. ["brand_voice", "competitors"]
+    gtm_profile: GTMProfile = Field(default_factory=GTMProfile)
     agent_brief: str = ""  # Condensed ~150 token context for all agents (generated after onboarding)

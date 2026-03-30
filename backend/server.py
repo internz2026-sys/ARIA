@@ -218,13 +218,29 @@ class SaveConfigDirect(BaseModel):
 @app.post("/api/onboarding/save-config-direct")
 async def save_config_direct(body: SaveConfigDirect):
     from backend.config.tenant_schema import (
-        TenantConfig, ICPConfig, ProductConfig, GTMPlaybook, BrandVoice,
+        TenantConfig, ICPConfig, ProductConfig, GTMPlaybook, BrandVoice, GTMProfile,
     )
     from backend.config.brief import generate_agent_brief
 
     extracted = body.config
     has_skips = bool(body.skipped_topics)
     tenant_id = body.existing_tenant_id or str(uuid.uuid4())
+
+    # Build GTMProfile from the flat gtm_profile extraction.
+    gp_raw = extracted.get("gtm_profile", {})
+    gtm_profile = GTMProfile(
+        business_name=gp_raw.get("business_name", extracted.get("business_name", "")),
+        offer=gp_raw.get("offer", extracted.get("description", "")),
+        audience=gp_raw.get("audience", ""),
+        problem=gp_raw.get("problem", ""),
+        differentiator=gp_raw.get("differentiator", ""),
+        positioning_summary=gp_raw.get("positioning_summary", ""),
+        primary_channels=gp_raw.get("primary_channels", extracted.get("channels", [])),
+        brand_voice=gp_raw.get("brand_voice", extracted.get("brand_voice", {}).get("tone", "")),
+        goal_30_days=gp_raw.get("goal_30_days", ""),
+        thirty_day_gtm_focus=gp_raw.get("30_day_gtm_focus", ""),
+    )
+
     config = TenantConfig(
         tenant_id=tenant_id,
         business_name=extracted.get("business_name", ""),
@@ -236,6 +252,7 @@ async def save_config_direct(body: SaveConfigDirect):
         brand_voice=BrandVoice(**extracted.get("brand_voice", {})),
         active_agents=body.active_agents or extracted.get("recommended_agents", ["ceo", "content_writer"]),
         channels=extracted.get("channels", []),
+        gtm_profile=gtm_profile,
         owner_email=body.owner_email,
         owner_name=body.owner_name,
         plan="starter",
