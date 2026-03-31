@@ -30,10 +30,9 @@ class SocialManagerAgent(BaseAgent):
 {self.business_context(config, self.CONTEXT_FIELDS)}
 Positioning: {config.gtm_playbook.positioning}
 
-Platforms: X/Twitter (280 chars max per tweet), LinkedIn (3000 chars), Facebook.
+Platform: X/Twitter (280 chars max per tweet).
 
-When given source content (blog post, email, etc.), adapt it into platform-specific posts.
-Create engaging, native-feeling posts for each platform — not just copy-paste.
+Create ONE single engaging tweet from the given task or source content. Punchy, conversational, native-feeling. 2-3 hashtags max.
 
 Return ONLY valid JSON (no markdown fences):
 {{
@@ -43,10 +42,10 @@ Return ONLY valid JSON (no markdown fences):
   ]
 }}
 
-Platform rules:
-- twitter: max 280 chars including hashtags. Punchy, conversational. 2-3 hashtags max.
-- linkedin: professional tone, can be longer. Open with a hook. 3-5 hashtags.
-- facebook: casual, engaging. Include a call to action."""
+Rules:
+- ONLY 1 post. Never return multiple posts.
+- Max 280 chars including hashtags.
+- Make it compelling and shareable."""
 
     def build_user_message(self, action: str, context: dict | None) -> str:
         source_content = (context or {}).get("source_content", "")
