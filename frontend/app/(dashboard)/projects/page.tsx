@@ -13,11 +13,15 @@ import {
 } from "@/lib/task-config";
 
 type ViewMode = "table" | "board";
+const PAGE_SIZE = 20;
 
 export default function ProjectsPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>("table");
+  const [page, setPage] = useState(1);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
 
   useEffect(() => {
     const tid = localStorage.getItem("aria_tenant_id");
@@ -35,8 +39,39 @@ export default function ProjectsPage() {
 
   const handleDelete = useCallback((taskId: string) => {
     setTasks(prev => prev.filter(t => t.id !== taskId));
+    setCheckedIds(prev => { const n = new Set(prev); n.delete(taskId); return n; });
     deleteTaskApi(taskId);
   }, []);
+
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
+  const paginatedTasks = tasks.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Bulk actions
+  const toggleCheck = (id: string) => {
+    setCheckedIds(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+
+  const toggleAll = () => {
+    if (checkedIds.size === paginatedTasks.length) {
+      setCheckedIds(new Set());
+    } else {
+      setCheckedIds(new Set(paginatedTasks.map(t => t.id)));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (checkedIds.size === 0) return;
+    setBulkLoading(true);
+    await Promise.all(Array.from(checkedIds).map(id => deleteTaskApi(id)));
+    setTasks(prev => prev.filter(t => !checkedIds.has(t.id)));
+    setCheckedIds(new Set());
+    setBulkLoading(false);
+  };
 
   if (loading) {
     return (
@@ -81,7 +116,73 @@ export default function ProjectsPage() {
           <p className="text-sm text-[#5F5E5A]">Ask the CEO agent to create content, campaigns, or ads — tasks will appear here.</p>
         </div>
       ) : viewMode === "table" ? (
-        <TableView tasks={tasks} onStatusChange={updateStatus} onDelete={handleDelete} />
+        <>
+          {/* Bulk actions bar */}
+          {checkedIds.size > 0 && (
+            <div className="mb-3 flex items-center gap-3 px-4 py-2.5 bg-[#EEEDFE] rounded-lg border border-[#534AB7]/20">
+              <span className="text-xs font-semibold text-[#534AB7]">{checkedIds.size} selected</span>
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkLoading}
+                className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors disabled:opacity-60"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                </svg>
+                {bulkLoading ? "Deleting..." : "Delete"}
+              </button>
+              <button onClick={() => setCheckedIds(new Set())} className="text-xs text-[#5F5E5A] hover:text-[#2C2C2A] ml-auto">
+                Clear
+              </button>
+            </div>
+          )}
+
+          <TableView
+            tasks={paginatedTasks}
+            onStatusChange={updateStatus}
+            onDelete={handleDelete}
+            checkedIds={checkedIds}
+            onToggleCheck={toggleCheck}
+            onToggleAll={toggleAll}
+            allChecked={checkedIds.size === paginatedTasks.length && paginatedTasks.length > 0}
+          />
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-4 px-1">
+              <p className="text-xs text-[#9E9C95]">
+                Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, tasks.length)} of {tasks.length}
+              </p>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  className="px-3 py-1.5 text-xs font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 transition-colors"
+                >
+                  Previous
+                </button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setPage(p)}
+                    className={`w-8 h-8 rounded-lg text-xs font-medium transition-colors ${
+                      p === page ? "bg-[#534AB7] text-white" : "text-[#5F5E5A] hover:bg-[#F8F8F6]"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                  className="px-3 py-1.5 text-xs font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 transition-colors"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       ) : (
         <KanbanBoard tasks={tasks} onStatusChange={updateStatus} onDelete={handleDelete} />
       )}
@@ -90,12 +191,30 @@ export default function ProjectsPage() {
 }
 
 /* ─── Table View ─── */
-function TableView({ tasks, onStatusChange, onDelete }: { tasks: Task[]; onStatusChange: (id: string, s: string) => void; onDelete: (id: string) => void }) {
+function TableView({
+  tasks, onStatusChange, onDelete, checkedIds, onToggleCheck, onToggleAll, allChecked,
+}: {
+  tasks: Task[];
+  onStatusChange: (id: string, s: string) => void;
+  onDelete: (id: string) => void;
+  checkedIds: Set<string>;
+  onToggleCheck: (id: string) => void;
+  onToggleAll: () => void;
+  allChecked: boolean;
+}) {
   return (
     <div className="bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
       <table className="w-full">
         <thead>
           <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
+            <th className="w-[40px] px-4 py-3">
+              <input
+                type="checkbox"
+                checked={allChecked}
+                onChange={onToggleAll}
+                className="w-4 h-4 rounded border-[#E0DED8] text-[#534AB7] focus:ring-[#534AB7]/30 cursor-pointer"
+              />
+            </th>
             <th className="text-left px-4 py-3 text-xs font-semibold text-[#5F5E5A] uppercase tracking-wide">Task</th>
             <th className="text-left px-4 py-3 text-xs font-semibold text-[#5F5E5A] uppercase tracking-wide w-[140px]">Agent</th>
             <th className="text-left px-4 py-3 text-xs font-semibold text-[#5F5E5A] uppercase tracking-wide w-[100px]">Priority</th>
@@ -108,8 +227,17 @@ function TableView({ tasks, onStatusChange, onDelete }: { tasks: Task[]; onStatu
           {tasks.map(task => {
             const agent = AGENT_LABELS[task.agent] || { name: task.agent, color: "#5F5E5A" };
             const priority = PRIORITY_STYLES[task.priority] || PRIORITY_STYLES.medium;
+            const checked = checkedIds.has(task.id);
             return (
-              <tr key={task.id} className="border-b border-[#E0DED8] last:border-0 hover:bg-[#F8F8F6]/50 transition">
+              <tr key={task.id} className={`border-b border-[#E0DED8] last:border-0 hover:bg-[#F8F8F6]/50 transition ${checked ? "bg-[#EEEDFE]/30" : ""}`}>
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggleCheck(task.id)}
+                    className="w-4 h-4 rounded border-[#E0DED8] text-[#534AB7] focus:ring-[#534AB7]/30 cursor-pointer"
+                  />
+                </td>
                 <td className="px-4 py-3">
                   <p className="text-sm text-[#2C2C2A] leading-relaxed">{task.task}</p>
                 </td>
