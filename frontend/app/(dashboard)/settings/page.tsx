@@ -21,6 +21,8 @@ export default function SettingsPage() {
   const [user, setUser] = useState({ name: "", email: "", company: "" });
   const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
   const [gmailReconnecting, setGmailReconnecting] = useState(false);
+  const [twitterConnected, setTwitterConnected] = useState<boolean | null>(null);
+  const [twitterUsername, setTwitterUsername] = useState("");
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -40,6 +42,10 @@ export default function SettingsPage() {
         .then(r => r.json())
         .then(data => setGmailConnected(!!data?.connected))
         .catch(() => setGmailConnected(false));
+      fetch(`${API_URL}/api/integrations/${tenantId}/twitter-status`)
+        .then(r => r.json())
+        .then(data => { setTwitterConnected(!!data?.connected); setTwitterUsername(data?.username || ""); })
+        .catch(() => setTwitterConnected(false));
     }
   }, []);
 
@@ -54,6 +60,12 @@ export default function SettingsPage() {
       },
     });
     if (error) setGmailReconnecting(false);
+  }
+
+  function connectTwitter() {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId) return;
+    window.open(`${API_URL}/api/auth/twitter/connect/${tenantId}`, "twitter_auth", "width=600,height=700");
   }
 
   return (
@@ -169,6 +181,37 @@ export default function SettingsPage() {
                   {gmailReconnecting ? "Connecting..." : "Connect Gmail"}
                 </button>
               ) : gmailConnected ? (
+                <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Twitter / X */}
+          <div className="bg-white rounded-xl border border-[#E0DED8]">
+            <div className="px-5 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-[#F0F0F0] flex items-center justify-center">
+                  <svg className="w-5 h-5 text-[#2C2C2A]" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-[#2C2C2A]">X / Twitter</p>
+                  <p className="text-xs text-[#5F5E5A] mt-0.5">
+                    {twitterConnected === null ? "Checking..." : twitterConnected
+                      ? `Connected — @${twitterUsername}`
+                      : "Not connected — Social Manager can only draft, not publish"}
+                  </p>
+                </div>
+              </div>
+              {twitterConnected === false ? (
+                <button
+                  onClick={connectTwitter}
+                  className="text-xs font-medium px-4 py-2 rounded-lg bg-[#2C2C2A] text-white hover:bg-[#1a1a19] transition-colors"
+                >
+                  Connect X
+                </button>
+              ) : twitterConnected ? (
                 <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
               ) : null}
             </div>

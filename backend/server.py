@@ -128,6 +128,138 @@ async def health():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+# ─── Twitter / X OAuth 2.0 ───
+
+@app.get("/api/auth/twitter/connect/{tenant_id}")
+async def twitter_connect(tenant_id: str, request: Request):
+    """Start Twitter OAuth 2.0 PKCE flow — redirects user to X login."""
+    from backend.tools import twitter_tool
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/api/auth/twitter/callback"
+    auth_url = twitter_tool.get_auth_url(tenant_id, redirect_uri)
+    from starlette.responses import RedirectResponse
+    return RedirectResponse(auth_url)
+
+
+@app.get("/api/auth/twitter/callback")
+async def twitter_callback(code: str = "", state: str = "", error: str = ""):
+    """Handle Twitter OAuth callback — exchange code for tokens and store."""
+    from starlette.responses import HTMLResponse
+    if error:
+        return HTMLResponse(f"<script>alert('Twitter auth failed: {error}');window.close();</script>")
+
+    from backend.tools import twitter_tool
+    from backend.config.loader import get_tenant_config, save_tenant_config
+
+    # Build redirect_uri from the current request
+    base_url = os.getenv("NEXT_PUBLIC_API_URL", "http://localhost:8000").rstrip("/")
+    redirect_uri = f"{base_url}/api/auth/twitter/callback"
+
+    try:
+        tokens = await twitter_tool.exchange_code(code, state, redirect_uri)
+    except Exception as e:
+        return HTMLResponse(f"<script>alert('Auth failed: {e}');window.close();</script>")
+
+    tenant_id = tokens["tenant_id"]
+    access_token = tokens["access_token"]
+    refresh_token = tokens["refresh_token"]
+
+    # Get username
+    profile = await twitter_tool.get_me(access_token)
+    username = profile.get("username", "")
+
+    # Store tokens in tenant config
+    config = get_tenant_config(tenant_id)
+    config.integrations.twitter_access_token = access_token
+    config.integrations.twitter_refresh_token = refresh_token
+    config.integrations.twitter_username = username
+    save_tenant_config(config)
+
+    logger.info("Twitter connected for tenant %s (@%s)", tenant_id, username)
+
+    # Close popup and refresh parent
+    return HTMLResponse("""<html><body><script>
+        if (window.opener) { window.opener.location.reload(); }
+        window.close();
+    </script><p>Twitter connected! You can close this window.</p></body></html>""")
+
+
+@app.get("/api/integrations/{tenant_id}/twitter-status")
+async def twitter_status(tenant_id: str):
+    """Check if Twitter is connected for a tenant."""
+    config = get_tenant_config(tenant_id)
+    connected = bool(config.integrations.twitter_access_token or config.integrations.twitter_refresh_token)
+    return {
+        "connected": connected,
+        "username": config.integrations.twitter_username or "",
+    }
+
+
+class TweetRequest(BaseModel):
+    text: str
+    reply_to: Optional[str] = None
+
+
+class ThreadRequest(BaseModel):
+    tweets: list[str]
+
+
+@app.post("/api/twitter/{tenant_id}/tweet")
+async def publish_tweet(tenant_id: str, body: TweetRequest):
+    """Post a single tweet from the tenant's connected X account."""
+    from backend.tools import twitter_tool
+    config = get_tenant_config(tenant_id)
+    access_token = config.integrations.twitter_access_token
+    refresh_token = config.integrations.twitter_refresh_token
+
+    if not access_token and not refresh_token:
+        raise HTTPException(status_code=400, detail="Twitter not connected. Go to Settings > Integrations.")
+
+    # Refresh if needed
+    if not access_token and refresh_token:
+        try:
+            tokens = await twitter_tool.refresh_access_token(refresh_token)
+            access_token = tokens["access_token"]
+            config.integrations.twitter_access_token = access_token
+            config.integrations.twitter_refresh_token = tokens.get("refresh_token", refresh_token)
+            save_tenant_config(config)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Twitter token expired. Reconnect in Settings.")
+
+    result = await twitter_tool.post_tweet(access_token, body.text, reply_to=body.reply_to)
+
+    if result.get("error") == "token_expired" and refresh_token:
+        # Try refresh once
+        try:
+            tokens = await twitter_tool.refresh_access_token(refresh_token)
+            access_token = tokens["access_token"]
+            config.integrations.twitter_access_token = access_token
+            config.integrations.twitter_refresh_token = tokens.get("refresh_token", refresh_token)
+            save_tenant_config(config)
+            result = await twitter_tool.post_tweet(access_token, body.text, reply_to=body.reply_to)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Twitter token expired. Reconnect in Settings.")
+
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
+@app.post("/api/twitter/{tenant_id}/thread")
+async def publish_thread(tenant_id: str, body: ThreadRequest):
+    """Post a thread (multiple tweets) from the tenant's connected X account."""
+    from backend.tools import twitter_tool
+    config = get_tenant_config(tenant_id)
+    access_token = config.integrations.twitter_access_token
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Twitter not connected.")
+
+    results = await twitter_tool.post_thread(access_token, body.tweets)
+    return {"tweets": results}
+
+
 # ─── Usage API ───
 
 @app.get("/api/usage/{tenant_id}")

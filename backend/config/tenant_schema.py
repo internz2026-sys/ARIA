@@ -69,11 +69,15 @@ class IntegrationsConfig(BaseModel):
     sendgrid_key: Optional[str] = None
     mailchimp_api_key: Optional[str] = None
     convertkit_api_key: Optional[str] = None
-    # Social media
-    twitter_api_key: Optional[str] = None
-    twitter_api_secret: Optional[str] = None
+    # Twitter / X (per-user OAuth 2.0)
+    twitter_access_token: Optional[str] = None
+    twitter_refresh_token: Optional[str] = None
+    twitter_username: Optional[str] = None
+    # LinkedIn
     linkedin_access_token: Optional[str] = None
+    # Facebook
     facebook_page_token: Optional[str] = None
+    facebook_page_id: Optional[str] = None
     instagram_access_token: Optional[str] = None
     # Ads
     facebook_ad_account_id: Optional[str] = None
