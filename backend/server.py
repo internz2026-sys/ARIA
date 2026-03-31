@@ -1783,6 +1783,288 @@ async def _run_agent_to_inbox(
                 pass
 
 
+# ─── CRM API ───
+
+class CrmContactCreate(BaseModel):
+    name: str
+    email: str = ""
+    phone: str = ""
+    company_id: Optional[str] = None
+    source: str = "manual"
+    status: str = "lead"
+    tags: list[str] = []
+    notes: str = ""
+
+class CrmContactUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    company_id: Optional[str] = None
+    source: Optional[str] = None
+    status: Optional[str] = None
+    tags: Optional[list[str]] = None
+    notes: Optional[str] = None
+
+class CrmCompanyCreate(BaseModel):
+    name: str
+    domain: str = ""
+    industry: str = ""
+    size: str = ""
+    notes: str = ""
+
+class CrmDealCreate(BaseModel):
+    title: str
+    value: float = 0
+    stage: str = "lead"
+    contact_id: Optional[str] = None
+    company_id: Optional[str] = None
+    notes: str = ""
+    expected_close: Optional[str] = None
+
+class CrmDealUpdate(BaseModel):
+    title: Optional[str] = None
+    value: Optional[float] = None
+    stage: Optional[str] = None
+    contact_id: Optional[str] = None
+    company_id: Optional[str] = None
+    notes: Optional[str] = None
+    expected_close: Optional[str] = None
+
+class CrmActivityCreate(BaseModel):
+    contact_id: Optional[str] = None
+    deal_id: Optional[str] = None
+    type: str
+    description: str = ""
+    metadata: dict = {}
+
+
+# ── Contacts ──
+
+@app.get("/api/crm/{tenant_id}/contacts")
+async def list_crm_contacts(tenant_id: str, search: str = "", status: str = "", page: int = 1, page_size: int = 50):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    query = sb.table("crm_contacts").select("*").eq("tenant_id", tenant_id)
+    if search:
+        query = query.or_(f"name.ilike.%{search}%,email.ilike.%{search}%")
+    if status:
+        query = query.eq("status", status)
+    query = query.order("created_at", desc=True)
+    start = (page - 1) * page_size
+    result = query.range(start, start + page_size - 1).execute()
+    return {"contacts": result.data or [], "page": page}
+
+
+@app.get("/api/crm/{tenant_id}/contacts/{contact_id}")
+async def get_crm_contact(tenant_id: str, contact_id: str):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    result = sb.table("crm_contacts").select("*").eq("id", contact_id).eq("tenant_id", tenant_id).single().execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    # Get activities
+    acts = sb.table("crm_activities").select("*").eq("contact_id", contact_id).order("created_at", desc=True).limit(20).execute()
+    return {"contact": result.data, "activities": acts.data or []}
+
+
+@app.post("/api/crm/{tenant_id}/contacts")
+async def create_crm_contact(tenant_id: str, body: CrmContactCreate):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    row = {"tenant_id": tenant_id, **body.model_dump()}
+    result = sb.table("crm_contacts").insert(row).execute()
+    contact = result.data[0] if result.data else None
+    if contact:
+        sb.table("crm_activities").insert({
+            "tenant_id": tenant_id, "contact_id": contact["id"],
+            "type": "contact_created", "description": f"Contact {body.name} created",
+        }).execute()
+    return {"contact": contact}
+
+
+@app.patch("/api/crm/{tenant_id}/contacts/{contact_id}")
+async def update_crm_contact(tenant_id: str, contact_id: str, body: CrmContactUpdate):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    sb.table("crm_contacts").update(updates).eq("id", contact_id).eq("tenant_id", tenant_id).execute()
+    return {"ok": True}
+
+
+@app.delete("/api/crm/{tenant_id}/contacts/{contact_id}")
+async def delete_crm_contact(tenant_id: str, contact_id: str):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    sb.table("crm_contacts").delete().eq("id", contact_id).eq("tenant_id", tenant_id).execute()
+    return {"ok": True}
+
+
+# ── Companies ──
+
+@app.get("/api/crm/{tenant_id}/companies")
+async def list_crm_companies(tenant_id: str, search: str = ""):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    query = sb.table("crm_companies").select("*").eq("tenant_id", tenant_id)
+    if search:
+        query = query.or_(f"name.ilike.%{search}%,domain.ilike.%{search}%")
+    result = query.order("created_at", desc=True).execute()
+    return {"companies": result.data or []}
+
+
+@app.get("/api/crm/{tenant_id}/companies/{company_id}")
+async def get_crm_company(tenant_id: str, company_id: str):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    result = sb.table("crm_companies").select("*").eq("id", company_id).eq("tenant_id", tenant_id).single().execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Company not found")
+    contacts = sb.table("crm_contacts").select("*").eq("company_id", company_id).eq("tenant_id", tenant_id).execute()
+    deals = sb.table("crm_deals").select("*").eq("company_id", company_id).eq("tenant_id", tenant_id).execute()
+    return {"company": result.data, "contacts": contacts.data or [], "deals": deals.data or []}
+
+
+@app.post("/api/crm/{tenant_id}/companies")
+async def create_crm_company(tenant_id: str, body: CrmCompanyCreate):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    row = {"tenant_id": tenant_id, **body.model_dump()}
+    result = sb.table("crm_companies").insert(row).execute()
+    return {"company": result.data[0] if result.data else None}
+
+
+class CrmCompanyUpdate(BaseModel):
+    name: Optional[str] = None
+    domain: Optional[str] = None
+    industry: Optional[str] = None
+    size: Optional[str] = None
+    notes: Optional[str] = None
+
+@app.patch("/api/crm/{tenant_id}/companies/{company_id}")
+async def update_crm_company(tenant_id: str, company_id: str, body: CrmCompanyUpdate):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    sb.table("crm_companies").update(updates).eq("id", company_id).eq("tenant_id", tenant_id).execute()
+    return {"ok": True}
+
+
+@app.delete("/api/crm/{tenant_id}/companies/{company_id}")
+async def delete_crm_company(tenant_id: str, company_id: str):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    sb.table("crm_companies").delete().eq("id", company_id).eq("tenant_id", tenant_id).execute()
+    return {"ok": True}
+
+
+# ── Deals ──
+
+@app.get("/api/crm/{tenant_id}/deals")
+async def list_crm_deals(tenant_id: str, stage: str = ""):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    query = sb.table("crm_deals").select("*").eq("tenant_id", tenant_id)
+    if stage:
+        query = query.eq("stage", stage)
+    result = query.order("created_at", desc=True).execute()
+    return {"deals": result.data or []}
+
+
+@app.get("/api/crm/{tenant_id}/deals/{deal_id}")
+async def get_crm_deal(tenant_id: str, deal_id: str):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    result = sb.table("crm_deals").select("*").eq("id", deal_id).eq("tenant_id", tenant_id).single().execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    return {"deal": result.data}
+
+
+@app.post("/api/crm/{tenant_id}/deals")
+async def create_crm_deal(tenant_id: str, body: CrmDealCreate):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    row = {"tenant_id": tenant_id, **body.model_dump()}
+    result = sb.table("crm_deals").insert(row).execute()
+    deal = result.data[0] if result.data else None
+    if deal and body.contact_id:
+        sb.table("crm_activities").insert({
+            "tenant_id": tenant_id, "contact_id": body.contact_id, "deal_id": deal["id"],
+            "type": "deal_created", "description": f"Deal '{body.title}' created — {body.stage}",
+        }).execute()
+    return {"deal": deal}
+
+
+@app.patch("/api/crm/{tenant_id}/deals/{deal_id}")
+async def update_crm_deal(tenant_id: str, deal_id: str, body: CrmDealUpdate):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    # Get old stage for activity logging
+    old = sb.table("crm_deals").select("stage,contact_id").eq("id", deal_id).single().execute()
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    sb.table("crm_deals").update(updates).eq("id", deal_id).eq("tenant_id", tenant_id).execute()
+    # Log stage change
+    if body.stage and old.data and old.data.get("stage") != body.stage:
+        sb.table("crm_activities").insert({
+            "tenant_id": tenant_id,
+            "contact_id": old.data.get("contact_id"),
+            "deal_id": deal_id,
+            "type": "stage_changed",
+            "description": f"Stage: {old.data['stage']} → {body.stage}",
+        }).execute()
+    return {"ok": True}
+
+
+@app.delete("/api/crm/{tenant_id}/deals/{deal_id}")
+async def delete_crm_deal(tenant_id: str, deal_id: str):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    sb.table("crm_deals").delete().eq("id", deal_id).eq("tenant_id", tenant_id).execute()
+    return {"ok": True}
+
+
+# ── Activities ──
+
+@app.get("/api/crm/{tenant_id}/activities")
+async def list_crm_activities(tenant_id: str, contact_id: str = "", limit: int = 30):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    query = sb.table("crm_activities").select("*").eq("tenant_id", tenant_id)
+    if contact_id:
+        query = query.eq("contact_id", contact_id)
+    result = query.order("created_at", desc=True).limit(limit).execute()
+    return {"activities": result.data or []}
+
+
+@app.post("/api/crm/{tenant_id}/activities")
+async def create_crm_activity(tenant_id: str, body: CrmActivityCreate):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    row = {"tenant_id": tenant_id, **body.model_dump()}
+    result = sb.table("crm_activities").insert(row).execute()
+    return {"activity": result.data[0] if result.data else None}
+
+
+# ── Pipeline Summary ──
+
+@app.get("/api/crm/{tenant_id}/pipeline-summary")
+async def crm_pipeline_summary(tenant_id: str):
+    from backend.config.loader import _get_supabase
+    sb = _get_supabase()
+    result = sb.table("crm_deals").select("stage,value").eq("tenant_id", tenant_id).execute()
+    stages: dict[str, dict] = {}
+    for d in (result.data or []):
+        s = d.get("stage", "lead")
+        if s not in stages:
+            stages[s] = {"count": 0, "value": 0}
+        stages[s]["count"] += 1
+        stages[s]["value"] += float(d.get("value", 0))
+    return {"stages": stages}
+
+
 # ─── CEO Chat ───
 import pathlib as _pathlib
 

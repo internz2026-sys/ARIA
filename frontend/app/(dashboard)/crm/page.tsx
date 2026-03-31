@@ -1,0 +1,492 @@
+"use client";
+
+import React, { useState, useEffect, useCallback } from "react";
+import { crm } from "@/lib/api";
+import {
+  CrmContact, CrmCompany, CrmDeal,
+  CONTACT_STATUSES, DEAL_STAGES, CONTACT_SOURCES, COMPANY_SIZES,
+  getStatusConfig, getStageConfig, formatCurrency,
+} from "@/lib/crm-config";
+
+// ─── Helpers ───
+
+function timeAgo(d: string) {
+  if (!d) return "";
+  const diff = Date.now() - new Date(d).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  return `${Math.floor(hrs / 24)}d`;
+}
+
+// ─── Modal ───
+
+function Modal({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: React.ReactNode }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[90] flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <div className="relative bg-white rounded-xl border border-[#E0DED8] shadow-2xl w-full max-w-lg mx-4 max-h-[85vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#E0DED8]">
+          <h3 className="text-base font-semibold text-[#2C2C2A]">{title}</h3>
+          <button onClick={onClose} className="text-[#9E9C95] hover:text-[#2C2C2A]">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+        <div className="p-6">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function FormField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <label className="text-xs font-semibold text-[#5F5E5A] uppercase">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+const inputCls = "w-full text-sm text-[#2C2C2A] bg-[#F8F8F6] border border-[#E0DED8] rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7]";
+const selectCls = inputCls;
+
+// ─── Main Page ───
+
+type Tab = "contacts" | "companies" | "deals";
+
+export default function CRMPage() {
+  const [tab, setTab] = useState<Tab>("contacts");
+  const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
+
+  // ─── Contacts state ───
+  const [contacts, setContacts] = useState<CrmContact[]>([]);
+  const [contactSearch, setContactSearch] = useState("");
+  const [contactFilter, setContactFilter] = useState("");
+  const [contactLoading, setContactLoading] = useState(true);
+  const [showAddContact, setShowAddContact] = useState(false);
+
+  // ─── Companies state ───
+  const [companies, setCompanies] = useState<CrmCompany[]>([]);
+  const [companySearch, setCompanySearch] = useState("");
+  const [companyLoading, setCompanyLoading] = useState(true);
+  const [showAddCompany, setShowAddCompany] = useState(false);
+
+  // ─── Deals state ───
+  const [deals, setDeals] = useState<CrmDeal[]>([]);
+  const [dealLoading, setDealLoading] = useState(true);
+  const [showAddDeal, setShowAddDeal] = useState(false);
+  const [pipelineSummary, setPipelineSummary] = useState<Record<string, { count: number; value: number }>>({});
+
+  // ─── Fetchers ───
+  const fetchContacts = useCallback(async () => {
+    if (!tenantId) return;
+    try {
+      const data = await crm.listContacts(tenantId, contactSearch, contactFilter);
+      setContacts(data.contacts || []);
+    } catch {} finally { setContactLoading(false); }
+  }, [tenantId, contactSearch, contactFilter]);
+
+  const fetchCompanies = useCallback(async () => {
+    if (!tenantId) return;
+    try {
+      const data = await crm.listCompanies(tenantId, companySearch);
+      setCompanies(data.companies || []);
+    } catch {} finally { setCompanyLoading(false); }
+  }, [tenantId, companySearch]);
+
+  const fetchDeals = useCallback(async () => {
+    if (!tenantId) return;
+    try {
+      const [d, p] = await Promise.all([crm.listDeals(tenantId), crm.pipelineSummary(tenantId)]);
+      setDeals(d.deals || []);
+      setPipelineSummary(p.stages || {});
+    } catch {} finally { setDealLoading(false); }
+  }, [tenantId]);
+
+  useEffect(() => { if (tab === "contacts") fetchContacts(); }, [tab, fetchContacts]);
+  useEffect(() => { if (tab === "companies") fetchCompanies(); }, [tab, fetchCompanies]);
+  useEffect(() => { if (tab === "deals") fetchDeals(); }, [tab, fetchDeals]);
+
+  // ─── Contact CRUD ───
+  const [newContact, setNewContact] = useState({ name: "", email: "", phone: "", source: "manual", status: "lead", notes: "" });
+
+  async function handleCreateContact() {
+    if (!newContact.name.trim()) return;
+    await crm.createContact(tenantId, newContact);
+    setShowAddContact(false);
+    setNewContact({ name: "", email: "", phone: "", source: "manual", status: "lead", notes: "" });
+    fetchContacts();
+  }
+
+  async function handleDeleteContact(id: string) {
+    await crm.deleteContact(tenantId, id);
+    fetchContacts();
+  }
+
+  async function handleContactStatusChange(id: string, status: string) {
+    await crm.updateContact(tenantId, id, { status });
+    setContacts(prev => prev.map(c => c.id === id ? { ...c, status } : c));
+  }
+
+  // ─── Company CRUD ───
+  const [newCompany, setNewCompany] = useState({ name: "", domain: "", industry: "", size: "", notes: "" });
+
+  async function handleCreateCompany() {
+    if (!newCompany.name.trim()) return;
+    await crm.createCompany(tenantId, newCompany);
+    setShowAddCompany(false);
+    setNewCompany({ name: "", domain: "", industry: "", size: "", notes: "" });
+    fetchCompanies();
+  }
+
+  async function handleDeleteCompany(id: string) {
+    await crm.deleteCompany(tenantId, id);
+    fetchCompanies();
+  }
+
+  // ─── Deal CRUD ───
+  const [newDeal, setNewDeal] = useState({ title: "", value: 0, stage: "lead", notes: "" });
+
+  async function handleCreateDeal() {
+    if (!newDeal.title.trim()) return;
+    await crm.createDeal(tenantId, newDeal);
+    setShowAddDeal(false);
+    setNewDeal({ title: "", value: 0, stage: "lead", notes: "" });
+    fetchDeals();
+  }
+
+  async function handleDealStageChange(id: string, stage: string) {
+    await crm.updateDeal(tenantId, id, { stage });
+    setDeals(prev => prev.map(d => d.id === id ? { ...d, stage } : d));
+    // Refresh pipeline summary
+    crm.pipelineSummary(tenantId).then(p => setPipelineSummary(p.stages || {})).catch(() => {});
+  }
+
+  async function handleDeleteDeal(id: string) {
+    await crm.deleteDeal(tenantId, id);
+    fetchDeals();
+  }
+
+  const tabs: { key: Tab; label: string }[] = [
+    { key: "contacts", label: "Contacts" },
+    { key: "companies", label: "Companies" },
+    { key: "deals", label: "Deals" },
+  ];
+
+  return (
+    <div className="max-w-[1400px] space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-[#2C2C2A]">CRM</h1>
+          <p className="text-sm text-[#5F5E5A]">Manage contacts, companies, and deals</p>
+        </div>
+        <button
+          onClick={() => {
+            if (tab === "contacts") setShowAddContact(true);
+            else if (tab === "companies") setShowAddCompany(true);
+            else setShowAddDeal(true);
+          }}
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+          Add {tab === "contacts" ? "Contact" : tab === "companies" ? "Company" : "Deal"}
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex items-center gap-1 bg-white rounded-xl border border-[#E0DED8] p-1.5">
+        {tabs.map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              tab === t.key ? "bg-[#EEEDFE] text-[#534AB7]" : "text-[#5F5E5A] hover:bg-[#F8F8F6]"
+            }`}
+          >{t.label}</button>
+        ))}
+      </div>
+
+      {/* ════════ CONTACTS TAB ════════ */}
+      {tab === "contacts" && (
+        <>
+          {/* Search + filter */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 relative">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9E9C95]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+              <input
+                value={contactSearch} onChange={e => setContactSearch(e.target.value)}
+                placeholder="Search contacts..."
+                className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-[#E0DED8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 text-[#2C2C2A] placeholder:text-[#B0AFA8]"
+              />
+            </div>
+            <select value={contactFilter} onChange={e => setContactFilter(e.target.value)}
+              className="text-sm border border-[#E0DED8] rounded-lg px-3 py-2.5 bg-white text-[#5F5E5A] focus:outline-none"
+            >
+              <option value="">All statuses</option>
+              {CONTACT_STATUSES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+            </select>
+          </div>
+
+          {/* Table */}
+          <div className="bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
+            {contactLoading ? (
+              <div className="p-8 text-center text-sm text-[#9E9C95]">Loading contacts...</div>
+            ) : contacts.length === 0 ? (
+              <div className="p-12 text-center">
+                <p className="text-sm text-[#9E9C95]">No contacts yet. Add your first contact to get started.</p>
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Name</th>
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Email</th>
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Phone</th>
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Status</th>
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Source</th>
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Added</th>
+                    <th className="px-4 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {contacts.map(c => {
+                    const sc = getStatusConfig(c.status);
+                    return (
+                      <tr key={c.id} className="border-b border-[#F0EFEC] hover:bg-[#F8F8F6] transition-colors">
+                        <td className="px-4 py-3 font-medium text-[#2C2C2A]">{c.name}</td>
+                        <td className="px-4 py-3 text-[#5F5E5A]">{c.email || "—"}</td>
+                        <td className="px-4 py-3 text-[#5F5E5A]">{c.phone || "—"}</td>
+                        <td className="px-4 py-3">
+                          <select value={c.status} onChange={e => handleContactStatusChange(c.id, e.target.value)}
+                            className="text-[11px] font-medium px-2 py-1 rounded-full border cursor-pointer focus:outline-none"
+                            style={{ color: sc.color, backgroundColor: sc.bg, borderColor: sc.color + "40" }}
+                          >
+                            {CONTACT_STATUSES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-4 py-3 text-[#9E9C95] text-xs">{c.source}</td>
+                        <td className="px-4 py-3 text-[#9E9C95] text-xs">{timeAgo(c.created_at)}</td>
+                        <td className="px-4 py-3">
+                          <button onClick={() => handleDeleteContact(c.id)} className="text-[#B0AFA8] hover:text-red-500 transition-colors">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ════════ COMPANIES TAB ════════ */}
+      {tab === "companies" && (
+        <>
+          <div className="flex items-center gap-3">
+            <div className="flex-1 relative">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9E9C95]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+              <input value={companySearch} onChange={e => setCompanySearch(e.target.value)} placeholder="Search companies..."
+                className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-[#E0DED8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 text-[#2C2C2A] placeholder:text-[#B0AFA8]" />
+            </div>
+          </div>
+          <div className="bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
+            {companyLoading ? (
+              <div className="p-8 text-center text-sm text-[#9E9C95]">Loading companies...</div>
+            ) : companies.length === 0 ? (
+              <div className="p-12 text-center"><p className="text-sm text-[#9E9C95]">No companies yet.</p></div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Name</th>
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Domain</th>
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Industry</th>
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Size</th>
+                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Added</th>
+                    <th className="px-4 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {companies.map(c => (
+                    <tr key={c.id} className="border-b border-[#F0EFEC] hover:bg-[#F8F8F6] transition-colors">
+                      <td className="px-4 py-3 font-medium text-[#2C2C2A]">{c.name}</td>
+                      <td className="px-4 py-3 text-[#534AB7]">{c.domain || "—"}</td>
+                      <td className="px-4 py-3 text-[#5F5E5A]">{c.industry || "—"}</td>
+                      <td className="px-4 py-3 text-[#5F5E5A]">{c.size || "—"}</td>
+                      <td className="px-4 py-3 text-[#9E9C95] text-xs">{timeAgo(c.created_at)}</td>
+                      <td className="px-4 py-3">
+                        <button onClick={() => handleDeleteCompany(c.id)} className="text-[#B0AFA8] hover:text-red-500 transition-colors">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ════════ DEALS TAB (Pipeline Kanban) ════════ */}
+      {tab === "deals" && (
+        <>
+          {/* Pipeline summary */}
+          <div className="flex items-center gap-3 overflow-x-auto pb-1">
+            {DEAL_STAGES.map(s => {
+              const data = pipelineSummary[s.key] || { count: 0, value: 0 };
+              return (
+                <div key={s.key} className="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-[#E0DED8] min-w-fit">
+                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
+                  <span className="text-xs font-medium text-[#2C2C2A]">{s.label}</span>
+                  <span className="text-xs text-[#9E9C95]">{data.count}</span>
+                  {data.value > 0 && <span className="text-xs font-medium text-[#1D9E75]">{formatCurrency(data.value)}</span>}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Kanban board */}
+          {dealLoading ? (
+            <div className="p-8 text-center text-sm text-[#9E9C95]">Loading deals...</div>
+          ) : (
+            <div className="flex gap-3 overflow-x-auto pb-4">
+              {DEAL_STAGES.map(stage => {
+                const stageDeals = deals.filter(d => d.stage === stage.key);
+                return (
+                  <div key={stage.key} className="min-w-[260px] w-[260px] shrink-0">
+                    {/* Column header */}
+                    <div className="flex items-center gap-2 px-3 py-2.5 mb-2">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: stage.color }} />
+                      <span className="text-xs font-semibold text-[#2C2C2A]">{stage.label}</span>
+                      <span className="text-[10px] text-[#9E9C95] bg-[#F8F8F6] px-1.5 py-0.5 rounded-full">{stageDeals.length}</span>
+                    </div>
+                    {/* Cards */}
+                    <div className="space-y-2 min-h-[100px]">
+                      {stageDeals.map(deal => (
+                        <div key={deal.id} className="bg-white rounded-xl border border-[#E0DED8] p-3.5 hover:shadow-sm transition-shadow">
+                          <div className="flex items-start justify-between mb-2">
+                            <p className="text-sm font-medium text-[#2C2C2A] flex-1">{deal.title}</p>
+                            <button onClick={() => handleDeleteDeal(deal.id)} className="text-[#B0AFA8] hover:text-red-500 shrink-0 ml-2">
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                            </button>
+                          </div>
+                          {deal.value > 0 && (
+                            <p className="text-sm font-semibold text-[#1D9E75] mb-2">{formatCurrency(deal.value)}</p>
+                          )}
+                          {deal.notes && <p className="text-[11px] text-[#9E9C95] mb-2 line-clamp-2">{deal.notes}</p>}
+                          {/* Stage selector */}
+                          <select value={deal.stage} onChange={e => handleDealStageChange(deal.id, e.target.value)}
+                            className="w-full text-[11px] font-medium px-2 py-1.5 rounded-lg border border-[#E0DED8] bg-[#F8F8F6] text-[#5F5E5A] cursor-pointer focus:outline-none"
+                          >
+                            {DEAL_STAGES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                      {stageDeals.length === 0 && (
+                        <div className="border-2 border-dashed border-[#E0DED8] rounded-xl p-4 text-center">
+                          <p className="text-[11px] text-[#B0AFA8]">No deals</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ════════ ADD CONTACT MODAL ════════ */}
+      <Modal open={showAddContact} onClose={() => setShowAddContact(false)} title="Add Contact">
+        <div className="space-y-4">
+          <FormField label="Name *">
+            <input value={newContact.name} onChange={e => setNewContact({ ...newContact, name: e.target.value })} className={inputCls} placeholder="Full name" />
+          </FormField>
+          <FormField label="Email">
+            <input type="email" value={newContact.email} onChange={e => setNewContact({ ...newContact, email: e.target.value })} className={inputCls} placeholder="email@example.com" />
+          </FormField>
+          <FormField label="Phone">
+            <input value={newContact.phone} onChange={e => setNewContact({ ...newContact, phone: e.target.value })} className={inputCls} placeholder="+1 234 567 8900" />
+          </FormField>
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Status">
+              <select value={newContact.status} onChange={e => setNewContact({ ...newContact, status: e.target.value })} className={selectCls}>
+                {CONTACT_STATUSES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+              </select>
+            </FormField>
+            <FormField label="Source">
+              <select value={newContact.source} onChange={e => setNewContact({ ...newContact, source: e.target.value })} className={selectCls}>
+                {CONTACT_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </FormField>
+          </div>
+          <FormField label="Notes">
+            <textarea value={newContact.notes} onChange={e => setNewContact({ ...newContact, notes: e.target.value })} className={inputCls} rows={3} placeholder="Any notes..." />
+          </FormField>
+          <button onClick={handleCreateContact} disabled={!newContact.name.trim()}
+            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors disabled:opacity-40"
+          >Add Contact</button>
+        </div>
+      </Modal>
+
+      {/* ════════ ADD COMPANY MODAL ════════ */}
+      <Modal open={showAddCompany} onClose={() => setShowAddCompany(false)} title="Add Company">
+        <div className="space-y-4">
+          <FormField label="Company Name *">
+            <input value={newCompany.name} onChange={e => setNewCompany({ ...newCompany, name: e.target.value })} className={inputCls} placeholder="Acme Inc." />
+          </FormField>
+          <FormField label="Domain">
+            <input value={newCompany.domain} onChange={e => setNewCompany({ ...newCompany, domain: e.target.value })} className={inputCls} placeholder="acme.com" />
+          </FormField>
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Industry">
+              <input value={newCompany.industry} onChange={e => setNewCompany({ ...newCompany, industry: e.target.value })} className={inputCls} placeholder="Technology" />
+            </FormField>
+            <FormField label="Size">
+              <select value={newCompany.size} onChange={e => setNewCompany({ ...newCompany, size: e.target.value })} className={selectCls}>
+                <option value="">Select size</option>
+                {COMPANY_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </FormField>
+          </div>
+          <FormField label="Notes">
+            <textarea value={newCompany.notes} onChange={e => setNewCompany({ ...newCompany, notes: e.target.value })} className={inputCls} rows={3} />
+          </FormField>
+          <button onClick={handleCreateCompany} disabled={!newCompany.name.trim()}
+            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors disabled:opacity-40"
+          >Add Company</button>
+        </div>
+      </Modal>
+
+      {/* ════════ ADD DEAL MODAL ════════ */}
+      <Modal open={showAddDeal} onClose={() => setShowAddDeal(false)} title="Add Deal">
+        <div className="space-y-4">
+          <FormField label="Deal Title *">
+            <input value={newDeal.title} onChange={e => setNewDeal({ ...newDeal, title: e.target.value })} className={inputCls} placeholder="Enterprise onboarding" />
+          </FormField>
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Value ($)">
+              <input type="number" value={newDeal.value} onChange={e => setNewDeal({ ...newDeal, value: Number(e.target.value) })} className={inputCls} placeholder="0" />
+            </FormField>
+            <FormField label="Stage">
+              <select value={newDeal.stage} onChange={e => setNewDeal({ ...newDeal, stage: e.target.value })} className={selectCls}>
+                {DEAL_STAGES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+              </select>
+            </FormField>
+          </div>
+          <FormField label="Notes">
+            <textarea value={newDeal.notes} onChange={e => setNewDeal({ ...newDeal, notes: e.target.value })} className={inputCls} rows={3} />
+          </FormField>
+          <button onClick={handleCreateDeal} disabled={!newDeal.title.trim()}
+            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors disabled:opacity-40"
+          >Add Deal</button>
+        </div>
+      </Modal>
+    </div>
+  );
+}

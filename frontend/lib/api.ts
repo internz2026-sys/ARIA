@@ -79,6 +79,60 @@ export const analytics = {
   getData: (tenantId: string, dateRange: string) => fetchAPI(`/api/analytics/${tenantId}?date_range=${dateRange}`),
 };
 
+export const crm = {
+  // Contacts
+  listContacts: (tenantId: string, search = "", status = "", page = 1, pageSize = 50) => {
+    const p = new URLSearchParams();
+    if (search) p.set("search", search);
+    if (status) p.set("status", status);
+    p.set("page", String(page));
+    p.set("page_size", String(pageSize));
+    return fetchAPI(`/api/crm/${tenantId}/contacts?${p.toString()}`);
+  },
+  getContact: (tenantId: string, id: string) => fetchAPI(`/api/crm/${tenantId}/contacts/${id}`),
+  createContact: (tenantId: string, data: any) =>
+    fetchAPI(`/api/crm/${tenantId}/contacts`, { method: "POST", body: JSON.stringify(data) }),
+  updateContact: (tenantId: string, id: string, data: any) =>
+    fetchAPI(`/api/crm/${tenantId}/contacts/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deleteContact: (tenantId: string, id: string) =>
+    fetchAPI(`/api/crm/${tenantId}/contacts/${id}`, { method: "DELETE" }),
+
+  // Companies
+  listCompanies: (tenantId: string, search = "") =>
+    fetchAPI(`/api/crm/${tenantId}/companies${search ? `?search=${encodeURIComponent(search)}` : ""}`),
+  getCompany: (tenantId: string, id: string) => fetchAPI(`/api/crm/${tenantId}/companies/${id}`),
+  createCompany: (tenantId: string, data: any) =>
+    fetchAPI(`/api/crm/${tenantId}/companies`, { method: "POST", body: JSON.stringify(data) }),
+  updateCompany: (tenantId: string, id: string, data: any) =>
+    fetchAPI(`/api/crm/${tenantId}/companies/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deleteCompany: (tenantId: string, id: string) =>
+    fetchAPI(`/api/crm/${tenantId}/companies/${id}`, { method: "DELETE" }),
+
+  // Deals
+  listDeals: (tenantId: string, stage = "") =>
+    fetchAPI(`/api/crm/${tenantId}/deals${stage ? `?stage=${stage}` : ""}`),
+  getDeal: (tenantId: string, id: string) => fetchAPI(`/api/crm/${tenantId}/deals/${id}`),
+  createDeal: (tenantId: string, data: any) =>
+    fetchAPI(`/api/crm/${tenantId}/deals`, { method: "POST", body: JSON.stringify(data) }),
+  updateDeal: (tenantId: string, id: string, data: any) =>
+    fetchAPI(`/api/crm/${tenantId}/deals/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deleteDeal: (tenantId: string, id: string) =>
+    fetchAPI(`/api/crm/${tenantId}/deals/${id}`, { method: "DELETE" }),
+
+  // Activities
+  listActivities: (tenantId: string, contactId = "", limit = 30) => {
+    const p = new URLSearchParams();
+    if (contactId) p.set("contact_id", contactId);
+    p.set("limit", String(limit));
+    return fetchAPI(`/api/crm/${tenantId}/activities?${p.toString()}`);
+  },
+  createActivity: (tenantId: string, data: any) =>
+    fetchAPI(`/api/crm/${tenantId}/activities`, { method: "POST", body: JSON.stringify(data) }),
+
+  // Pipeline
+  pipelineSummary: (tenantId: string) => fetchAPI(`/api/crm/${tenantId}/pipeline-summary`),
+};
+
 export const notificationsApi = {
   counts: (tenantId: string) => fetchAPI(`/api/notifications/${tenantId}/counts`),
   list: (tenantId: string, unreadOnly = false, limit = 30) =>
