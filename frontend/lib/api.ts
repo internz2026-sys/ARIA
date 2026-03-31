@@ -5,7 +5,14 @@ async function fetchAPI(endpoint: string, options?: RequestInit) {
     headers: { "Content-Type": "application/json", ...options?.headers },
     ...options,
   });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const body = await res.json();
+      detail = body.detail || body.message || JSON.stringify(body);
+    } catch { detail = res.statusText; }
+    throw new Error(detail || `API error: ${res.status}`);
+  }
   return res.json();
 }
 
