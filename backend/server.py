@@ -130,11 +130,23 @@ async def health():
 
 # ─── Twitter / X OAuth 2.0 ───
 
+def _get_backend_base_url(request: Request) -> str:
+    """Get the public-facing backend base URL, preferring BACKEND_URL env var."""
+    explicit = os.getenv("BACKEND_URL", "").rstrip("/")
+    if explicit:
+        return explicit
+    # Fallback: derive from request, but force https if behind proxy
+    base = str(request.base_url).rstrip("/")
+    if "railway.app" in base or "vercel" in base or "render.com" in base:
+        base = base.replace("http://", "https://")
+    return base
+
+
 @app.get("/api/auth/twitter/connect/{tenant_id}")
 async def twitter_connect(tenant_id: str, request: Request):
     """Start Twitter OAuth 2.0 PKCE flow — redirects user to X login."""
     from backend.tools import twitter_tool
-    base_url = str(request.base_url).rstrip("/")
+    base_url = _get_backend_base_url(request)
     redirect_uri = f"{base_url}/api/auth/twitter/callback"
     auth_url = twitter_tool.get_auth_url(tenant_id, redirect_uri)
     from starlette.responses import RedirectResponse
@@ -142,7 +154,7 @@ async def twitter_connect(tenant_id: str, request: Request):
 
 
 @app.get("/api/auth/twitter/callback")
-async def twitter_callback(code: str = "", state: str = "", error: str = ""):
+async def twitter_callback(code: str = "", state: str = "", error: str = "", request: Request = None):
     """Handle Twitter OAuth callback — exchange code for tokens and store."""
     from starlette.responses import HTMLResponse
     if error:
@@ -151,8 +163,7 @@ async def twitter_callback(code: str = "", state: str = "", error: str = ""):
     from backend.tools import twitter_tool
     from backend.config.loader import get_tenant_config, save_tenant_config
 
-    # Build redirect_uri from the current request
-    base_url = os.getenv("NEXT_PUBLIC_API_URL", "http://localhost:8000").rstrip("/")
+    base_url = _get_backend_base_url(request)
     redirect_uri = f"{base_url}/api/auth/twitter/callback"
 
     try:
