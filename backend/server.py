@@ -2346,8 +2346,8 @@ Channels: {', '.join(tc.channels)}
         except Exception:
             pass
 
-    # Check if Gmail is connected for this tenant
-    gmail_note = ""
+    # Check connected integrations for this tenant
+    integration_notes = ""
     if tenant_id:
         try:
             _tc = get_tenant_config(tenant_id)
@@ -2355,12 +2355,18 @@ Channels: {', '.join(tc.channels)}
                 _tc.integrations.google_access_token or _tc.integrations.google_refresh_token
             )
             if _gmail_connected:
-                gmail_note = f"""
-5. **Gmail is connected** ({_tc.owner_email}). When the user asks you to SEND an email (not just draft),
-   delegate to email_marketer with a task that starts with "SEND:" followed by the details including the
-   recipient email address. Example: "SEND: Send a welcome email to user@example.com introducing our product"
-   The Email Marketer will compose the draft and the user can approve it to send from {_tc.owner_email}.
+                integration_notes += f"""
+5. **Gmail is connected** ({_tc.owner_email}). When the user asks you to SEND an email,
+   delegate to email_marketer with a task starting with "SEND:" including the recipient email.
    IMPORTANT: Always include the recipient's full email address in the task description."""
+
+            _twitter_connected = bool(_tc.integrations.twitter_access_token or _tc.integrations.twitter_refresh_token)
+            if _twitter_connected:
+                integration_notes += f"""
+6. **X/Twitter is connected** (@{_tc.integrations.twitter_username or 'user'}). When the user asks to post on social media or promote content:
+   - Delegate to social_manager with task like "Adapt and publish: [describe the content]"
+   - The Social Manager will fetch the latest Content Writer output, create platform-specific posts, and auto-publish to X.
+   - For content promotion: first delegate to content_writer if no content exists, then delegate to social_manager to adapt and post it."""
         except Exception:
             pass
 
@@ -2415,7 +2421,7 @@ Based on the conversation, you should:
    - "done" — already completed in this response
 3. You can delegate to multiple agents by including multiple delegate blocks
 4. If no delegation is needed, just respond normally
-{gmail_note}
+{integration_notes}
 
 Keep responses concise and actionable. You are their Chief Marketing Strategist."""
 
