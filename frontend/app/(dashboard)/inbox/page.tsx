@@ -437,7 +437,7 @@ export default function InboxPage() {
           </div>
           <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
           <div className="flex items-center gap-2 mt-3 flex-wrap">
-            {isSocialPost(item) && (item.status === "ready" || item.status === "needs_review") && (
+            {isSocialPost(item) && (item.status === "ready" || item.status === "needs_review" || item.status === "failed") && (
               <button
                 onClick={() => handlePublishSocial(item)}
                 disabled={actionLoading === "publish"}
@@ -446,7 +446,7 @@ export default function InboxPage() {
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
                 </svg>
-                {actionLoading === "publish" ? "Publishing..." : "Publish to X"}
+                {actionLoading === "publish" ? "Publishing..." : item.status === "failed" ? "Retry Publish" : "Publish to X"}
               </button>
             )}
             {isSocialPost(item) && item.status === "sent" && (
