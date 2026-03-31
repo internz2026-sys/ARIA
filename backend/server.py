@@ -2363,10 +2363,10 @@ Channels: {', '.join(tc.channels)}
             _twitter_connected = bool(_tc.integrations.twitter_access_token or _tc.integrations.twitter_refresh_token)
             if _twitter_connected:
                 integration_notes += f"""
-6. **X/Twitter is connected** (@{_tc.integrations.twitter_username or 'user'}). When the user asks to post on social media or promote content:
-   - Delegate to social_manager with task like "Adapt and publish: [describe the content]"
-   - The Social Manager will fetch the latest Content Writer output, create platform-specific posts, and auto-publish to X.
-   - For content promotion: first delegate to content_writer if no content exists, then delegate to social_manager to adapt and post it."""
+6. **X/Twitter is connected** (@{_tc.integrations.twitter_username or 'user'}). When the user asks to post on social media:
+   - Delegate to social_manager with task like "Adapt latest content for social media"
+   - Social Manager fetches the latest Content Writer output and creates platform-specific posts
+   - Posts go to Inbox for user approval — NEVER auto-publish without approval"""
         except Exception:
             pass
 
@@ -2422,6 +2422,11 @@ Based on the conversation, you should:
 3. You can delegate to multiple agents by including multiple delegate blocks
 4. If no delegation is needed, just respond normally
 {integration_notes}
+
+IMPORTANT — Token efficiency rules:
+- If the user asks to send/post content that ALREADY EXISTS in the Inbox (e.g., "send that email" or "post that on Twitter"), do NOT regenerate it. Reference the existing content and delegate with "USE EXISTING:" prefix.
+- Only delegate to content_writer or email_marketer for NEW content. For repurposing existing content, delegate to social_manager which auto-fetches from Inbox.
+- Never auto-publish. All content goes to Inbox for user approval first.
 
 Keep responses concise and actionable. You are their Chief Marketing Strategist."""
 

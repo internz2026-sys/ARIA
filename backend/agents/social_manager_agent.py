@@ -70,13 +70,11 @@ Platform rules:
         # Run the agent normally
         result = await super().run(tenant_id, context)
 
-        # Try to parse posts and auto-publish to connected platforms
+        # Parse posts but DO NOT auto-publish — posts go to Inbox for approval
         raw = result.get("result", "")
         posts = _parse_posts(raw)
         if posts:
             result["social_posts"] = posts
-            published = await _auto_publish(tenant_id, posts)
-            result["published"] = published
 
         return result
 
