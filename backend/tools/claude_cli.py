@@ -43,8 +43,8 @@ def _get_supabase():
 # ── Usage tracking (persisted to Supabase) ──────────────────────────────────
 
 # Configurable limits (per tenant, per hour)
-HOURLY_REQUEST_LIMIT = int(os.getenv("ARIA_HOURLY_REQUEST_LIMIT", "60"))
-HOURLY_TOKEN_LIMIT = int(os.getenv("ARIA_HOURLY_TOKEN_LIMIT", "150000"))
+HOURLY_REQUEST_LIMIT = int(os.getenv("ARIA_HOURLY_REQUEST_LIMIT", "200"))
+HOURLY_TOKEN_LIMIT = int(os.getenv("ARIA_HOURLY_TOKEN_LIMIT", "500000"))
 
 # Local cache to avoid hitting Supabase on every single check
 _usage_cache: dict[str, dict] = {}
