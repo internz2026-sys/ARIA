@@ -728,3 +728,94 @@ CREATE TABLE inbox_items (
    - Inbox: shows new reply as high-priority item
    - Conversations: thread moves to "needs_review", messages list updates
 6. User clicks thread → sees full conversation with reply visible
+
+---
+
+## 2026-03-31 — Notification System, Email Editor, Voice, CRM, Token Optimization, Usage Dashboard
+
+### Notification Badge System + Real-Time Toasts + Bell Panel
+- Backend: `_notify()` helper persists to `notifications` table + emits `notification` socket event
+- API: `/api/notifications/{tenant_id}/counts`, list, mark-read, mark-seen endpoints
+- Wired into inbox creation, email send, and inbound reply sync
+- Frontend: `NotificationProvider` context with socket listener, badge counts, toast queue
+- Sidebar badges: dynamic unread counts on Inbox and Conversations tabs
+- `NotificationBell` component: dropdown panel with notification history, mark-all-read
+- `ToastContainer`: animated slide-in toasts for high-priority events
+- Browser notifications for granted permissions
+- Desktop header bar with bell icon (increased to w-7 h-7)
+
+### Email Editor — HTML Design Preservation
+- Replaced Tiptap with contentEditable iframe approach
+- 3-tab editor: Edit (click text to edit, styling preserved), Preview (read-only), Source (dark monospace HTML editor)
+- Backend: `POST /api/email/{tenant_id}/update-draft` saves edited to/subject/html_body
+- `_wrap_html()` now detects HTML fragments (tables, styled divs) and wraps without mangling
+- Agent system prompt updated to require complete inline-styled HTML with table-based layout
+- Action buttons (Approve & Send, Save, Cancel) moved above content for quick access
+- Sent email now matches preview — no styling loss
+
+### Voice Input + Text-to-Speech
+- `use-voice.ts` hook: `useSpeechToText` (mic input) + `useTTS` (read aloud)
+- Added to CEO Chat page, FloatingChat widget, and Onboarding /describe page
+- Voice auto-sends on speech end (no need to click Send)
+- TTS auto-reads new AI responses aloud
+- Mute/unmute toggle button persisted in localStorage (`aria_tts_enabled`)
+- Per-message speaker buttons still work when auto-read is off
+
+### Agent Token Optimization
+**All agents compressed for minimal token usage:**
+- CEO: filtered CONTEXT_FIELDS from 9 to 4, prompt compressed 50%, MAX_TOKENS 2000→1500
+- Content Writer: dynamic model (Haiku for short-form, Sonnet for long-form), MAX_TOKENS 4000→2000/3000
+- Email Marketer: switched to Haiku (60% cost reduction), HTML instructions compressed from 200→40 tokens
+- Social Manager: prompt compressed 40%, already on Haiku
+- Ad Strategist: MAX_TOKENS 2000→1500, prompt compressed 50%
+
+**CEO Chat context compaction:**
+- Business context uses `agent_brief` (~150 tokens) instead of 25-line field dump (~600 tokens)
+- Conversation summarization: last 6 messages in full, older messages truncated to 100-char summaries
+- Sub-agent docs truncated to 200 chars each (was full .md files ~1500 tokens)
+- CEO .md capped at 800 chars
+
+### Per-Agent Token Limits + Usage Dashboard
+**Backend:**
+- `AGENT_HOURLY_LIMITS`: CEO 30req/80k tokens, Content 10/50k, Email 15/40k, Social 10/30k, Ads 10/30k
+- `call_claude()` accepts `agent_id`, enforces per-agent limits
+- `GET /api/usage/{tenant_id}` returns tenant totals + per-agent breakdown
+
+**Frontend `/usage` page:**
+- 4 stat cards: requests, total tokens, input tokens, output tokens
+- Overall hourly limit progress bars
+- Per-agent breakdown grid with color-coded cards
+- Progress bars turn red at 80%+ usage
+- Auto-refreshes every 15 seconds
+
+### Lightweight CRM
+**Backend (19 API endpoints):**
+- CRUD for `crm_contacts`, `crm_companies`, `crm_deals`, `crm_activities`
+- Pipeline summary endpoint with stage counts and values
+- Auto-logs activities on contact/deal creation and stage changes
+
+**Frontend `/crm` page:**
+- 3 tabs: Contacts, Companies, Deals
+- Contacts: searchable table, status filter (Lead/Prospect/Customer/Churned), inline status change
+- Companies: searchable table with domain/industry/size
+- Deals: kanban pipeline board with 6 stages (Lead→Qualified→Proposal→Negotiation→Won/Lost)
+- Pipeline summary bar with counts and values per stage
+- Add modals for each entity with form validation
+
+**CEO CRM Awareness:**
+- Keyword-triggered CRM context injection (scans for "contact", "deal", "lead", "follow up with", etc.)
+- Only when triggered: fetches top 20 contacts + 10 deals in compact 1-line format (~5 tokens/record)
+- Zero CRM tokens on non-CRM conversations
+
+### Agents Page Cleanup
+- Removed Paperclip status badge, footer, and all Paperclip references
+- Removed non-functional "Run Now" button (used hardcoded demo tenant)
+- Fixed toggle to use actual tenant_id
+
+### Supabase Tables Added
+- `notifications`: id, tenant_id, type, category, title, body, href, priority, is_read, is_seen
+- `email_draft` column on `inbox_items` (JSONB)
+- `crm_contacts`: name, email, phone, status, source, tags, company_id
+- `crm_companies`: name, domain, industry, size
+- `crm_deals`: title, value, stage, contact_id, company_id, expected_close
+- `crm_activities`: type, description, metadata, contact_id, deal_id
