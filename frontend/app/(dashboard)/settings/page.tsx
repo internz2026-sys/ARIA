@@ -1,11 +1,122 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
+import { usage as usageApi } from "@/lib/api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-const settingsTabs = ["Profile", "Integrations", "Notifications", "Billing"];
+const settingsTabs = ["Profile", "Integrations", "Usage", "Notifications", "Billing"];
+
+const AGENT_LABELS: Record<string, { name: string; color: string }> = {
+  ceo: { name: "CEO Strategist", color: "#534AB7" },
+  content_writer: { name: "Content Writer", color: "#1D9E75" },
+  email_marketer: { name: "Email Marketer", color: "#BA7517" },
+  social_manager: { name: "Social Manager", color: "#D85A30" },
+  ad_strategist: { name: "Ad Strategist", color: "#5F5E5A" },
+};
+
+function UsageBar({ used, limit, color = "#534AB7" }: { used: number; limit: number; color?: string }) {
+  const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
+  const isHigh = pct >= 80;
+  return (
+    <div>
+      <div className="h-2 bg-[#F0EFEC] rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: isHigh ? "#D85A30" : color }} />
+      </div>
+      <p className="text-[10px] text-[#9E9C95] mt-1">{used.toLocaleString()} / {limit.toLocaleString()} ({Math.round(pct)}%)</p>
+    </div>
+  );
+}
+
+function UsageDashboard() {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
+
+  const fetchUsage = useCallback(async () => {
+    if (!tenantId) return;
+    try {
+      const d = await usageApi.getDashboard(tenantId);
+      setData(d);
+    } catch {} finally { setLoading(false); }
+  }, [tenantId]);
+
+  useEffect(() => { fetchUsage(); }, [fetchUsage]);
+
+  // Auto-refresh every 30s
+  useEffect(() => {
+    const i = setInterval(fetchUsage, 30000);
+    return () => clearInterval(i);
+  }, [fetchUsage]);
+
+  if (loading) return <div className="p-8 text-center text-sm text-[#9E9C95]">Loading usage data...</div>;
+  if (!data) return <div className="p-8 text-center text-sm text-[#9E9C95]">Unable to load usage data.</div>;
+
+  const t = data.tenant || {};
+  const agents = data.agents || {};
+
+  return (
+    <div className="space-y-4">
+      {/* Overall usage */}
+      <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold text-[#2C2C2A]">API Usage This Hour</h2>
+          <span className="text-[10px] text-[#9E9C95] bg-[#F8F8F6] px-2.5 py-1 rounded-full">Resets hourly (UTC)</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+          <div>
+            <p className="text-xs font-semibold text-[#5F5E5A] mb-2">Requests</p>
+            <UsageBar used={t.requests || 0} limit={t.request_limit || 60} />
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-[#5F5E5A] mb-2">Tokens</p>
+            <UsageBar used={t.total_tokens || 0} limit={t.token_limit || 200000} />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4 mt-4 pt-4 border-t border-[#F0EFEC]">
+          <div>
+            <p className="text-[10px] text-[#9E9C95]">Input tokens</p>
+            <p className="text-sm font-semibold text-[#2C2C2A]">{(t.input_tokens || 0).toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-[10px] text-[#9E9C95]">Output tokens</p>
+            <p className="text-sm font-semibold text-[#2C2C2A]">{(t.output_tokens || 0).toLocaleString()}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Per-agent breakdown */}
+      <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+        <h2 className="text-base font-semibold text-[#2C2C2A] mb-4">Per-Agent Usage & Limits</h2>
+        <div className="space-y-5">
+          {Object.entries(agents).map(([agentId, a]: [string, any]) => {
+            const label = AGENT_LABELS[agentId] || { name: agentId, color: "#5F5E5A" };
+            return (
+              <div key={agentId} className="border border-[#F0EFEC] rounded-lg p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: label.color }} />
+                  <span className="text-sm font-semibold text-[#2C2C2A]">{label.name}</span>
+                  {a.requests > 0 && <span className="text-[10px] text-[#9E9C95] ml-auto">{a.requests} calls this hour</span>}
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-[10px] text-[#5F5E5A] mb-1">Requests</p>
+                    <UsageBar used={a.requests || 0} limit={a.request_limit || 15} color={label.color} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-[#5F5E5A] mb-1">Tokens</p>
+                    <UsageBar used={a.total_tokens || 0} limit={a.token_limit || 40000} color={label.color} />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const futureIntegrations = [
   { name: "Mailchimp", description: "Email marketing automation", phase: "v1.5" },
@@ -216,6 +327,9 @@ export default function SettingsPage() {
           ))}
         </div>
       )}
+
+      {/* Usage */}
+      {activeTab === "Usage" && <UsageDashboard />}
 
       {/* Billing */}
       {activeTab === "Billing" && (

@@ -133,6 +133,10 @@ export const crm = {
   pipelineSummary: (tenantId: string) => fetchAPI(`/api/crm/${tenantId}/pipeline-summary`),
 };
 
+export const usage = {
+  getDashboard: (tenantId: string) => fetchAPI(`/api/usage/${tenantId}`),
+};
+
 export const notificationsApi = {
   counts: (tenantId: string) => fetchAPI(`/api/notifications/${tenantId}/counts`),
   list: (tenantId: string, unreadOnly = false, limit = 30) =>

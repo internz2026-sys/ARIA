@@ -46,6 +46,16 @@ def _get_supabase():
 HOURLY_REQUEST_LIMIT = int(os.getenv("ARIA_HOURLY_REQUEST_LIMIT", "60"))
 HOURLY_TOKEN_LIMIT = int(os.getenv("ARIA_HOURLY_TOKEN_LIMIT", "200000"))
 
+# Per-agent hourly limits (requests, tokens) — keeps any single agent from hogging the budget
+AGENT_HOURLY_LIMITS: dict[str, dict] = {
+    "ceo": {"requests": 30, "tokens": 80000},
+    "content_writer": {"requests": 10, "tokens": 50000},
+    "email_marketer": {"requests": 15, "tokens": 40000},
+    "social_manager": {"requests": 10, "tokens": 30000},
+    "ad_strategist": {"requests": 10, "tokens": 30000},
+}
+DEFAULT_AGENT_LIMIT = {"requests": 15, "tokens": 40000}
+
 # Local cache to avoid hitting Supabase on every single check
 _usage_cache: dict[str, dict] = {}
 
@@ -131,6 +141,54 @@ def get_usage(tenant_id: str = "global") -> dict:
     return _load_usage(tenant_id)
 
 
+# ── Per-agent usage tracking (in-memory, resets each hour) ─────────────────
+
+_agent_usage: dict[str, dict[str, dict]] = {}  # {tenant_id: {agent_id: {hour, requests, tokens}}}
+
+
+def _get_agent_usage(tenant_id: str, agent_id: str) -> dict:
+    hour = _current_hour()
+    tenant_agents = _agent_usage.setdefault(tenant_id, {})
+    entry = tenant_agents.get(agent_id)
+    if entry and entry.get("hour") == hour:
+        return entry
+    entry = {"hour": hour, "requests": 0, "input_tokens": 0, "output_tokens": 0}
+    tenant_agents[agent_id] = entry
+    return entry
+
+
+def _check_agent_limits(tenant_id: str, agent_id: str) -> None:
+    if not agent_id:
+        return
+    limits = AGENT_HOURLY_LIMITS.get(agent_id, DEFAULT_AGENT_LIMIT)
+    usage = _get_agent_usage(tenant_id, agent_id)
+    if usage["requests"] >= limits["requests"]:
+        raise RuntimeError(f"Agent '{agent_id}' rate limit: {limits['requests']} requests/hour reached.")
+    total = usage["input_tokens"] + usage["output_tokens"]
+    if total >= limits["tokens"]:
+        raise RuntimeError(f"Agent '{agent_id}' token limit: {limits['tokens']} tokens/hour reached.")
+
+
+def get_agent_usage_summary(tenant_id: str) -> dict:
+    """Return per-agent usage for the current hour."""
+    hour = _current_hour()
+    tenant_agents = _agent_usage.get(tenant_id, {})
+    summary = {}
+    for agent_id, entry in tenant_agents.items():
+        if entry.get("hour") != hour:
+            continue
+        limits = AGENT_HOURLY_LIMITS.get(agent_id, DEFAULT_AGENT_LIMIT)
+        summary[agent_id] = {
+            "requests": entry["requests"],
+            "request_limit": limits["requests"],
+            "input_tokens": entry["input_tokens"],
+            "output_tokens": entry["output_tokens"],
+            "total_tokens": entry["input_tokens"] + entry["output_tokens"],
+            "token_limit": limits["tokens"],
+        }
+    return summary
+
+
 # ── Main API call ───────────────────────────────────────────────────────────
 
 DEFAULT_MODEL = os.getenv("ARIA_MODEL", MODEL_SONNET)
@@ -144,6 +202,7 @@ async def call_claude(
     tenant_id: str = "global",
     model: str | None = None,
     messages: list[dict] | None = None,
+    agent_id: str = "",
 ) -> str:
     """Call Anthropic API with a system prompt and user message.
 
@@ -154,8 +213,10 @@ async def call_claude(
         tenant_id: For per-tenant rate limiting
         model: Override model (defaults to ARIA_MODEL env or Sonnet)
         messages: Multi-turn message list; if provided, replaces user_message
+        agent_id: Agent slug for per-agent usage tracking and limits
     """
     _check_limits(tenant_id)
+    _check_agent_limits(tenant_id, agent_id)
 
     client = _get_client()
     use_model = model or DEFAULT_MODEL
@@ -189,6 +250,13 @@ async def call_claude(
 
     # Persist to Supabase
     _save_usage(tenant_id, usage)
+
+    # Track per-agent usage
+    if agent_id:
+        agent_usage = _get_agent_usage(tenant_id, agent_id)
+        agent_usage["requests"] += 1
+        agent_usage["input_tokens"] += response.usage.input_tokens
+        agent_usage["output_tokens"] += response.usage.output_tokens
 
     # Also track global totals
     if tenant_id != "global":

@@ -113,6 +113,7 @@ class BaseAgent:
             max_tokens=self.MAX_TOKENS,
             tenant_id=tenant_id,
             model=self.MODEL,
+            agent_id=self.AGENT_NAME,
         )
 
         return {

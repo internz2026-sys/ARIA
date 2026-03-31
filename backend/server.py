@@ -128,6 +128,42 @@ async def health():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+# ─── Usage API ───
+
+@app.get("/api/usage/{tenant_id}")
+async def get_usage_dashboard(tenant_id: str):
+    """Return usage stats for the dashboard: tenant totals + per-agent breakdown."""
+    from backend.tools.claude_cli import (
+        get_usage, get_agent_usage_summary,
+        HOURLY_REQUEST_LIMIT, HOURLY_TOKEN_LIMIT, AGENT_HOURLY_LIMITS, DEFAULT_AGENT_LIMIT,
+    )
+    tenant_usage = get_usage(tenant_id)
+    agent_usage = get_agent_usage_summary(tenant_id)
+
+    # Ensure all agents appear even if they haven't been used this hour
+    for agent_id in ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist"]:
+        if agent_id not in agent_usage:
+            limits = AGENT_HOURLY_LIMITS.get(agent_id, DEFAULT_AGENT_LIMIT)
+            agent_usage[agent_id] = {
+                "requests": 0, "request_limit": limits["requests"],
+                "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                "token_limit": limits["tokens"],
+            }
+
+    return {
+        "tenant": {
+            "requests": tenant_usage.get("requests", 0),
+            "request_limit": HOURLY_REQUEST_LIMIT,
+            "input_tokens": tenant_usage.get("input_tokens", 0),
+            "output_tokens": tenant_usage.get("output_tokens", 0),
+            "total_tokens": tenant_usage.get("input_tokens", 0) + tenant_usage.get("output_tokens", 0),
+            "token_limit": HOURLY_TOKEN_LIMIT,
+        },
+        "agents": agent_usage,
+        "resets_at": tenant_usage.get("hour", ""),
+    }
+
+
 # ─── Onboarding API ───
 class OnboardingMessage(BaseModel):
     session_id: str
@@ -2254,7 +2290,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         conversation = f"{summary}\n\nRECENT MESSAGES:\n{recent_text}"
 
     try:
-        raw = await call_claude(system_prompt, conversation, tenant_id=tenant_id or "global")
+        raw = await call_claude(system_prompt, conversation, tenant_id=tenant_id or "global", agent_id="ceo")
     except Exception as exc:
         import traceback
         logger = logging.getLogger("aria.ceo_chat")
