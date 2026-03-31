@@ -2232,14 +2232,44 @@ Channels: {', '.join(tc.channels)}
         except Exception:
             pass
 
+    # ── CRM context injection (only when message references contacts/deals/companies) ──
+    crm_context = ""
+    _crm_keywords = ["contact", "contacts", "company", "companies", "deal", "deals", "pipeline",
+                      "lead", "leads", "prospect", "customer", "crm", "send email to", "reach out to",
+                      "follow up with", "who", "client", "clients"]
+    _msg_lower = body.message.lower()
+    if tenant_id and any(kw in _msg_lower for kw in _crm_keywords):
+        try:
+            from backend.config.loader import _get_supabase
+            _crm_sb = _get_supabase()
+            # Fetch compact summaries — minimal tokens
+            _contacts = _crm_sb.table("crm_contacts").select("name,email,status,company_id").eq(
+                "tenant_id", tenant_id
+            ).order("created_at", desc=True).limit(20).execute()
+            _deals = _crm_sb.table("crm_deals").select("title,value,stage").eq(
+                "tenant_id", tenant_id
+            ).order("created_at", desc=True).limit(10).execute()
+
+            if _contacts.data:
+                _contact_lines = [f"  - {c['name']} ({c['email'] or 'no email'}) [{c['status']}]" for c in _contacts.data]
+                crm_context += "\n## CRM Contacts (" + str(len(_contacts.data)) + ")\n" + "\n".join(_contact_lines)
+            if _deals.data:
+                _deal_lines = [f"  - {d['title']} — ${d['value']} [{d['stage']}]" for d in _deals.data]
+                crm_context += "\n## CRM Deals (" + str(len(_deals.data)) + ")\n" + "\n".join(_deal_lines)
+            if crm_context:
+                crm_context += "\nUse this CRM data to give specific advice. Reference contacts/deals by name when relevant."
+        except Exception:
+            pass
+
     system_prompt = f"""{_CEO_MD}
-{business_context}
+{business_context}{crm_context}
 ## Sub-Agent Documentation
 {sub_agent_context}
 
 ## Instructions
 You are chatting with a developer founder who needs marketing help.
 You already know their business from the onboarding data above — use it to give specific, personalized advice.
+If CRM data is provided above, use it to reference specific contacts, deals, and pipeline status.
 Based on the conversation, you should:
 1. Answer their question or provide strategic guidance tailored to their product and audience
 2. If the task should be delegated, include a JSON block at the END of your response:
