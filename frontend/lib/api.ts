@@ -57,6 +57,11 @@ export const inbox = {
       method: "POST",
       body: JSON.stringify({ inbox_item_id: inboxItemId, ...updates }),
     }),
+  approvePublishSocial: (tenantId: string, inboxItemId: string) =>
+    fetchAPI(`/api/social/${tenantId}/approve-publish`, {
+      method: "POST",
+      body: JSON.stringify({ inbox_item_id: inboxItemId }),
+    }),
 };
 
 export const emailThreads = {

@@ -194,7 +194,26 @@ export default function InboxPage() {
     setActionLoading(null);
   };
 
+  const handlePublishSocial = async (item: InboxItem) => {
+    if (!tenantId || actionLoading) return;
+    setActionLoading("publish");
+    try {
+      const res = await inbox.approvePublishSocial(tenantId, item.id);
+      const newStatus = res.status === "sent" ? "sent" : "failed";
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: newStatus } : i)));
+      if (selected?.id === item.id) setSelected({ ...item, status: newStatus });
+      if (newStatus === "failed") {
+        alert("Failed to publish. Check your Twitter connection in Settings.");
+      }
+    } catch (err: any) {
+      alert(err?.message || "Failed to publish to X. Check connection in Settings.");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const isEmailDraft = (item: InboxItem) => !!item.email_draft;
+  const isSocialPost = (item: InboxItem) => item.type === "social_post";
   const isPendingApproval = (item: InboxItem) => item.status === "draft_pending_approval";
 
   const filteredItems = items;
@@ -367,6 +386,156 @@ export default function InboxPage() {
               }}
             />
           </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ─── Parse social posts from JSON content ───
+  const parseSocialPosts = (content: string): { platform: string; text: string; hashtags?: string[] }[] => {
+    try {
+      const start = content.indexOf("{");
+      const end = content.lastIndexOf("}") + 1;
+      if (start >= 0 && end > start) {
+        const data = JSON.parse(content.substring(start, end));
+        if (data.posts && Array.isArray(data.posts)) return data.posts;
+      }
+    } catch {}
+    try {
+      const start = content.indexOf("[");
+      const end = content.lastIndexOf("]") + 1;
+      if (start >= 0 && end > start) return JSON.parse(content.substring(start, end));
+    } catch {}
+    return [];
+  };
+
+  // ─── Social post detail view (tweet cards) ───
+  const renderSocialDetail = (item: InboxItem) => {
+    const posts = parseSocialPosts(item.content);
+    const PLATFORM_ICONS: Record<string, React.ReactNode> = {
+      twitter: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" /></svg>,
+      linkedin: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" /></svg>,
+      facebook: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" /></svg>,
+    };
+    const PLATFORM_COLORS: Record<string, { bg: string; border: string; iconBg: string }> = {
+      twitter: { bg: "bg-white", border: "border-gray-200", iconBg: "bg-black text-white" },
+      linkedin: { bg: "bg-white", border: "border-blue-100", iconBg: "bg-[#0A66C2] text-white" },
+      facebook: { bg: "bg-white", border: "border-blue-100", iconBg: "bg-[#1877F2] text-white" },
+    };
+    const PLATFORM_NAMES: Record<string, string> = { twitter: "X / Twitter", linkedin: "LinkedIn", facebook: "Facebook" };
+
+    return (
+      <div className="flex flex-col w-full">
+        <div className="border-b border-[#E0DED8] p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: AGENT_COLORS[item.agent] || "#999" }} />
+            <span className="text-sm font-medium" style={{ color: AGENT_COLORS[item.agent] || "#999" }}>
+              {AGENT_NAMES[item.agent] || item.agent}
+            </span>
+            <span className="text-xs text-[#9E9C95]">Social Post</span>
+            <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
+          </div>
+          <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
+          <div className="flex items-center gap-2 mt-3 flex-wrap">
+            {isSocialPost(item) && (item.status === "ready" || item.status === "needs_review") && (
+              <button
+                onClick={() => handlePublishSocial(item)}
+                disabled={actionLoading === "publish"}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-black text-white hover:bg-gray-800 transition-colors disabled:opacity-60"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                </svg>
+                {actionLoading === "publish" ? "Publishing..." : "Publish to X"}
+              </button>
+            )}
+            {isSocialPost(item) && item.status === "sent" && (
+              <span className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                Published
+              </span>
+            )}
+            {item.status === "ready" && (
+              <button onClick={() => handleStatusChange(item, "completed")} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors">
+                Mark complete
+              </button>
+            )}
+            <button onClick={() => handleDelete(item)} className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors">
+              Delete
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto p-5 space-y-4">
+          {posts.length > 0 ? posts.map((post, idx) => {
+            const platform = (post.platform || "twitter").toLowerCase();
+            const colors = PLATFORM_COLORS[platform] || PLATFORM_COLORS.twitter;
+            const hashtags = post.hashtags || [];
+            const charLimit = platform === "twitter" ? 280 : platform === "linkedin" ? 3000 : 2000;
+            const textWithTags = hashtags.length > 0
+              ? `${post.text}${post.text.includes("#") ? "" : "\n" + hashtags.map(t => `#${t.replace(/^#/, "")}`).join(" ")}`
+              : post.text;
+
+            return (
+              <div key={idx} className={`rounded-xl border ${colors.border} ${colors.bg} overflow-hidden shadow-sm`}>
+                {/* Platform header */}
+                <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 bg-gray-50/50">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${colors.iconBg}`}>
+                    {PLATFORM_ICONS[platform] || PLATFORM_ICONS.twitter}
+                  </div>
+                  <div>
+                    <span className="text-sm font-semibold text-[#2C2C2A]">{PLATFORM_NAMES[platform] || platform}</span>
+                    <span className="text-xs text-[#9E9C95] ml-2">{post.text.length}/{charLimit} chars</span>
+                    {platform === "twitter" && post.text.length > 280 && (
+                      <span className="text-xs text-red-500 ml-1 font-medium">Over limit!</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(textWithTags); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                    className="ml-auto p-1.5 rounded-lg hover:bg-gray-100 text-[#9E9C95] hover:text-[#2C2C2A] transition-colors"
+                    title="Copy post"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </button>
+                </div>
+                {/* Post content */}
+                <div className="px-4 py-4">
+                  <p className="text-[15px] text-[#0F1419] leading-relaxed whitespace-pre-wrap">{post.text}</p>
+                  {hashtags.length > 0 && !post.text.includes("#") && (
+                    <div className="flex flex-wrap gap-1.5 mt-3">
+                      {hashtags.map((tag, i) => (
+                        <span key={i} className="text-sm text-[#1d9bf0] font-medium">
+                          #{tag.replace(/^#/, "")}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {/* Footer with engagement placeholders */}
+                <div className="flex items-center gap-8 px-4 py-2.5 border-t border-gray-100 text-[#536471]">
+                  <span className="flex items-center gap-1.5 text-xs">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 20.25c4.97 0 9-3.694 9-8.25s-4.03-8.25-9-8.25S3 7.444 3 12c0 2.104.859 4.023 2.273 5.48.432.447.74 1.04.586 1.641a4.483 4.483 0 01-.923 1.785A5.969 5.969 0 006 21c1.282 0 2.47-.402 3.445-1.087.81.22 1.668.337 2.555.337z" /></svg>
+                    Reply
+                  </span>
+                  <span className="flex items-center gap-1.5 text-xs">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3" /></svg>
+                    Repost
+                  </span>
+                  <span className="flex items-center gap-1.5 text-xs">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" /></svg>
+                    Like
+                  </span>
+                </div>
+              </div>
+            );
+          }) : (
+            <div className="prose prose-sm max-w-none text-[#2C2C2A] whitespace-pre-wrap">
+              {item.content}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -613,6 +782,7 @@ export default function InboxPage() {
             {selected ? (
               isEmailDraft(selected)
                 ? (isPendingApproval(selected) ? renderEmailEditor(selected) : renderEmailReadOnly(selected))
+                : isSocialPost(selected) ? renderSocialDetail(selected)
                 : renderStandardDetail(selected)
             ) : (
               <div className="flex items-center justify-center w-full text-sm text-[#9E9C95]">

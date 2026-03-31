@@ -260,6 +260,131 @@ async def publish_thread(tenant_id: str, body: ThreadRequest):
     return {"tweets": results}
 
 
+# ─── Social Post Approval & Publish ───
+
+class SocialApproveRequest(BaseModel):
+    inbox_item_id: str
+
+
+@app.post("/api/social/{tenant_id}/approve-publish")
+async def approve_and_publish_social(tenant_id: str, body: SocialApproveRequest):
+    """Approve a social post from inbox and publish to connected platforms (Twitter/X)."""
+    from backend.config.loader import _get_supabase
+    from backend.tools import twitter_tool
+
+    sb = _get_supabase()
+
+    # Fetch inbox item
+    item_result = sb.table("inbox_items").select("*").eq("id", body.inbox_item_id).single().execute()
+    item = item_result.data
+    if not item:
+        raise HTTPException(status_code=404, detail="Inbox item not found")
+    if item.get("tenant_id") != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+    if item.get("type") != "social_post":
+        raise HTTPException(status_code=400, detail="Item is not a social post")
+
+    content = item.get("content", "")
+
+    # Try to parse structured posts from content
+    posts = []
+    try:
+        start = content.find("{")
+        end = content.rfind("}") + 1
+        if start >= 0 and end > start:
+            import json as _json
+            data = _json.loads(content[start:end])
+            posts = data.get("posts", [])
+    except Exception:
+        pass
+    if not posts:
+        try:
+            start = content.find("[")
+            end = content.rfind("]") + 1
+            if start >= 0 and end > start:
+                import json as _json
+                posts = _json.loads(content[start:end])
+        except Exception:
+            pass
+
+    # Fallback: treat entire content as a single tweet
+    if not posts:
+        # Strip JSON wrapper artifacts, use plain text
+        clean = content.strip()
+        # Remove markdown fences
+        if clean.startswith("```"):
+            clean = "\n".join(clean.split("\n")[1:])
+        if clean.endswith("```"):
+            clean = "\n".join(clean.split("\n")[:-1])
+        posts = [{"platform": "twitter", "text": clean[:280]}]
+
+    # Get Twitter credentials
+    config = get_tenant_config(tenant_id)
+    access_token = config.integrations.twitter_access_token
+    refresh_token = config.integrations.twitter_refresh_token
+
+    if not access_token and not refresh_token:
+        raise HTTPException(status_code=400, detail="Twitter not connected. Go to Settings > Integrations.")
+
+    # Refresh if needed
+    if not access_token and refresh_token:
+        try:
+            tokens = await twitter_tool.refresh_access_token(refresh_token)
+            access_token = tokens["access_token"]
+            config.integrations.twitter_access_token = access_token
+            config.integrations.twitter_refresh_token = tokens.get("refresh_token", refresh_token)
+            save_tenant_config(config)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Twitter token expired. Reconnect in Settings.")
+
+    # Mark as sending
+    sb.table("inbox_items").update({
+        "status": "sending",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", body.inbox_item_id).execute()
+
+    results = []
+    for post in posts:
+        platform = post.get("platform", "twitter").lower()
+        text = post.get("text", "")
+        hashtags = post.get("hashtags", [])
+        if not text:
+            continue
+
+        if hashtags:
+            tag_str = " ".join(f"#{t.strip('#')}" for t in hashtags)
+            if tag_str not in text:
+                text = f"{text}\n\n{tag_str}"
+
+        if platform == "twitter":
+            tweet_text = text[:280]
+            result = await twitter_tool.post_tweet(access_token, tweet_text)
+            # Retry with refresh if expired
+            if result.get("error") == "token_expired" and refresh_token:
+                try:
+                    tokens = await twitter_tool.refresh_access_token(refresh_token)
+                    access_token = tokens["access_token"]
+                    config.integrations.twitter_access_token = access_token
+                    config.integrations.twitter_refresh_token = tokens.get("refresh_token", refresh_token)
+                    save_tenant_config(config)
+                    result = await twitter_tool.post_tweet(access_token, tweet_text)
+                except Exception:
+                    result = {"error": "token_refresh_failed"}
+            results.append({"platform": "twitter", **result})
+        else:
+            results.append({"platform": platform, "status": "skipped", "reason": "not_integrated_yet"})
+
+    # Update inbox item status
+    any_success = any(r.get("tweet_id") for r in results)
+    new_status = "sent" if any_success else "failed"
+    sb.table("inbox_items").update({
+        "status": new_status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", body.inbox_item_id).execute()
+
+    return {"status": new_status, "results": results}
+
+
 # ─── Usage API ───
 
 @app.get("/api/usage/{tenant_id}")
