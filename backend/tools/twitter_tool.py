@@ -138,6 +138,9 @@ async def post_tweet(access_token: str, text: str, reply_to: str | None = None) 
         )
         if resp.status_code == 401:
             return {"error": "token_expired"}
+        if resp.status_code == 403:
+            logger.error("Tweet forbidden (403): %s", resp.text)
+            return {"error": "Forbidden (403) — your X app may need 'Read and Write' permissions. Check App Settings in developer.x.com."}
         if resp.status_code not in (200, 201):
             logger.error("Tweet failed: %s %s", resp.status_code, resp.text)
             return {"error": f"tweet_failed ({resp.status_code}): {resp.text[:200]}"}

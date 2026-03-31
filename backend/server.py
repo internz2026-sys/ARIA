@@ -393,6 +393,13 @@ async def approve_and_publish_social(tenant_id: str, body: SocialApproveRequest)
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", body.inbox_item_id).execute()
 
+    # If all failed, return error detail so the user sees why
+    if not any_success and results:
+        errors = [r.get("error", "unknown") for r in results if r.get("error")]
+        error_msg = "; ".join(errors) if errors else "No posts were published"
+        logger.error("Social publish failed for tenant %s: %s", tenant_id, error_msg)
+        raise HTTPException(status_code=400, detail=f"Publish failed: {error_msg}")
+
     return {"status": new_status, "results": results}
 
 
