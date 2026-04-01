@@ -1736,10 +1736,15 @@ def _clean_notification_body(body: str) -> str:
     if text.endswith("```"):
         text = "\n".join(text.split("\n")[:-1])
     # If it looks like JSON, try to extract meaningful text from it
-    if text.lstrip().startswith("{") or text.lstrip().startswith("["):
+    stripped = text.lstrip()
+    if stripped.startswith("{") or stripped.startswith("["):
         try:
             import json as _j
-            data = _j.loads(text[text.index("{"):text.rindex("}") + 1])
+            if stripped.startswith("["):
+                arr = _j.loads(stripped[stripped.index("["):stripped.rindex("]") + 1])
+                data = arr[0] if isinstance(arr, list) and arr else {}
+            else:
+                data = _j.loads(stripped[stripped.index("{"):stripped.rindex("}") + 1])
             # Try common fields for a readable summary
             parts = []
             for key in ("text", "title", "description", "commentary", "body", "subject", "key_message"):
