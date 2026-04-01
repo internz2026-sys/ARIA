@@ -36,7 +36,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       const email = session.user?.email;
       if (email) {
         try {
-          const res = await fetch(`${API_URL}/api/tenant/by-email/${encodeURIComponent(email)}`);
+          const headers: Record<string, string> = {};
+          if (session.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
+          const res = await fetch(`${API_URL}/api/tenant/by-email/${encodeURIComponent(email)}`, { headers });
           const data = await res.json();
           if (data.tenant_id) {
             // Restore tenant_id from server — user already onboarded

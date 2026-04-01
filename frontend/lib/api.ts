@@ -1,8 +1,21 @@
+import { supabase } from "@/lib/supabase";
+
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      return { Authorization: `Bearer ${session.access_token}` };
+    }
+  } catch {}
+  return {};
+}
+
 async function fetchAPI(endpoint: string, options?: RequestInit) {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_URL}${endpoint}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers: { "Content-Type": "application/json", ...authHeaders, ...options?.headers },
     ...options,
   });
   if (!res.ok) {

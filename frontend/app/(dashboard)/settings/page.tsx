@@ -5,6 +5,13 @@ import { supabase } from "@/lib/supabase";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+async function authFetch(url: string, options?: RequestInit) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...options?.headers as Record<string, string> };
+  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
+  return fetch(url, { ...options, headers });
+}
+
 const settingsTabs = ["Profile", "Integrations", "Notifications", "Billing"];
 
 const futureIntegrations = [
@@ -50,19 +57,19 @@ export default function SettingsPage() {
     // Check Gmail connection status
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (tenantId) {
-      fetch(`${API_URL}/api/integrations/${tenantId}/gmail-status`)
+      authFetch(`${API_URL}/api/integrations/${tenantId}/gmail-status`)
         .then(r => r.json())
         .then(data => setGmailConnected(!!data?.connected))
         .catch(() => setGmailConnected(false));
-      fetch(`${API_URL}/api/integrations/${tenantId}/twitter-status`)
+      authFetch(`${API_URL}/api/integrations/${tenantId}/twitter-status`)
         .then(r => r.json())
         .then(data => { setTwitterConnected(!!data?.connected); setTwitterUsername(data?.username || ""); })
         .catch(() => setTwitterConnected(false));
-      fetch(`${API_URL}/api/integrations/${tenantId}/whatsapp-status`)
+      authFetch(`${API_URL}/api/integrations/${tenantId}/whatsapp-status`)
         .then(r => r.json())
         .then(data => setWhatsappConnected(!!data?.connected))
         .catch(() => setWhatsappConnected(false));
-      fetch(`${API_URL}/api/integrations/${tenantId}/linkedin-status`)
+      authFetch(`${API_URL}/api/integrations/${tenantId}/linkedin-status`)
         .then(r => r.json())
         .then(data => {
           setLinkedinConnected(!!data?.connected);
@@ -104,7 +111,7 @@ export default function SettingsPage() {
     if (!tenantId) return;
     setLinkedinOrgsLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/linkedin/${tenantId}/organizations`);
+      const res = await authFetch(`${API_URL}/api/linkedin/${tenantId}/organizations`);
       const data = await res.json();
       setLinkedinOrgs(data.organizations || []);
       setLinkedinShowOrgs(true);
@@ -119,7 +126,7 @@ export default function SettingsPage() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
     try {
-      await fetch(`${API_URL}/api/linkedin/${tenantId}/set-target`, {
+      await authFetch(`${API_URL}/api/linkedin/${tenantId}/set-target`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ org_urn: orgUrn, org_name: orgName }),
@@ -138,7 +145,7 @@ export default function SettingsPage() {
     setWhatsappConnecting(true);
     setWhatsappError("");
     try {
-      const res = await fetch(`${API_URL}/api/whatsapp/${tenantId}/connect`, {
+      const res = await authFetch(`${API_URL}/api/whatsapp/${tenantId}/connect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(whatsappForm),
@@ -160,7 +167,7 @@ export default function SettingsPage() {
   async function disconnectWhatsApp() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
-    await fetch(`${API_URL}/api/whatsapp/${tenantId}/disconnect`, { method: "POST" });
+    await authFetch(`${API_URL}/api/whatsapp/${tenantId}/disconnect`, { method: "POST" });
     setWhatsappConnected(false);
   }
 

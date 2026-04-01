@@ -10,14 +10,29 @@ from datetime import datetime, timezone
 
 import socketio
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
+from backend.auth import get_current_user, get_verified_tenant, check_rate_limit
+
 load_dotenv()
 
 logger = logging.getLogger("aria.server")
+
+import html as _html
+
+
+def _safe_oauth_error(message: str) -> str:
+    """Return a safe HTML page that shows an error and closes the popup. Escapes user input to prevent XSS."""
+    safe_msg = _html.escape(str(message))
+    return f"""<html><body><p style="font-family:sans-serif;padding:20px;">
+    <strong>Authentication failed</strong><br><br>{safe_msg}<br><br>
+    You can close this window.</p>
+    <script>if(window.opener)window.opener.postMessage('auth_error','*');setTimeout(function(){{window.close()}},3000);</script>
+    </body></html>"""
+
 
 from backend.config.loader import get_tenant_config, save_tenant_config
 from backend.onboarding_agent import OnboardingAgent
@@ -32,7 +47,7 @@ from backend.orchestrator import (
 from backend.paperclip_sync import initialize as paperclip_init, is_connected as paperclip_connected
 
 # Socket.IO for real-time events
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=_allowed_origins)
 
 
 async def _gmail_sync_loop():
@@ -66,13 +81,108 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
 
+# ── CORS — restrict to known frontend origins ────────────────────────────
+_allowed_origins = [
+    o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
+] or [
+    "http://localhost:3000",
+    "https://aria-alpha-weld.vercel.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Public paths that don't require authentication ────────────────────────
+_PUBLIC_PATHS = {
+    "/health",
+    "/api/onboarding/start",
+    "/api/onboarding/message",
+    "/api/onboarding/extract-config",
+    "/api/onboarding/save-config",
+    "/api/whatsapp/webhook",
+    "/api/cron/run-scheduled",
+}
+
+_PUBLIC_PREFIXES = (
+    "/api/auth/",           # OAuth callbacks (Twitter, LinkedIn)
+    "/api/webhooks/",       # External webhooks (Stripe, SendGrid)
+    "/docs",                # Swagger UI
+    "/openapi.json",
+)
+
+
+# ── Auth + rate limiting middleware ───────────────────────────────────────
+@app.middleware("http")
+async def auth_and_rate_limit_middleware(request: Request, call_next):
+    """Authenticate requests and apply rate limiting."""
+    path = request.url.path
+
+    # Rate limit all API calls
+    if path.startswith("/api/"):
+        check_rate_limit(request, max_requests=120, window_seconds=60)
+
+    # Skip auth for public paths, OPTIONS (CORS preflight), and non-API routes
+    if (
+        request.method == "OPTIONS"
+        or path in _PUBLIC_PATHS
+        or path.startswith(_PUBLIC_PREFIXES)
+        or not path.startswith("/api/")
+    ):
+        return await call_next(request)
+
+    # Verify JWT for all other API routes
+    from backend.auth import _get_jwt_secret, _extract_token, verify_jwt
+
+    secret = _get_jwt_secret()
+    if not secret:
+        # Auth not configured (dev mode) — allow through
+        return await call_next(request)
+
+    token = _extract_token(request)
+    if not token:
+        from starlette.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"detail": "Missing authorization token"})
+
+    try:
+        user = verify_jwt(token)
+    except HTTPException:
+        from starlette.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"detail": "Invalid or expired token"})
+
+    # Tenant ownership check: if path has a tenant_id segment, verify ownership
+    # Pattern: /api/.../{ tenant_id }/... where tenant_id is a UUID-like string
+    path_parts = path.strip("/").split("/")
+    tenant_id = None
+    for i, part in enumerate(path_parts):
+        # tenant_id is typically the segment after a known prefix
+        if i >= 2 and len(part) > 8 and part not in ("run", "pause", "resume", "connect", "disconnect", "send", "sync"):
+            # Looks like a tenant_id (UUID or long string)
+            tenant_id = part
+            break
+
+    if tenant_id:
+        user_email = user.get("email", "")
+        try:
+            from backend.config.loader import get_tenant_config
+            config = get_tenant_config(tenant_id)
+            # Allow if owner_email matches or no owner set (legacy)
+            if config.owner_email and user_email and config.owner_email != user_email:
+                # Also allow if user sub matches tenant_id
+                if str(config.tenant_id) != user.get("sub", ""):
+                    from starlette.responses import JSONResponse
+                    return JSONResponse(status_code=403, content={"detail": "Access denied to this tenant"})
+        except Exception:
+            pass  # Tenant not found — let the endpoint handle it
+
+    # Attach user info to request state for endpoints that need it
+    request.state.user = user
+    return await call_next(request)
+
 
 # Mount Socket.IO
 socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
@@ -158,7 +268,7 @@ async def twitter_callback(code: str = "", state: str = "", error: str = "", req
     """Handle Twitter OAuth callback — exchange code for tokens and store."""
     from starlette.responses import HTMLResponse
     if error:
-        return HTMLResponse(f"<script>alert('Twitter auth failed: {error}');window.close();</script>")
+        return HTMLResponse(_safe_oauth_error(f"Twitter auth failed: {error}"))
 
     from backend.tools import twitter_tool
     from backend.config.loader import get_tenant_config, save_tenant_config
@@ -169,7 +279,7 @@ async def twitter_callback(code: str = "", state: str = "", error: str = "", req
     try:
         tokens = await twitter_tool.exchange_code(code, state, redirect_uri)
     except Exception as e:
-        return HTMLResponse(f"<script>alert('Auth failed: {e}');window.close();</script>")
+        return HTMLResponse(_safe_oauth_error(f"Auth failed: {e}"))
 
     tenant_id = tokens["tenant_id"]
     access_token = tokens["access_token"]
@@ -232,11 +342,11 @@ async def linkedin_callback(code: str = "", state: str = "", error: str = "", re
     """Handle LinkedIn OAuth callback — exchange code for tokens and store."""
     from starlette.responses import HTMLResponse
     if error:
-        return HTMLResponse(f"<script>alert('LinkedIn auth failed: {error}');window.close();</script>")
+        return HTMLResponse(_safe_oauth_error(f"LinkedIn auth failed: {error}"))
 
     tenant_id = _linkedin_pending_auth.pop(state, None)
     if not tenant_id:
-        return HTMLResponse("<script>alert('Invalid or expired OAuth state');window.close();</script>")
+        return HTMLResponse(_safe_oauth_error("Invalid or expired OAuth state"))
 
     from backend.tools import linkedin_tool
 
@@ -246,7 +356,7 @@ async def linkedin_callback(code: str = "", state: str = "", error: str = "", re
     try:
         tokens = await linkedin_tool.exchange_code(code, redirect_uri)
     except Exception as e:
-        return HTMLResponse(f"<script>alert('Auth failed: {e}');window.close();</script>")
+        return HTMLResponse(_safe_oauth_error(f"Auth failed: {e}"))
 
     access_token = tokens["access_token"]
 
@@ -254,7 +364,7 @@ async def linkedin_callback(code: str = "", state: str = "", error: str = "", re
     profile = await linkedin_tool.get_profile(access_token)
     if profile.get("error"):
         err = profile.get("error", "unknown")
-        return HTMLResponse(f"<script>alert('Failed to get profile: {err}');window.close();</script>")
+        return HTMLResponse(_safe_oauth_error(f"Failed to get profile: {err}"))
 
     linkedin_name = profile.get("name", "")
     linkedin_sub = profile.get("sub", "")  # This is the member ID
@@ -789,8 +899,12 @@ class OnboardingStart(BaseModel):
 
 
 @app.get("/api/tenant/by-email/{email}")
-async def tenant_by_email(email: str):
-    """Look up a tenant config by owner email. Returns tenant_id if found."""
+async def tenant_by_email(email: str, user: dict = Depends(get_current_user)):
+    """Look up a tenant config by owner email. Requires auth — only returns tenant for the authenticated user."""
+    # Only allow users to look up their own email
+    user_email = user.get("email", "")
+    if user_email and user_email != email and user.get("sub") != "dev-user":
+        raise HTTPException(status_code=403, detail="You can only look up your own tenant")
     try:
         from backend.config.loader import _get_supabase
         sb = _get_supabase()

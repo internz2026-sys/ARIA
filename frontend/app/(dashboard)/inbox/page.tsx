@@ -2,8 +2,16 @@
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { API_URL, inbox } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 import { AGENT_NAMES, AGENT_COLORS } from "@/lib/agent-config";
 import EmailEditor from "@/components/shared/EmailEditor";
+
+async function authFetch(url: string, options?: RequestInit) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...options?.headers as Record<string, string> };
+  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
+  return fetch(url, { ...options, headers });
+}
 
 interface EmailDraft {
   to: string;
@@ -234,7 +242,7 @@ export default function InboxPage() {
         text = item.content;
       }
 
-      const res = await fetch(`${API_URL}/api/linkedin/${tenantId}/post`, {
+      const res = await authFetch(`${API_URL}/api/linkedin/${tenantId}/post`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
@@ -264,7 +272,7 @@ export default function InboxPage() {
       const toNumber = fromMatch?.[0] || "";
       if (!toNumber) { alert("Cannot determine recipient number"); return; }
 
-      const res = await fetch(`${API_URL}/api/whatsapp/${tenantId}/send`, {
+      const res = await authFetch(`${API_URL}/api/whatsapp/${tenantId}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to: toNumber, message: waReplyText }),
