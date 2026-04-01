@@ -1725,6 +1725,43 @@ Keep it professional, concise, and on-brand. Do not include placeholder text."""
     }
 
 
+def _clean_notification_body(body: str) -> str:
+    """Strip JSON/code artifacts from notification body to show clean text."""
+    if not body:
+        return ""
+    text = body.strip()
+    # Remove markdown code fences
+    if text.startswith("```"):
+        text = "\n".join(text.split("\n")[1:])
+    if text.endswith("```"):
+        text = "\n".join(text.split("\n")[:-1])
+    # If it looks like JSON, try to extract meaningful text from it
+    if text.lstrip().startswith("{") or text.lstrip().startswith("["):
+        try:
+            import json as _j
+            data = _j.loads(text[text.index("{"):text.rindex("}") + 1])
+            # Try common fields for a readable summary
+            parts = []
+            for key in ("text", "title", "description", "commentary", "body", "subject", "key_message"):
+                if data.get(key):
+                    parts.append(str(data[key])[:150])
+                    break
+            if not parts:
+                # Try nested posts
+                for post in data.get("posts", [])[:1]:
+                    if post.get("text"):
+                        parts.append(post["text"][:150])
+            if parts:
+                return parts[0]
+        except Exception:
+            pass
+        # Fallback: strip JSON characters
+        import re
+        text = re.sub(r'[{}\[\]":]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+    return text[:200]
+
+
 async def _notify(
     tenant_id: str,
     type: str,
@@ -1736,13 +1773,14 @@ async def _notify(
 ) -> dict | None:
     """Persist a notification and emit it via Socket.IO."""
     try:
+        clean_body = _clean_notification_body(body)
         sb = _get_supabase()
         row = {
             "tenant_id": tenant_id,
             "type": type,
             "category": category,
             "title": title,
-            "body": body,
+            "body": clean_body,
             "href": href,
             "priority": priority,
             "is_read": False,

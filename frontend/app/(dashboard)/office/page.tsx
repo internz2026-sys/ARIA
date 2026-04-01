@@ -94,7 +94,7 @@ export default function OfficePage() {
         }
         return next;
       });
-    }, 15000); // 15s after last response, non-delegated agents leave
+    }, 3000); // 3s after last response, non-delegated agents leave meeting
     return () => clearTimeout(timer);
   }, [sending, chatOverrides]);
 
