@@ -7,6 +7,7 @@ import { useCeoChat } from "@/lib/use-ceo-chat";
 import { formatDateAgo } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/render-markdown";
 import { useSpeechToText, useTTS } from "@/lib/use-voice";
+import ConfirmationDialog from "@/components/shared/ConfirmationDialog";
 
 export default function FloatingChat() {
   const [open, setOpen] = useState(false);
@@ -16,7 +17,7 @@ export default function FloatingChat() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const seenCount = useRef(0); // tracks how many messages the user has seen
 
-  const { messages, sessions, sessionId, sending, send, switchSession, startNewChat } = useCeoChat();
+  const { messages, sessions, sessionId, sending, pendingConfirmation, send, confirmAction, cancelAction, switchSession, startNewChat } = useCeoChat();
   const sendRef = useRef(send);
   sendRef.current = send;
   const stt = useSpeechToText(useCallback((text: string) => { if (text.trim()) sendRef.current(text.trim()); }, []));
@@ -298,6 +299,15 @@ export default function FloatingChat() {
             </div>
           </div>
         </div>
+      )}
+      {/* CEO Action Confirmation Dialog */}
+      {pendingConfirmation && (
+        <ConfirmationDialog
+          data={pendingConfirmation}
+          onConfirm={confirmAction}
+          onCancel={cancelAction}
+          loading={sending}
+        />
       )}
     </>
   );

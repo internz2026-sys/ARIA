@@ -2890,6 +2890,47 @@ async def crm_pipeline_summary(tenant_id: str):
     return {"stages": stages}
 
 
+# ─── CEO Actions ───
+
+def _get_ceo_action_descriptions() -> str:
+    """Get compact action descriptions for CEO system prompt."""
+    from backend.ceo_actions import get_action_descriptions
+    return get_action_descriptions()
+
+
+class CEOActionRequest(BaseModel):
+    action: str
+    params: dict = {}
+    confirmed: bool = False
+
+
+@app.post("/api/ceo/{tenant_id}/action")
+async def ceo_execute_action(tenant_id: str, body: CEOActionRequest):
+    """Execute a CEO business action with confirmation enforcement."""
+    from backend.ceo_actions import execute_action, is_forbidden_request
+
+    result = await execute_action(
+        tenant_id=tenant_id,
+        action_name=body.action,
+        params=body.params,
+        confirmed=body.confirmed,
+    )
+
+    if result["status"] == "needs_confirmation":
+        return result  # Frontend shows confirmation dialog
+
+    if result["status"] == "error":
+        raise HTTPException(status_code=400, detail=result.get("message", "Action failed"))
+
+    # Emit real-time update
+    await sio.emit("ceo_action_executed", {
+        "action": body.action,
+        "result": result,
+    }, room=tenant_id)
+
+    return result
+
+
 # ─── CEO Chat ───
 import pathlib as _pathlib
 
@@ -3080,6 +3121,23 @@ Based on the conversation, you should:
 4. If no delegation is needed, just respond normally
 {integration_notes}
 
+## CEO Business Actions
+You can execute business operations directly. When you want to perform an action, include an action block:
+```action
+{{"action": "action_name", "params": {{"key": "value"}}}}
+```
+
+Available actions:
+{_get_ceo_action_descriptions()}
+
+RULES FOR ACTIONS:
+- UPDATE and DELETE actions ALWAYS require user confirmation — include the action block and ask the user to confirm.
+- CREATE actions can proceed directly if the user's intent is clear.
+- PUBLISH and SEND actions always require confirmation.
+- If data is missing, ask for it before creating the action block.
+- If the user asks you to modify code, backend, prompts, database schema, or infrastructure — REFUSE. You are a business operator, not a developer.
+- Never bypass confirmations or approval flows.
+
 IMPORTANT — Token efficiency rules:
 - If the user asks to send/post content that ALREADY EXISTS in the Inbox (e.g., "send that email" or "post that on Twitter"), do NOT regenerate it. Reference the existing content and delegate with "USE EXISTING:" prefix.
 - Only delegate to content_writer or email_marketer for NEW content. For repurposing existing content, delegate to social_manager which auto-fetches from Inbox.
@@ -3127,6 +3185,13 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         logger.error(f"CEO chat error: {exc}\n{traceback.format_exc()}")
         raw = f"I encountered an error: {str(exc)[:200]}. Please try again."
 
+    # Check for forbidden requests
+    from backend.ceo_actions import is_forbidden_request, REFUSAL_MESSAGE
+    if is_forbidden_request(body.message):
+        # The CEO should already refuse in its response, but double-check
+        if "can't" not in raw.lower() and "cannot" not in raw.lower() and "don't have access" not in raw.lower():
+            raw = REFUSAL_MESSAGE
+
     # Parse delegation blocks
     delegations = []
     clean_response = raw
@@ -3141,6 +3206,36 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             except _json.JSONDecodeError:
                 pass
         clean_response = re.sub(r"```delegate\s*\n.*?\n```", "", raw, flags=re.DOTALL).strip()
+
+    # Parse CEO action blocks
+    ceo_actions = []
+    if "```action" in clean_response:
+        import re
+        action_blocks = re.findall(r"```action\s*\n(.*?)\n```", clean_response, re.DOTALL)
+        for block in action_blocks:
+            try:
+                a = _json.loads(block.strip())
+                if a.get("action"):
+                    ceo_actions.append(a)
+            except _json.JSONDecodeError:
+                pass
+        clean_response = re.sub(r"```action\s*\n.*?\n```", "", clean_response, flags=re.DOTALL).strip()
+
+    # Execute non-confirmation actions immediately; queue confirmations for frontend
+    action_results = []
+    pending_confirmations = []
+    if ceo_actions and tenant_id:
+        from backend.ceo_actions import execute_action
+        for a in ceo_actions:
+            action_name = a.get("action", "")
+            params = a.get("params", {})
+            result = await execute_action(tenant_id, action_name, params, confirmed=False)
+            if result["status"] == "needs_confirmation":
+                pending_confirmations.append(result)
+            elif result["status"] == "executed":
+                action_results.append(result)
+            else:
+                action_results.append(result)
 
     session.append({"role": "assistant", "content": clean_response})
 
@@ -3209,12 +3304,20 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         except Exception:
             pass
 
-    return {
+    response_data = {
         "response": clean_response,
         "delegations": delegations,
         "tasks": saved_tasks,
         "session_id": body.session_id,
     }
+
+    # Include action results and pending confirmations
+    if action_results:
+        response_data["action_results"] = action_results
+    if pending_confirmations:
+        response_data["pending_confirmations"] = pending_confirmations
+
+    return response_data
 
 
 @app.get("/api/ceo/chat/{session_id}/history")

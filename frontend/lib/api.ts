@@ -167,6 +167,14 @@ export const whatsapp = {
     fetchAPI(`/api/whatsapp/${tenantId}/send`, { method: "POST", body: JSON.stringify({ to, message }) }),
 };
 
+export const ceoActions = {
+  execute: (tenantId: string, action: string, params: Record<string, any> = {}, confirmed = false) =>
+    fetchAPI(`/api/ceo/${tenantId}/action`, {
+      method: "POST",
+      body: JSON.stringify({ action, params, confirmed }),
+    }),
+};
+
 export const usage = {
   getDashboard: (tenantId: string) => fetchAPI(`/api/usage/${tenantId}`),
 };

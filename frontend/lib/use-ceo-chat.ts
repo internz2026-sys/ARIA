@@ -7,13 +7,26 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
 import { API_URL } from "./api";
+import { supabase } from "./supabase";
 
 // ---- Types ----------------------------------------------------------------
+
+export interface PendingConfirmation {
+  title: string;
+  message: string;
+  action: string;
+  params: Record<string, any>;
+  confirm_label: string;
+  cancel_label: string;
+  destructive: boolean;
+}
 
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   delegations?: { agent: string; task: string; priority: string }[];
+  pending_confirmations?: PendingConfirmation[];
+  action_results?: any[];
 }
 
 export interface ChatSession {
@@ -28,7 +41,10 @@ interface CeoChatState {
   sessions: ChatSession[];
   sessionId: string;
   sending: boolean;
+  pendingConfirmation: PendingConfirmation | null;
   send: (text: string) => Promise<void>;
+  confirmAction: () => Promise<void>;
+  cancelAction: () => void;
   switchSession: (sid: string) => void;
   startNewChat: () => void;
   refreshSessions: () => void;
@@ -55,11 +71,20 @@ function getOrCreateSessionId(): string {
 
 const CeoChatContext = createContext<CeoChatState | null>(null);
 
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) return { Authorization: `Bearer ${session.access_token}` };
+  } catch {}
+  return {};
+}
+
 export function CeoChatProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [sending, setSending] = useState(false);
+  const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -97,17 +122,28 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
       setSending(true);
 
       try {
+        const authHeaders = await getAuthHeaders();
         const res = await fetch(`${API_URL}/api/ceo/chat`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({ session_id: sessionId, message: trimmed, tenant_id: getTenantId() }),
         });
         const data = await res.json();
         if (mountedRef.current) {
-          setMessages((p) => [
-            ...p,
-            { role: "assistant", content: data.response || "Something went wrong.", delegations: data.delegations || [] },
-          ]);
+          const msg: ChatMessage = {
+            role: "assistant",
+            content: data.response || "Something went wrong.",
+            delegations: data.delegations || [],
+            pending_confirmations: data.pending_confirmations || [],
+            action_results: data.action_results || [],
+          };
+          setMessages((p) => [...p, msg]);
+
+          // If there are pending confirmations, show the first one
+          if (data.pending_confirmations?.length > 0) {
+            setPendingConfirmation(data.pending_confirmations[0].confirmation);
+          }
+
           refreshSessions();
         }
       } catch {
@@ -120,6 +156,39 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
     },
     [sessionId, sending, refreshSessions],
   );
+
+  const confirmAction = useCallback(async () => {
+    if (!pendingConfirmation) return;
+    setSending(true);
+    try {
+      const authHeaders = await getAuthHeaders();
+      const res = await fetch(`${API_URL}/api/ceo/${getTenantId()}/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({
+          action: pendingConfirmation.action,
+          params: pendingConfirmation.params,
+          confirmed: true,
+        }),
+      });
+      const data = await res.json();
+      if (mountedRef.current) {
+        setMessages((p) => [...p, { role: "assistant", content: `Action completed: ${pendingConfirmation.action}` }]);
+        setPendingConfirmation(null);
+      }
+    } catch (e: any) {
+      if (mountedRef.current) {
+        setMessages((p) => [...p, { role: "assistant", content: `Action failed: ${e?.message || "unknown error"}` }]);
+        setPendingConfirmation(null);
+      }
+    }
+    if (mountedRef.current) setSending(false);
+  }, [pendingConfirmation]);
+
+  const cancelAction = useCallback(() => {
+    setPendingConfirmation(null);
+    setMessages((p) => [...p, { role: "assistant", content: "Action cancelled." }]);
+  }, []);
 
   const switchSession = useCallback((sid: string) => {
     localStorage.setItem(SESSION_KEY, sid);
@@ -134,7 +203,7 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
     setMessages([]);
   }, []);
 
-  const value: CeoChatState = { messages, sessions, sessionId, sending, send, switchSession, startNewChat, refreshSessions };
+  const value: CeoChatState = { messages, sessions, sessionId, sending, pendingConfirmation, send, confirmAction, cancelAction, switchSession, startNewChat, refreshSessions };
 
   return React.createElement(CeoChatContext.Provider, { value }, children);
 }
