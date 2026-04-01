@@ -2250,7 +2250,7 @@ async def _run_agent_to_inbox(
     """Run an agent in background, drive office movement from real execution.
 
     Lifecycle:
-      1. Brief meeting phase (4s) — CEO + agent walk to meeting room
+      1. Brief meeting phase (1s) — CEO + agent walk to meeting room
       2. CEO returns to desk (idle), agent returns to desk (working)
       3. Agent executes for real — stays in "working"
       4. Agent stays "working" until task is moved to "done" on Kanban board
@@ -2260,7 +2260,7 @@ async def _run_agent_to_inbox(
 
     try:
         # Phase 1: Meeting (CEO + agent already walking to meeting room via caller)
-        await asyncio.sleep(4)
+        await asyncio.sleep(1)
 
         # Phase 2: CEO returns to desk
         if tenant_id:
@@ -2271,16 +2271,56 @@ async def _run_agent_to_inbox(
                                      current_task=task_desc,
                                      action="return_and_work")
 
-        # Phase 3: Actually run the agent (this is where real time is spent)
+        # Phase 3: Create placeholder inbox item immediately so it shows up in the inbox
         _logger = logging.getLogger("aria.inbox")
         _logger.info("Running agent %s for tenant %s — task: %s", agent_id, tenant_id, task_desc[:100])
+
+        placeholder_content_type = _infer_content_type(agent_id, "")
+        placeholder = _save_inbox_item(
+            tenant_id=tenant_id,
+            agent=agent_id,
+            title=f"{agent_id.replace('_', ' ').title()} is working on: {task_desc[:80]}",
+            content="Agent is processing this task...",
+            content_type=placeholder_content_type,
+            priority=priority,
+            task_id=task_id,
+            chat_session_id=session_id,
+            status="processing",
+        )
+        placeholder_id = placeholder["id"] if placeholder else None
+
+        # Notify frontend of the placeholder
+        if placeholder and tenant_id:
+            await sio.emit("inbox_new_item", {
+                "id": placeholder_id,
+                "agent": agent_id,
+                "type": placeholder_content_type,
+                "title": placeholder.get("title", ""),
+                "status": "processing",
+                "priority": priority,
+                "created_at": placeholder.get("created_at", ""),
+            }, room=tenant_id)
+
+        # Phase 4: Actually run the agent (this is where real time is spent)
         result = await agent_module.run(tenant_id, context={"action": task_desc})
         content = result.get("result", "")
         _logger.info("Agent %s returned %d chars, keys: %s", agent_id, len(content), list(result.keys()))
 
         if not content and not result.get("email_draft"):
             _logger.warning("Agent %s returned empty content for tenant %s", agent_id, tenant_id)
-            # No content but task should still be marked done
+            # Update placeholder to show it's done (empty result)
+            if placeholder_id:
+                try:
+                    from backend.config.loader import _get_supabase
+                    sb = _get_supabase()
+                    sb.table("inbox_items").update({
+                        "title": f"Completed: {task_desc[:80]}",
+                        "content": "Agent completed but produced no output.",
+                        "status": "completed",
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", placeholder_id).execute()
+                except Exception:
+                    pass
             if task_id:
                 try:
                     from backend.config.loader import _get_supabase
@@ -2317,37 +2357,58 @@ async def _run_agent_to_inbox(
         email_draft = result.get("email_draft")
         if email_draft:
             item_status = "draft_pending_approval"
-            # Use the draft subject as title if available
             if email_draft.get("subject"):
                 title = f"Email: {email_draft['subject']}"
-            # Use preview snippet for the display content
             content = email_draft.get("preview_snippet", content)
         else:
             item_status = "ready"
 
-        saved = _save_inbox_item(
-            tenant_id=tenant_id,
-            agent=agent_id,
-            title=title,
-            content=content,
-            content_type=content_type,
-            priority=priority,
-            task_id=task_id,
-            chat_session_id=session_id,
-            status=item_status,
-            email_draft=email_draft,
-        )
+        # Update the placeholder with the real content
+        if placeholder_id:
+            try:
+                from backend.config.loader import _get_supabase
+                sb = _get_supabase()
+                update_data: dict = {
+                    "title": title,
+                    "content": content,
+                    "type": content_type,
+                    "status": item_status,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if email_draft:
+                    update_data["email_draft"] = email_draft
+                sb.table("inbox_items").update(update_data).eq("id", placeholder_id).execute()
+                _logger.info("Updated inbox placeholder %s with real content", placeholder_id)
+            except Exception as e:
+                _logger.error("Failed to update placeholder: %s", e)
+                # Fallback: save as new item
+                placeholder_id = None
 
-        # Emit real-time notification to frontend
-        if saved and tenant_id:
-            await sio.emit("inbox_new_item", {
-                "id": saved["id"],
+        # If placeholder update failed, save as new item
+        if not placeholder_id:
+            saved = _save_inbox_item(
+                tenant_id=tenant_id,
+                agent=agent_id,
+                title=title,
+                content=content,
+                content_type=content_type,
+                priority=priority,
+                task_id=task_id,
+                chat_session_id=session_id,
+                status=item_status,
+                email_draft=email_draft,
+            )
+            placeholder_id = saved["id"] if saved else None
+
+        # Emit real-time update to frontend (replaces placeholder)
+        if placeholder_id and tenant_id:
+            await sio.emit("inbox_item_updated", {
+                "id": placeholder_id,
                 "agent": agent_id,
                 "type": content_type,
                 "title": title,
                 "status": item_status,
                 "priority": priority,
-                "created_at": saved.get("created_at", ""),
             }, room=tenant_id)
             n_type = "approval_needed" if item_status == "draft_pending_approval" else "inbox_new_item"
             await _notify(

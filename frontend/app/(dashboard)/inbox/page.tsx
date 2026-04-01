@@ -28,6 +28,7 @@ interface InboxItem {
 
 const STATUS_TABS = [
   { key: "", label: "All" },
+  { key: "processing", label: "In progress" },
   { key: "ready", label: "Content ready" },
   { key: "draft_pending_approval", label: "Pending approval" },
   { key: "needs_review", label: "Needs review" },
@@ -53,6 +54,7 @@ const PRIORITY_DOT: Record<string, string> = {
 };
 
 const STATUS_BADGES: Record<string, { label: string; bg: string; text: string; border: string }> = {
+  processing: { label: "In progress...", bg: "bg-purple-50", text: "text-purple-600", border: "border-purple-200" },
   ready: { label: "Ready", bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200" },
   draft_pending_approval: { label: "Pending approval", bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-200" },
   needs_review: { label: "Needs review", bg: "bg-orange-50", text: "text-orange-600", border: "border-orange-200" },
