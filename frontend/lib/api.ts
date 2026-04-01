@@ -112,6 +112,11 @@ export const analytics = {
   getData: (tenantId: string, dateRange: string) => fetchAPI(`/api/analytics/${tenantId}?date_range=${dateRange}`),
 };
 
+// ── CRM Types ──
+interface CrmContactData { name: string; email?: string; phone?: string; company_id?: string; source?: string; status?: string; tags?: string[]; notes?: string }
+interface CrmCompanyData { name: string; domain?: string; industry?: string; size?: string; notes?: string }
+interface CrmDealData { title: string; value?: number; stage?: string; contact_id?: string; company_id?: string; notes?: string; expected_close?: string }
+
 export const crm = {
   // Contacts
   listContacts: (tenantId: string, search = "", status = "", page = 1, pageSize = 50) => {
@@ -123,9 +128,9 @@ export const crm = {
     return fetchAPI(`/api/crm/${tenantId}/contacts?${p.toString()}`);
   },
   getContact: (tenantId: string, id: string) => fetchAPI(`/api/crm/${tenantId}/contacts/${id}`),
-  createContact: (tenantId: string, data: any) =>
+  createContact: (tenantId: string, data: CrmContactData) =>
     fetchAPI(`/api/crm/${tenantId}/contacts`, { method: "POST", body: JSON.stringify(data) }),
-  updateContact: (tenantId: string, id: string, data: any) =>
+  updateContact: (tenantId: string, id: string, data: Partial<CrmContactData>) =>
     fetchAPI(`/api/crm/${tenantId}/contacts/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteContact: (tenantId: string, id: string) =>
     fetchAPI(`/api/crm/${tenantId}/contacts/${id}`, { method: "DELETE" }),
@@ -134,9 +139,9 @@ export const crm = {
   listCompanies: (tenantId: string, search = "") =>
     fetchAPI(`/api/crm/${tenantId}/companies${search ? `?search=${encodeURIComponent(search)}` : ""}`),
   getCompany: (tenantId: string, id: string) => fetchAPI(`/api/crm/${tenantId}/companies/${id}`),
-  createCompany: (tenantId: string, data: any) =>
+  createCompany: (tenantId: string, data: CrmCompanyData) =>
     fetchAPI(`/api/crm/${tenantId}/companies`, { method: "POST", body: JSON.stringify(data) }),
-  updateCompany: (tenantId: string, id: string, data: any) =>
+  updateCompany: (tenantId: string, id: string, data: Partial<CrmCompanyData>) =>
     fetchAPI(`/api/crm/${tenantId}/companies/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteCompany: (tenantId: string, id: string) =>
     fetchAPI(`/api/crm/${tenantId}/companies/${id}`, { method: "DELETE" }),
@@ -145,9 +150,9 @@ export const crm = {
   listDeals: (tenantId: string, stage = "") =>
     fetchAPI(`/api/crm/${tenantId}/deals${stage ? `?stage=${stage}` : ""}`),
   getDeal: (tenantId: string, id: string) => fetchAPI(`/api/crm/${tenantId}/deals/${id}`),
-  createDeal: (tenantId: string, data: any) =>
+  createDeal: (tenantId: string, data: CrmDealData) =>
     fetchAPI(`/api/crm/${tenantId}/deals`, { method: "POST", body: JSON.stringify(data) }),
-  updateDeal: (tenantId: string, id: string, data: any) =>
+  updateDeal: (tenantId: string, id: string, data: Partial<CrmDealData>) =>
     fetchAPI(`/api/crm/${tenantId}/deals/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteDeal: (tenantId: string, id: string) =>
     fetchAPI(`/api/crm/${tenantId}/deals/${id}`, { method: "DELETE" }),

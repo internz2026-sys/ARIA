@@ -116,21 +116,31 @@ async def get_verified_tenant(request: Request, tenant_id: str) -> dict:
 
 # ── Rate limiting helpers ────────────────────────────────────────────────────
 
-# Simple in-memory rate limiter (per IP)
+# Simple in-memory rate limiter (per IP) with eviction
 _rate_limits: dict[str, list[float]] = {}
+_last_eviction: float = 0
 
 
 def check_rate_limit(request: Request, max_requests: int = 60, window_seconds: int = 60):
-    """Simple in-memory rate limiter by IP. Raises 429 if exceeded."""
+    """In-memory sliding window rate limiter by IP with periodic eviction."""
     import time
+    global _last_eviction
+
     client_ip = request.client.host if request.client else "unknown"
     now = time.time()
     cutoff = now - window_seconds
 
+    # Evict stale IPs every 5 minutes to prevent unbounded growth
+    if now - _last_eviction > 300:
+        stale_ips = [ip for ip, timestamps in _rate_limits.items() if not timestamps or timestamps[-1] < cutoff]
+        for ip in stale_ips:
+            del _rate_limits[ip]
+        _last_eviction = now
+
     if client_ip not in _rate_limits:
         _rate_limits[client_ip] = []
 
-    # Clean old entries
+    # Clean old entries for this IP
     _rate_limits[client_ip] = [t for t in _rate_limits[client_ip] if t > cutoff]
 
     if len(_rate_limits[client_ip]) >= max_requests:
