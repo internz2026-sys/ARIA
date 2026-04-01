@@ -4,8 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { renderMarkdown } from "@/lib/render-markdown";
 import { useSpeechToText, useTTS } from "@/lib/use-voice";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 
 interface ChatMessage {
   role: "aria" | "user";

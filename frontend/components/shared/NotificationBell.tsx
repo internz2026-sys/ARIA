@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useNotifications, Notification } from "@/lib/use-notifications";
+import { formatDateAgo } from "@/lib/utils";
 
 const CATEGORY_COLORS: Record<string, { bg: string; text: string; label: string }> = {
   inbox: { bg: "bg-[#EEEDFE]", text: "text-[#534AB7]", label: "Inbox" },
@@ -11,17 +12,6 @@ const CATEGORY_COLORS: Record<string, { bg: string; text: string; label: string 
   status: { bg: "bg-amber-50", text: "text-amber-700", label: "Status" },
 };
 
-function timeAgo(dateStr: string): string {
-  if (!dateStr) return "";
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "now";
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d`;
-}
 
 export default function NotificationBell() {
   const { notifications, badges, markAsRead } = useNotifications();
@@ -113,7 +103,7 @@ export default function NotificationBell() {
                           {n.title}
                         </span>
                         <span className="text-[10px] text-[#9E9C95] shrink-0">
-                          {timeAgo(n.created_at)}
+                          {formatDateAgo(n.created_at)}
                         </span>
                       </div>
                       {n.body && (

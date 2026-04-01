@@ -1,8 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 const dateRanges = ["Last 7 days", "Last 30 days", "Last 90 days"];
 
 export default function AnalyticsPage() {

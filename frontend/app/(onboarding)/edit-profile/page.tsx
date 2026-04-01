@@ -2,8 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 
 const CHANNEL_OPTIONS = ["email", "social", "ads", "content"];
 const VOICE_OPTIONS = ["professional", "friendly", "bold", "luxury", "casual"];

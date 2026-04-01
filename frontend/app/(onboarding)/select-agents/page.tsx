@@ -3,8 +3,7 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 
 const agents = [
   { slug: "ceo", name: "ARIA CEO", role: "Chief Marketing Strategist", description: "Builds your GTM playbook, coordinates all agents, reviews outputs, adjusts strategy", color: "#534AB7", required: true },

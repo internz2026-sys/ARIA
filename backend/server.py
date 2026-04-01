@@ -35,6 +35,7 @@ def _safe_oauth_error(message: str) -> str:
 
 
 from backend.config.loader import get_tenant_config, save_tenant_config
+from backend.services.supabase import get_db as _get_supabase
 from backend.onboarding_agent import OnboardingAgent
 from backend.orchestrator import (
     dispatch_agent,
@@ -549,7 +550,6 @@ class SocialApproveRequest(BaseModel):
 @app.post("/api/social/{tenant_id}/approve-publish")
 async def approve_and_publish_social(tenant_id: str, body: SocialApproveRequest):
     """Approve a social post from inbox and publish to connected platforms (Twitter/X)."""
-    from backend.config.loader import _get_supabase
     from backend.tools import twitter_tool
 
     sb = _get_supabase()
@@ -725,7 +725,6 @@ async def whatsapp_webhook_receive(request: Request):
 
                 # Store in inbox for tenant review
                 try:
-                    from backend.config.loader import _get_supabase
                     sb = _get_supabase()
 
                     # Find tenant by WhatsApp phone number ID
@@ -767,7 +766,6 @@ async def _resolve_whatsapp_tenant(phone_number_id: str) -> str | None:
     if not phone_number_id:
         return None
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         # Search tenant_configs for matching WhatsApp phone number ID
         result = sb.table("tenant_configs").select("tenant_id,config").execute()
@@ -913,7 +911,6 @@ async def tenant_by_email(email: str, user: dict = Depends(get_current_user)):
     if user_email and user_email != email and user.get("sub") != "dev-user":
         raise HTTPException(status_code=403, detail="You can only look up your own tenant")
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         result = sb.table("tenant_configs").select("tenant_id").eq("owner_email", email).limit(1).execute()
         if result.data and len(result.data) > 0:
@@ -1291,7 +1288,6 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
     Updates the inbox item status through the lifecycle:
     draft_pending_approval → sending → sent / failed.
     """
-    from backend.config.loader import _get_supabase
     from backend.tools import gmail_tool
 
     sb = _get_supabase()
@@ -1471,7 +1467,6 @@ class UpdateDraftRequest(BaseModel):
 @app.post("/api/email/{tenant_id}/update-draft")
 async def update_email_draft(tenant_id: str, body: UpdateDraftRequest):
     """Update an email draft's to, subject, or body before sending."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
 
     item_result = sb.table("inbox_items").select("*").eq("id", body.inbox_item_id).single().execute()
@@ -1507,7 +1502,6 @@ async def update_email_draft(tenant_id: str, body: UpdateDraftRequest):
 @app.post("/api/email/{tenant_id}/cancel-draft")
 async def cancel_email_draft(tenant_id: str, body: EmailApproveRequest):
     """Cancel a pending email draft."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     sb.table("inbox_items").update({
         "status": "cancelled",
@@ -1521,7 +1515,6 @@ async def cancel_email_draft(tenant_id: str, body: EmailApproveRequest):
 @app.get("/api/email/{tenant_id}/threads")
 async def list_email_threads(tenant_id: str, status: str = ""):
     """List email conversation threads for a tenant."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     query = sb.table("email_threads").select("*").eq("tenant_id", tenant_id)
     if status:
@@ -1533,7 +1526,6 @@ async def list_email_threads(tenant_id: str, status: str = ""):
 @app.get("/api/email/{tenant_id}/threads/{thread_id}")
 async def get_email_thread(tenant_id: str, thread_id: str):
     """Get a single thread with all its messages."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     thread_result = sb.table("email_threads").select("*").eq(
         "id", thread_id
@@ -1554,7 +1546,6 @@ async def get_email_thread(tenant_id: str, thread_id: str):
 @app.post("/api/email/{tenant_id}/threads/{thread_id}/mark-read")
 async def mark_thread_read(tenant_id: str, thread_id: str):
     """Mark a thread as read (status → open)."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     sb.table("email_threads").update({
         "status": "open",
@@ -1575,7 +1566,6 @@ async def generate_draft_reply(tenant_id: str, body: DraftReplyRequest):
     Uses the email marketer agent to draft a contextual reply based on the
     thread history. The draft is saved as draft_pending_approval — never sent.
     """
-    from backend.config.loader import _get_supabase
     from backend.tools.claude_cli import call_claude, MODEL_HAIKU
 
     sb = _get_supabase()
@@ -1720,7 +1710,6 @@ async def _notify(
 ) -> dict | None:
     """Persist a notification and emit it via Socket.IO."""
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         row = {
             "tenant_id": tenant_id,
@@ -1798,7 +1787,6 @@ async def trigger_sync_all():
 @app.get("/api/notifications/{tenant_id}/counts")
 async def notification_counts(tenant_id: str):
     """Get unread notification counts by category."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     result = sb.table("notifications").select("category", count="exact").eq(
         "tenant_id", tenant_id
@@ -1821,7 +1809,6 @@ async def notification_counts(tenant_id: str):
 @app.get("/api/notifications/{tenant_id}")
 async def list_notifications(tenant_id: str, category: str = "", unread_only: bool = False, limit: int = 30):
     """List recent notifications for a tenant."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     query = sb.table("notifications").select("*").eq("tenant_id", tenant_id)
     if category:
@@ -1839,7 +1826,6 @@ class MarkReadRequest(BaseModel):
 @app.post("/api/notifications/{tenant_id}/mark-read")
 async def mark_notifications_read(tenant_id: str, body: MarkReadRequest):
     """Mark specific notification IDs (or all) as read."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     now = datetime.now(timezone.utc).isoformat()
     if body.ids:
@@ -1856,7 +1842,6 @@ async def mark_notifications_read(tenant_id: str, body: MarkReadRequest):
 @app.post("/api/notifications/{tenant_id}/mark-seen")
 async def mark_notifications_seen(tenant_id: str, body: MarkReadRequest):
     """Mark specific notification IDs (or all) as seen."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     now = datetime.now(timezone.utc).isoformat()
     if body.ids:
@@ -1981,7 +1966,6 @@ async def virtual_office_agents(tenant_id: str):
     # Check tasks table for agents with in_progress tasks
     task_statuses: dict[str, str] = {}
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         result = sb.table("tasks").select("agent,task").eq(
             "tenant_id", tenant_id
@@ -2064,7 +2048,6 @@ async def dashboard_stats(tenant_id: str):
 @app.get("/api/dashboard/{tenant_id}/activity")
 async def dashboard_activity(tenant_id: str):
     """Return recent activity from inbox items and tasks."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     activity = []
     try:
@@ -2105,7 +2088,6 @@ async def dashboard_activity(tenant_id: str):
 async def dashboard_inbox(tenant_id: str):
     """Return inbox items for the dashboard (latest 5)."""
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         result = sb.table("inbox_items").select("*").eq("tenant_id", tenant_id).order("created_at", desc=True).limit(5).execute()
         return {"tenant_id": tenant_id, "items": result.data}
@@ -2283,7 +2265,6 @@ def _save_inbox_item(
     """Save an agent output to the inbox_items table. Returns the saved row."""
     _logger = logging.getLogger("aria.inbox")
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         row = {
             "tenant_id": tenant_id,
@@ -2377,7 +2358,6 @@ async def _run_agent_to_inbox(
             # Update placeholder to show it's done (empty result)
             if placeholder_id:
                 try:
-                    from backend.config.loader import _get_supabase
                     sb = _get_supabase()
                     sb.table("inbox_items").update({
                         "title": f"Completed: {task_desc[:80]}",
@@ -2389,7 +2369,6 @@ async def _run_agent_to_inbox(
                     pass
             if task_id:
                 try:
-                    from backend.config.loader import _get_supabase
                     sb = _get_supabase()
                     sb.table("tasks").update({
                         "status": "done",
@@ -2432,7 +2411,6 @@ async def _run_agent_to_inbox(
         # Update the placeholder with the real content
         if placeholder_id:
             try:
-                from backend.config.loader import _get_supabase
                 sb = _get_supabase()
                 update_data: dict = {
                     "title": title,
@@ -2488,7 +2466,6 @@ async def _run_agent_to_inbox(
         # Mark task as done and notify frontend in real-time
         if task_id:
             try:
-                from backend.config.loader import _get_supabase
                 sb = _get_supabase()
                 sb.table("tasks").update({
                     "status": "done",
@@ -2538,7 +2515,6 @@ async def _run_agent_to_inbox(
         # Mark task as done so it doesn't stay stuck in_progress
         if task_id:
             try:
-                from backend.config.loader import _get_supabase
                 sb = _get_supabase()
                 sb.table("tasks").update({
                     "status": "done",
@@ -2627,7 +2603,6 @@ _chat_sessions: dict[str, list[dict]] = {}
 def _save_chat_message(session_id: str, tenant_id: str, role: str, content: str, delegations: list | None = None):
     """Persist a single chat message to Supabase."""
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         # Ensure session row exists
         sb.table("chat_sessions").upsert({
@@ -2652,7 +2627,6 @@ def _auto_title(session_id: str, first_message: str):
     if len(first_message) > 80:
         title = title.rsplit(" ", 1)[0] + "..."
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         sb.table("chat_sessions").update({"title": title}).eq("id", session_id).execute()
     except Exception:
@@ -2750,7 +2724,6 @@ Channels: {', '.join(tc.channels)}
     _msg_lower = body.message.lower()
     if tenant_id and any(kw in _msg_lower for kw in _crm_keywords):
         try:
-            from backend.config.loader import _get_supabase
             _crm_sb = _get_supabase()
             # Fetch compact summaries — minimal tokens
             _contacts = _crm_sb.table("crm_contacts").select("name,email,status,company_id").eq(
@@ -2930,7 +2903,6 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         # Save to Supabase tasks table — always start as in_progress
         if tenant_id:
             try:
-                from backend.config.loader import _get_supabase
                 sb = _get_supabase()
                 task_row = {
                     "tenant_id": tenant_id,
@@ -2970,7 +2942,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             if agent_module:
                 import asyncio as _aio
                 _aio.create_task(_run_agent_to_inbox(
-                    agent_module, agent_id, tenant_id or "demo", task_desc,
+                    agent_module, agent_id, tenant_id, task_desc,
                     body.session_id,
                     saved_tasks[-1]["id"] if saved_tasks else None,
                     d.get("priority", "medium"),
@@ -3002,7 +2974,6 @@ async def ceo_chat_history(session_id: str):
         return {"session_id": session_id, "messages": _chat_sessions[session_id]}
     # Load from DB
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         result = sb.table("chat_messages").select("role,content,delegations").eq("session_id", session_id).order("created_at").execute()
         messages = [{"role": r["role"], "content": r["content"], "delegations": r.get("delegations", [])} for r in result.data]
@@ -3017,7 +2988,6 @@ async def ceo_chat_history(session_id: str):
 async def list_chat_sessions(tenant_id: str):
     """List all chat sessions for a tenant, newest first."""
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         result = sb.table("chat_sessions").select("id,title,created_at,updated_at").eq("tenant_id", tenant_id).order("updated_at", desc=True).execute()
         return {"sessions": result.data}
@@ -3030,7 +3000,6 @@ async def list_chat_sessions(tenant_id: str):
 async def list_tasks(tenant_id: str):
     """List all tasks for a tenant, ordered by creation date."""
     try:
-        from backend.config.loader import _get_supabase
         sb = _get_supabase()
         result = sb.table("tasks").select("*").eq("tenant_id", tenant_id).order("created_at", desc=True).execute()
         return {"tasks": result.data}
@@ -3046,7 +3015,6 @@ class TaskUpdate(BaseModel):
 @app.patch("/api/tasks/{task_id}")
 async def update_task(task_id: str, body: TaskUpdate):
     """Update a task's status or priority. Syncs agent visual status in Virtual Office."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
     updates = {}
     if body.status:
@@ -3088,7 +3056,6 @@ async def update_task(task_id: str, body: TaskUpdate):
 @app.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str):
     """Delete a task. If it was in_progress, sync agent back to idle."""
-    from backend.config.loader import _get_supabase
     sb = _get_supabase()
 
     # Fetch before deleting for status sync

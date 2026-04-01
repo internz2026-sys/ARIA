@@ -75,7 +75,7 @@ export default function DashboardPage() {
   const [kpis, setKpis] = useState({ content_published: { value: 0, delta: 0, delta_pct: 0 }, emails_sent: { value: 0, open_rate: 0, click_rate: 0 }, social_engagement: { value: 0, delta_pct: 0 }, ad_spend: { value: 0, roas: 0 } });
   const [paperclipConnected, setPaperclipConnected] = useState(false);
   const [biz, setBiz] = useState<BusinessContext | null>(null);
-  const [tenantId, setTenantId] = useState("demo");
+  const [tenantId, setTenantId] = useState("");
 
   // Board state
   const [tasks, setTasks] = useState<Task[]>([]);

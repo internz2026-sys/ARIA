@@ -2,8 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { API_URL } from "@/lib/api";
 
 const steps = [
   { num: 1, title: "Chat with ARIA CEO", time: "~5 min", desc: "Describe your product, audience, and marketing goals" },
