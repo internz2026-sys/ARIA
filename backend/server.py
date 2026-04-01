@@ -163,15 +163,19 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
         return JSONResponse(status_code=401, content={"detail": "Invalid or expired token"})
 
     # Tenant ownership check: if path has a tenant_id segment, verify ownership
-    # Pattern: /api/.../{ tenant_id }/... where tenant_id is a UUID-like string
+    # Skip for paths that don't use tenant_id (CEO chat uses session_id instead)
+    _SKIP_TENANT_CHECK_PREFIXES = ("/api/ceo/chat/", "/api/onboarding/", "/api/notifications/")
+    skip_tenant = any(path.startswith(p) for p in _SKIP_TENANT_CHECK_PREFIXES)
+
     path_parts = path.strip("/").split("/")
     tenant_id = None
-    for i, part in enumerate(path_parts):
-        # tenant_id is typically the segment after a known prefix
-        if i >= 2 and len(part) > 8 and part not in ("run", "pause", "resume", "connect", "disconnect", "send", "sync"):
-            # Looks like a tenant_id (UUID or long string)
-            tenant_id = part
-            break
+    if not skip_tenant:
+        for i, part in enumerate(path_parts):
+            # tenant_id is typically the segment after a known prefix
+            if i >= 2 and len(part) > 8 and part not in ("run", "pause", "resume", "connect", "disconnect", "send", "sync", "history", "sessions", "counts"):
+                # Looks like a tenant_id (UUID or long string)
+                tenant_id = part
+                break
 
     if tenant_id:
         user_email = user.get("email", "")
