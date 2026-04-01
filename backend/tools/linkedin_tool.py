@@ -87,27 +87,32 @@ async def create_post(access_token: str, author_urn: str, text: str) -> dict:
         text: Post text content (up to 3000 chars)
     """
     async with httpx.AsyncClient() as client:
+        # Use the v2 UGC Post API which is more reliable
         resp = await client.post(
-            "https://api.linkedin.com/rest/posts",
+            "https://api.linkedin.com/v2/ugcPosts",
             json={
                 "author": author_urn,
-                "commentary": text[:3000],
-                "visibility": "PUBLIC",
-                "distribution": {
-                    "feedDistribution": "MAIN_FEED",
-                    "targetEntities": [],
-                    "thirdPartyDistributionChannels": [],
-                },
                 "lifecycleState": "PUBLISHED",
-                "isReshareDisabledByAuthor": False,
+                "specificContent": {
+                    "com.linkedin.ugc.ShareContent": {
+                        "shareCommentary": {
+                            "text": text[:3000],
+                        },
+                        "shareMediaCategory": "NONE",
+                    }
+                },
+                "visibility": {
+                    "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC",
+                },
             },
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
                 "X-Restli-Protocol-Version": "2.0.0",
-                "LinkedIn-Version": "202504",
             },
         )
+
+        logger.info("LinkedIn post response: %s %s", resp.status_code, resp.text[:500])
 
         if resp.status_code == 401:
             return {"error": "token_expired"}
@@ -118,6 +123,7 @@ async def create_post(access_token: str, author_urn: str, text: str) -> dict:
             logger.error("LinkedIn post failed: %s %s", resp.status_code, resp.text)
             return {"error": f"post_failed ({resp.status_code}): {resp.text[:300]}"}
 
-        # LinkedIn returns the post ID in the x-restli-id header
-        post_id = resp.headers.get("x-restli-id", "")
+        data = resp.json()
+        post_id = data.get("id", resp.headers.get("x-restli-id", ""))
+        logger.info("LinkedIn post created: %s", post_id)
         return {"post_id": post_id, "status": "published"}
