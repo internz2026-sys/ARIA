@@ -73,8 +73,10 @@ class IntegrationsConfig(BaseModel):
     twitter_access_token: Optional[str] = None
     twitter_refresh_token: Optional[str] = None
     twitter_username: Optional[str] = None
-    # LinkedIn
+    # LinkedIn (OAuth 2.0)
     linkedin_access_token: Optional[str] = None
+    linkedin_member_urn: Optional[str] = None
+    linkedin_name: Optional[str] = None
     # Facebook
     facebook_page_token: Optional[str] = None
     facebook_page_id: Optional[str] = None

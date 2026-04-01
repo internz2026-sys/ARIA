@@ -28,6 +28,8 @@ export default function SettingsPage() {
   const [whatsappForm, setWhatsappForm] = useState({ access_token: "", phone_number_id: "", business_account_id: "" });
   const [whatsappShowForm, setWhatsappShowForm] = useState(false);
   const [whatsappError, setWhatsappError] = useState("");
+  const [linkedinConnected, setLinkedinConnected] = useState<boolean | null>(null);
+  const [linkedinName, setLinkedinName] = useState("");
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -55,6 +57,10 @@ export default function SettingsPage() {
         .then(r => r.json())
         .then(data => setWhatsappConnected(!!data?.connected))
         .catch(() => setWhatsappConnected(false));
+      fetch(`${API_URL}/api/integrations/${tenantId}/linkedin-status`)
+        .then(r => r.json())
+        .then(data => { setLinkedinConnected(!!data?.connected); setLinkedinName(data?.name || ""); })
+        .catch(() => setLinkedinConnected(false));
     }
   }, []);
 
@@ -75,6 +81,12 @@ export default function SettingsPage() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
     window.open(`${API_URL}/api/auth/twitter/connect/${tenantId}`, "twitter_auth", "width=600,height=700");
+  }
+
+  function connectLinkedIn() {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId) return;
+    window.open(`${API_URL}/api/auth/linkedin/connect/${tenantId}`, "linkedin_auth", "width=600,height=700");
   }
 
   async function connectWhatsApp() {
@@ -253,6 +265,37 @@ export default function SettingsPage() {
                   Connect X
                 </button>
               ) : twitterConnected ? (
+                <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+              ) : null}
+            </div>
+          </div>
+
+          {/* LinkedIn */}
+          <div className="bg-white rounded-xl border border-[#E0DED8]">
+            <div className="px-5 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-[#EBF4FB] flex items-center justify-center">
+                  <svg className="w-5 h-5 text-[#0A66C2]" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-[#2C2C2A]">LinkedIn</p>
+                  <p className="text-xs text-[#5F5E5A] mt-0.5">
+                    {linkedinConnected === null ? "Checking..." : linkedinConnected
+                      ? `Connected — ${linkedinName}`
+                      : "Not connected — connect to publish posts on LinkedIn"}
+                  </p>
+                </div>
+              </div>
+              {linkedinConnected === false ? (
+                <button
+                  onClick={connectLinkedIn}
+                  className="text-xs font-medium px-4 py-2 rounded-lg bg-[#0A66C2] text-white hover:bg-[#084d93] transition-colors"
+                >
+                  Connect LinkedIn
+                </button>
+              ) : linkedinConnected ? (
                 <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
               ) : null}
             </div>

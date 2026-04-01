@@ -206,6 +206,109 @@ async def twitter_status(tenant_id: str):
     }
 
 
+# ─── LinkedIn OAuth 2.0 ───
+
+# In-memory state store for LinkedIn OAuth (state → tenant_id)
+_linkedin_pending_auth: dict[str, str] = {}
+
+
+@app.get("/api/auth/linkedin/connect/{tenant_id}")
+async def linkedin_connect(tenant_id: str, request: Request):
+    """Start LinkedIn OAuth 2.0 flow — redirects user to LinkedIn login."""
+    import secrets
+    from starlette.responses import RedirectResponse
+    from backend.tools import linkedin_tool
+
+    base_url = _get_backend_base_url(request)
+    redirect_uri = f"{base_url}/api/auth/linkedin/callback"
+    state = secrets.token_urlsafe(32)
+    _linkedin_pending_auth[state] = tenant_id
+    auth_url = linkedin_tool.get_auth_url(redirect_uri, state)
+    return RedirectResponse(auth_url)
+
+
+@app.get("/api/auth/linkedin/callback")
+async def linkedin_callback(code: str = "", state: str = "", error: str = "", request: Request = None):
+    """Handle LinkedIn OAuth callback — exchange code for tokens and store."""
+    from starlette.responses import HTMLResponse
+    if error:
+        return HTMLResponse(f"<script>alert('LinkedIn auth failed: {error}');window.close();</script>")
+
+    tenant_id = _linkedin_pending_auth.pop(state, None)
+    if not tenant_id:
+        return HTMLResponse("<script>alert('Invalid or expired OAuth state');window.close();</script>")
+
+    from backend.tools import linkedin_tool
+
+    base_url = _get_backend_base_url(request)
+    redirect_uri = f"{base_url}/api/auth/linkedin/callback"
+
+    try:
+        tokens = await linkedin_tool.exchange_code(code, redirect_uri)
+    except Exception as e:
+        return HTMLResponse(f"<script>alert('Auth failed: {e}');window.close();</script>")
+
+    access_token = tokens["access_token"]
+
+    # Get profile to store name and LinkedIn URN
+    profile = await linkedin_tool.get_profile(access_token)
+    if profile.get("error"):
+        err = profile.get("error", "unknown")
+        return HTMLResponse(f"<script>alert('Failed to get profile: {err}');window.close();</script>")
+
+    linkedin_name = profile.get("name", "")
+    linkedin_sub = profile.get("sub", "")  # This is the member ID
+
+    # Store tokens in tenant config
+    config = get_tenant_config(tenant_id)
+    config.integrations.linkedin_access_token = access_token
+    config.integrations.linkedin_member_urn = f"urn:li:person:{linkedin_sub}"
+    config.integrations.linkedin_name = linkedin_name
+    save_tenant_config(config)
+
+    logger.info("LinkedIn connected for tenant %s (%s)", tenant_id, linkedin_name)
+
+    return HTMLResponse("""<html><body><script>
+        if (window.opener) { window.opener.location.reload(); }
+        window.close();
+    </script><p>LinkedIn connected! You can close this window.</p></body></html>""")
+
+
+@app.get("/api/integrations/{tenant_id}/linkedin-status")
+async def linkedin_status(tenant_id: str):
+    """Check if LinkedIn is connected for a tenant."""
+    config = get_tenant_config(tenant_id)
+    connected = bool(config.integrations.linkedin_access_token)
+    return {
+        "connected": connected,
+        "name": config.integrations.linkedin_name or "",
+    }
+
+
+@app.post("/api/linkedin/{tenant_id}/post")
+async def publish_linkedin_post(tenant_id: str, body: dict):
+    """Publish a post to LinkedIn from the tenant's connected account."""
+    from backend.tools import linkedin_tool
+
+    config = get_tenant_config(tenant_id)
+    access_token = config.integrations.linkedin_access_token
+    author_urn = config.integrations.linkedin_member_urn
+
+    if not access_token or not author_urn:
+        raise HTTPException(status_code=400, detail="LinkedIn not connected. Go to Settings > Integrations.")
+
+    text = body.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="Post text is required")
+
+    result = await linkedin_tool.create_post(access_token, author_urn, text)
+
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
 @app.get("/api/integrations/{tenant_id}/whatsapp-status")
 async def whatsapp_status(tenant_id: str):
     """Check if WhatsApp is connected for a tenant."""
@@ -390,11 +493,20 @@ async def approve_and_publish_social(tenant_id: str, body: SocialApproveRequest)
                 except Exception:
                     result = {"error": "token_refresh_failed"}
             results.append({"platform": "twitter", **result})
+        elif platform == "linkedin":
+            from backend.tools import linkedin_tool
+            li_token = config.integrations.linkedin_access_token
+            li_urn = config.integrations.linkedin_member_urn
+            if not li_token or not li_urn:
+                results.append({"platform": "linkedin", "status": "skipped", "reason": "not_connected"})
+            else:
+                result = await linkedin_tool.create_post(li_token, li_urn, text[:3000])
+                results.append({"platform": "linkedin", **result})
         else:
             results.append({"platform": platform, "status": "skipped", "reason": "not_integrated_yet"})
 
     # Update inbox item status
-    any_success = any(r.get("tweet_id") for r in results)
+    any_success = any(r.get("tweet_id") or r.get("post_id") for r in results)
     new_status = "sent" if any_success else "failed"
     sb.table("inbox_items").update({
         "status": new_status,
