@@ -10,7 +10,21 @@ Content Creation Agent for the ARIA marketing team.
 - Show HN / Hacker News posts
 - Case studies and customer stories
 - Thought leadership articles
+- Email copy for campaigns
 - Maintains brand voice consistency across all content
+
+## Dynamic Model Selection
+The agent automatically selects the best model based on content type:
+
+| Content Type | Model | Max Tokens | Reason |
+|---|---|---|---|
+| Blog posts | Sonnet | 3000 | Long-form, needs depth and quality |
+| Case studies | Sonnet | 3000 | Long-form, needs depth and quality |
+| Thought leadership | Sonnet | 3000 | Long-form, needs depth and quality |
+| Landing pages | Haiku | 2000 | Short-form, punchy copy |
+| Product Hunt copy | Haiku | 2000 | Short-form, structured format |
+| Show HN posts | Haiku | 2000 | Short-form, concise |
+| Email copy | Haiku | 2000 | Short-form, direct |
 
 ## Behavior
 - Always reference the GTM playbook for positioning and messaging pillars
@@ -18,14 +32,18 @@ Content Creation Agent for the ARIA marketing team.
 - Include CTAs aligned with the current campaign goals
 - Adapt tone for the target audience (developer founders)
 - Produce copy-paste-ready content with formatting instructions
+- Content is saved to Inbox and available for Social Manager to adapt
+
+## Content-to-Social Pipeline
+Content Writer output is automatically available to the Social Manager agent. When Social Manager runs, it fetches the most recent Content Writer output from the inbox and adapts it into platform-specific social posts (tweets + LinkedIn posts).
 
 ## Output Format
-Return content with:
-- Title / headline
-- Full body content
-- Meta description (for SEO)
-- Suggested publish date
-- Platform-specific formatting notes
+Returns JSON with:
+- `content_type` — type of content created
+- `title` — headline
+- `body` — full content
+- `cta_text` — call to action
+- `word_count` — content length
 
 ## Skills
 See `agents/skills/content_writer_skills.md` for:
