@@ -199,13 +199,13 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
 # Mount Socket.IO
 socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
-# In-memory live status store: tenant_id → agent_id → status payload
+# In-memory live status store + persisted to Supabase
 _live_agent_status: dict[str, dict[str, dict]] = {}
 
 
 async def _emit_agent_status(tenant_id: str, agent_id: str, status: str,
                               current_task: str = "", **extra):
-    """Update in-memory status store AND emit Socket.IO event."""
+    """Update status in memory, persist to DB, and emit Socket.IO event."""
     now_ts = datetime.now(timezone.utc).isoformat()
     payload = {
         "agent_id": agent_id,
@@ -216,6 +216,20 @@ async def _emit_agent_status(tenant_id: str, agent_id: str, status: str,
     }
     _live_agent_status.setdefault(tenant_id, {})[agent_id] = payload
     await sio.emit("agent_status_change", payload, room=tenant_id)
+
+    # Persist to Supabase so status survives page navigation
+    try:
+        sb = _get_supabase()
+        sb.table("agent_status").upsert({
+            "tenant_id": tenant_id,
+            "agent_id": agent_id,
+            "status": status,
+            "current_task": current_task,
+            "action": extra.get("action", ""),
+            "updated_at": now_ts,
+        }, on_conflict="tenant_id,agent_id").execute()
+    except Exception:
+        pass  # Don't block the flow if DB write fails
 
 
 # ─── Socket.IO Events ───
@@ -1971,11 +1985,23 @@ async def resume_agent(tenant_id: str, agent_name: str):
 # ─── Virtual Office API ───
 @app.get("/api/office/agents/{tenant_id}")
 async def virtual_office_agents(tenant_id: str):
-    """Return all 18 virtual office agents with their current status."""
+    """Return all virtual office agents with their current persisted status."""
     now = datetime.now(timezone.utc).isoformat()
     live = _live_agent_status.get(tenant_id, {})
 
-    # Check tasks table for agents with in_progress tasks
+    # Load persisted status from Supabase (survives page navigation)
+    db_statuses: dict[str, dict] = {}
+    try:
+        sb = _get_supabase()
+        result = sb.table("agent_status").select("agent_id,status,current_task,updated_at").eq(
+            "tenant_id", tenant_id
+        ).execute()
+        for row in (result.data or []):
+            db_statuses[row["agent_id"]] = row
+    except Exception:
+        pass
+
+    # Also check tasks table for agents with in_progress tasks
     task_statuses: dict[str, str] = {}
     try:
         sb = _get_supabase()
@@ -1991,13 +2017,19 @@ async def virtual_office_agents(tenant_id: str):
     for a in VIRTUAL_OFFICE_AGENTS:
         aid = a["agent_id"]
         live_entry = live.get(aid, {})
+        db_entry = db_statuses.get(aid, {})
         live_status = live_entry.get("status")
+        db_status = db_entry.get("status")
 
-        # Priority: active live status (running/working) > task-based > idle
+        # Priority: in-memory live > persisted DB > task-based > idle
         if live_status and live_status not in ("idle",):
             status = live_status
             current_task = live_entry.get("current_task", "")
             last_updated = live_entry.get("last_updated", now)
+        elif db_status and db_status not in ("idle",):
+            status = db_status
+            current_task = db_entry.get("current_task", "")
+            last_updated = db_entry.get("updated_at", now)
         elif aid in task_statuses:
             status = "working"
             current_task = task_statuses[aid]
