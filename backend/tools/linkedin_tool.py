@@ -16,7 +16,7 @@ logger = logging.getLogger("aria.linkedin")
 CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET", "")
 
-SCOPES = "openid profile w_member_social"
+SCOPES = "openid profile email w_member_social"
 
 AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
