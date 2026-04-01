@@ -105,7 +105,7 @@ async def create_post(access_token: str, author_urn: str, text: str) -> dict:
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
                 "X-Restli-Protocol-Version": "2.0.0",
-                "LinkedIn-Version": "202401",
+                "LinkedIn-Version": "202504",
             },
         )
 
