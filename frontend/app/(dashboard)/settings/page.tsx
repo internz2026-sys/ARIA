@@ -234,7 +234,10 @@ export default function SettingsPage() {
                   {gmailReconnecting ? "Connecting..." : "Connect Gmail"}
                 </button>
               ) : gmailConnected ? (
-                <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+                  <button onClick={reconnectGmail} className="text-[10px] text-[#534AB7] hover:underline transition-colors">Reconnect</button>
+                </div>
               ) : null}
             </div>
           </div>
@@ -265,7 +268,10 @@ export default function SettingsPage() {
                   Connect X
                 </button>
               ) : twitterConnected ? (
-                <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+                  <button onClick={connectTwitter} className="text-[10px] text-[#534AB7] hover:underline transition-colors">Reconnect</button>
+                </div>
               ) : null}
             </div>
           </div>
@@ -296,7 +302,10 @@ export default function SettingsPage() {
                   Connect LinkedIn
                 </button>
               ) : linkedinConnected ? (
-                <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+                  <button onClick={connectLinkedIn} className="text-[10px] text-[#534AB7] hover:underline transition-colors">Reconnect</button>
+                </div>
               ) : null}
             </div>
           </div>
@@ -329,6 +338,7 @@ export default function SettingsPage() {
               ) : whatsappConnected ? (
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+                  <button onClick={() => { setWhatsappShowForm(true); setWhatsappConnected(false); }} className="text-[10px] text-[#534AB7] hover:underline transition-colors">Reconnect</button>
                   <button onClick={disconnectWhatsApp} className="text-[10px] text-[#5F5E5A] hover:text-[#D85A30] transition-colors">Disconnect</button>
                 </div>
               ) : null}
