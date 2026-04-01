@@ -31,7 +31,8 @@ export default function FloatingChat() {
       if (last?.role === "assistant" && tts.enabled) tts.speak(last.content);
     }
     prevMsgCount.current = messages.length;
-  }, [messages, open, tts]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length, open]);
 
   const { pos, btnRef, handleMouseDown, handleClick } = useDraggable(
     typeof window !== "undefined" ? window.innerWidth - 200 : 1000,
