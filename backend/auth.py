@@ -14,8 +14,9 @@ from jose import JWTError, jwt
 
 logger = logging.getLogger("aria.auth")
 
-# Supabase JWT secret (HS256 legacy) or JWKS URL (ES256 new)
+# Supabase JWT keys — supports both HS256 (legacy) and ES256 (ECC)
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
+SUPABASE_JWT_ECC_PUBLIC_KEY = os.getenv("SUPABASE_JWT_ECC_PUBLIC_KEY", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 
 # Cache for JWKS public keys
@@ -74,24 +75,37 @@ def verify_jwt(token: str) -> dict:
 
     try:
         if alg == "ES256":
-            # Use JWKS public key for ES256
-            jwks = _get_jwks()
-            if not jwks:
-                raise HTTPException(status_code=500, detail="JWKS not available for ES256 verification")
+            ecc_key = os.getenv("SUPABASE_JWT_ECC_PUBLIC_KEY", "")
 
-            # Find the matching key by kid
-            kid = header.get("kid", "")
-            key = None
-            for k in jwks.get("keys", []):
-                if k.get("kid") == kid:
-                    key = k
-                    break
+            if ecc_key:
+                # Use ECC public key from env var (fastest — no network call)
+                import json as _json
+                try:
+                    key_data = _json.loads(ecc_key) if ecc_key.startswith("{") else {"kty": "EC", "crv": "P-256", "x": "", "y": ""}
+                    from jose import jwk
+                    public_key = jwk.construct(key_data, algorithm="ES256")
+                except Exception:
+                    # Fall through to JWKS
+                    ecc_key = ""
 
-            if not key:
-                raise HTTPException(status_code=401, detail="JWT signing key not found")
+            if not ecc_key:
+                # Fallback: fetch from Supabase JWKS endpoint
+                jwks = _get_jwks()
+                if not jwks:
+                    raise HTTPException(status_code=500, detail="JWKS not available for ES256 verification")
 
-            from jose import jwk
-            public_key = jwk.construct(key, algorithm="ES256")
+                kid = header.get("kid", "")
+                key_data = None
+                for k in jwks.get("keys", []):
+                    if k.get("kid") == kid:
+                        key_data = k
+                        break
+
+                if not key_data:
+                    raise HTTPException(status_code=401, detail="JWT signing key not found")
+
+                from jose import jwk
+                public_key = jwk.construct(key_data, algorithm="ES256")
 
             payload = jwt.decode(
                 token,
