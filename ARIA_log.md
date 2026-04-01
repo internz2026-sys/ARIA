@@ -819,3 +819,144 @@ CREATE TABLE inbox_items (
 - `crm_companies`: name, domain, industry, size
 - `crm_deals`: title, value, stage, contact_id, company_id, expected_close
 - `crm_activities`: type, description, metadata, contact_id, deal_id
+
+---
+
+## 2026-04-01 — WhatsApp Cloud API Integration
+
+### Changes
+
+**Backend:**
+- `backend/tools/whatsapp_tool.py` — New WhatsApp Cloud API tool: `send_message()`, `send_template()`, `get_business_profile()` via Meta's Graph API v21.0
+- `backend/server.py` — Added 6 WhatsApp endpoints:
+  - `GET /api/whatsapp/webhook` — Meta webhook verification (hub.challenge)
+  - `POST /api/whatsapp/webhook` — Receives incoming WhatsApp messages, stores in inbox
+  - `POST /api/whatsapp/{tenant_id}/send` — Send message from tenant's WhatsApp
+  - `POST /api/whatsapp/{tenant_id}/connect` — Save & verify credentials
+  - `POST /api/whatsapp/{tenant_id}/disconnect` — Remove credentials
+  - `GET /api/integrations/{tenant_id}/whatsapp-status` — Connection status
+- `backend/config/tenant_schema.py` — Added `whatsapp_access_token`, `whatsapp_phone_number_id`, `whatsapp_business_account_id` to IntegrationsConfig
+
+**Frontend:**
+- `frontend/app/(dashboard)/settings/page.tsx` — WhatsApp connect card with credentials form (Phone Number ID, Business Account ID, Access Token), verify & save, disconnect
+- `frontend/app/(dashboard)/inbox/page.tsx` — WhatsApp message rendering with green chat bubble + reply box
+- `frontend/lib/api.ts` — `whatsapp.connect()`, `whatsapp.disconnect()`, `whatsapp.send()`
+
+---
+
+## 2026-04-01 — LinkedIn OAuth Integration + Publishing
+
+### Changes
+
+**Backend:**
+- `backend/tools/linkedin_tool.py` — LinkedIn API tool: OAuth 2.0 flow, `get_profile()`, `get_admin_organizations()`, `create_post()` via v2 UGC Posts API
+- `backend/server.py` — Added LinkedIn endpoints:
+  - `GET /api/auth/linkedin/connect/{tenant_id}` — Start OAuth flow
+  - `GET /api/auth/linkedin/callback` — Handle OAuth callback
+  - `GET /api/integrations/{tenant_id}/linkedin-status` — Connection status with posting target
+  - `GET /api/linkedin/{tenant_id}/organizations` — List admin company pages
+  - `POST /api/linkedin/{tenant_id}/set-target` — Switch between personal/company posting
+  - `POST /api/linkedin/{tenant_id}/post` — Publish post
+- `backend/config/tenant_schema.py` — Added `linkedin_member_urn`, `linkedin_name`, `linkedin_org_urn`, `linkedin_org_name`
+
+**Frontend:**
+- Settings page — Connect LinkedIn button (blue, OAuth popup), company page selector
+- Inbox page — "Publish to LinkedIn" button alongside "Publish to X"
+- Social Manager agent updated to generate 2 posts per run (tweet + LinkedIn post)
+
+---
+
+## 2026-04-01 — Reconnect Buttons for All Integrations
+
+### Changes
+- Gmail, Twitter/X, LinkedIn, WhatsApp all show "Reconnect" link when connected in Settings
+- Allows re-authentication without disconnecting first
+
+---
+
+## 2026-04-01 — Agent-to-Inbox Race Condition Fix
+
+### Problem
+When CEO chat delegated a task, the task appeared on the board but the inbox item didn't exist yet because:
+1. 4-second meeting animation delay before agent started
+2. Agent took 5-15 seconds to call Claude API
+3. Frontend navigated to inbox and found nothing
+
+### Changes
+- Create **placeholder inbox item** immediately with status "processing" and text "Agent is working on..."
+- Reduced meeting delay from 4s to 1s
+- Placeholder updated in-place with real content when agent finishes
+- Added "processing" / "In progress" status tab and purple badge to Inbox
+- `inbox_item_updated` socket event triggers auto-refresh
+
+---
+
+## 2026-04-01 — Security Implementation
+
+### Changes
+
+**Authentication:**
+- `backend/auth.py` — New auth module: Supabase JWT verification, tenant ownership checks, rate limiting
+- Middleware verifies Bearer token on all `/api/` routes
+- Tenant ownership check: authenticated user must own the tenant_id in the URL
+- Dev mode: auth bypassed when `SUPABASE_JWT_SECRET` not set
+
+**CORS Lockdown:**
+- Restricted from `allow_origins=["*"]` to specific domains (localhost:3000, Vercel URL)
+- Configurable via `CORS_ALLOWED_ORIGINS` env var
+- Socket.IO CORS also restricted
+
+**Rate Limiting:**
+- 120 requests/minute per IP on all API endpoints
+- In-memory sliding window implementation
+
+**XSS Fix:**
+- All OAuth callback error pages now use HTML-escaped `_safe_oauth_error()` helper
+- Replaced 5 vulnerable `alert()` injections with safe HTML rendering
+
+**Frontend Auth Headers:**
+- `frontend/lib/api.ts` — `fetchAPI()` now includes `Authorization: Bearer` from Supabase session
+- Settings, Inbox, Dashboard layout all pass auth headers on direct fetch calls
+- CEO chat hook passes auth headers
+
+**Public Paths (exempt from auth):**
+- `/health`, `/api/onboarding/*`, `/api/auth/*` (OAuth callbacks), `/api/whatsapp/webhook`, `/api/webhooks/*`
+
+---
+
+## 2026-04-01 — CEO Agent CRUD Powers with Confirmation Rules
+
+### Changes
+
+**Backend:**
+- `backend/ceo_actions.py` — Action registry with allowlisted business operations:
+  - CRM CRUD (contacts, companies, deals)
+  - Inbox management (update status, delete)
+  - Social publish, email send
+  - Task status updates
+- Forbidden scope enforcement: CEO cannot modify code, prompts, backend, schema, infra
+- `is_forbidden_request()` checks against 30+ forbidden patterns
+- Confirmation matrix: DELETE/UPDATE always require confirmation, CREATE is direct, PUBLISH/SEND require confirmation
+- Audit logging: all CEO actions logged to `agent_logs` with params, confirmation status, timestamp
+- `POST /api/ceo/{tenant_id}/action` — Execute business actions with confirmation enforcement
+
+**Frontend:**
+- `frontend/components/shared/ConfirmationDialog.tsx` — Modal with destructive (red) and safe (purple) variants
+- `frontend/lib/use-ceo-chat.ts` — Added `pendingConfirmation`, `confirmAction()`, `cancelAction()` to chat hook
+- `frontend/components/shared/FloatingChat.tsx` — Confirmation dialog wired into CEO chat
+
+**Agent Docs Updated:**
+- `docs/agents/ceo.md` — Added CRUD powers table, confirmation matrix, forbidden scope constraints, example allowed/refused requests
+- `docs/agents/social_manager.md` — Added Twitter/LinkedIn publishing, content adaptation pipeline, inbox approval flow
+- `docs/agents/email_marketer.md` — Fixed "does NOT send" to document Gmail sending, draft approval flow, recipient extraction
+- `docs/agents/content_writer.md` — Added dynamic model selection (Sonnet/Haiku), content-to-social pipeline
+
+---
+
+## 2026-04-01 — Privacy Policy & Terms of Service
+
+### Changes
+- `frontend/app/(marketing)/privacy/page.tsx` — Full privacy policy covering data collection, connected services, security measures, data retention, user rights, third-party links
+- `frontend/app/(marketing)/terms/page.tsx` — Terms of service covering acceptable use, AI content ownership, approval system, subscriptions, liability
+- Both pages redesigned with dark hero header, card-based sections with lucide icons
+- URLs: `/privacy` and `/terms` — used for Google OAuth verification and X Developer Portal
