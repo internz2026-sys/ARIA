@@ -2,15 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-async function authFetch(url: string, options?: RequestInit) {
-  const { data: { session } } = await supabase.auth.getSession();
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...options?.headers as Record<string, string> };
-  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
-  return fetch(url, { ...options, headers });
-}
+import { API_URL, authFetch } from "@/lib/api";
 
 const settingsTabs = ["Profile", "Integrations", "Notifications", "Billing"];
 

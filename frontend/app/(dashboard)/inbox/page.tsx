@@ -1,17 +1,10 @@
 "use client";
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import { API_URL, inbox } from "@/lib/api";
-import { supabase } from "@/lib/supabase";
+import { API_URL, authFetch, inbox } from "@/lib/api";
 import { AGENT_NAMES, AGENT_COLORS } from "@/lib/agent-config";
 import EmailEditor from "@/components/shared/EmailEditor";
-
-async function authFetch(url: string, options?: RequestInit) {
-  const { data: { session } } = await supabase.auth.getSession();
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...options?.headers as Record<string, string> };
-  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
-  return fetch(url, { ...options, headers });
-}
+import { formatDateAgo } from "@/lib/utils";
 
 interface EmailDraft {
   to: string;
@@ -73,16 +66,7 @@ const STATUS_BADGES: Record<string, { label: string; bg: string; text: string; b
   cancelled: { label: "Cancelled", bg: "bg-gray-50", text: "text-gray-500", border: "border-gray-200" },
 };
 
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
-}
+const timeAgo = formatDateAgo;
 
 function stripHtml(html: string): string {
   return html

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { emailThreads, inbox } from "@/lib/api";
+import { formatDateAgo } from "@/lib/utils";
 
 interface EmailMessage {
   id: string;
@@ -36,17 +37,7 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; border: string; 
   closed: { bg: "bg-gray-50", text: "text-gray-500", border: "border-gray-200", label: "Closed" },
 };
 
-function timeAgo(dateStr: string): string {
-  if (!dateStr) return "";
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
-}
+const timeAgo = formatDateAgo;
 
 function extractName(emailStr: string): string {
   const match = emailStr.match(/^(.+?)\s*</);

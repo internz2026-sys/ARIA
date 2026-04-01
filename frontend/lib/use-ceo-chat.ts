@@ -6,8 +6,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
-import { API_URL } from "./api";
-import { supabase } from "./supabase";
+import { API_URL, getAuthHeaders } from "./api";
 
 // ---- Types ----------------------------------------------------------------
 
@@ -70,14 +69,6 @@ function getOrCreateSessionId(): string {
 // ---- Context --------------------------------------------------------------
 
 const CeoChatContext = createContext<CeoChatState | null>(null);
-
-async function getAuthHeaders(): Promise<Record<string, string>> {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.access_token) return { Authorization: `Bearer ${session.access_token}` };
-  } catch {}
-  return {};
-}
 
 export function CeoChatProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);

@@ -2,7 +2,7 @@ import { supabase } from "@/lib/supabase";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-async function getAuthHeaders(): Promise<Record<string, string>> {
+export async function getAuthHeaders(): Promise<Record<string, string>> {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (session?.access_token) {
@@ -10,6 +10,13 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
     }
   } catch {}
   return {};
+}
+
+/** Authenticated fetch wrapper for direct URL calls (use fetchAPI for /api endpoints) */
+export async function authFetch(url: string, options?: RequestInit): Promise<Response> {
+  const authHeaders = await getAuthHeaders();
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...authHeaders, ...options?.headers as Record<string, string> };
+  return fetch(url, { ...options, headers });
 }
 
 async function fetchAPI(endpoint: string, options?: RequestInit) {

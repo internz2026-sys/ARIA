@@ -46,6 +46,14 @@ from backend.orchestrator import (
 )
 from backend.paperclip_sync import initialize as paperclip_init, is_connected as paperclip_connected
 
+# ── CORS — restrict to known frontend origins ────────────────────────────
+_allowed_origins = [
+    o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
+] or [
+    "http://localhost:3000",
+    "https://aria-alpha-weld.vercel.app",
+]
+
 # Socket.IO for real-time events
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=_allowed_origins)
 
@@ -80,14 +88,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
-
-# ── CORS — restrict to known frontend origins ────────────────────────────
-_allowed_origins = [
-    o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
-] or [
-    "http://localhost:3000",
-    "https://aria-alpha-weld.vercel.app",
-]
 
 app.add_middleware(
     CORSMiddleware,

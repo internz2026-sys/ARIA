@@ -304,9 +304,8 @@ def _build_confirmation(action_name: str, action_def: dict, params: dict) -> dic
 
 
 async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, params: dict) -> dict:
-    """Route to the appropriate service handler."""
-    from backend.config.loader import _get_supabase
-    sb = _get_supabase()
+    """Route to the appropriate shared service handler."""
+    from backend.services import crm as crm_service, inbox as inbox_service
 
     entity = action_def["entity"]
     operation = action_def["operation"]
@@ -314,113 +313,49 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
     # ── CRM Contacts ──
     if entity == "crm_contact":
         if operation == "create":
-            row = {
-                "tenant_id": tenant_id,
-                "name": params["name"],
-                "email": params.get("email", ""),
-                "phone": params.get("phone", ""),
-                "company_id": params.get("company_id"),
-                "source": params.get("source", "ceo_chat"),
-                "status": params.get("status", "lead"),
-                "tags": params.get("tags", []),
-                "notes": params.get("notes", ""),
-            }
-            result = sb.table("crm_contacts").insert(row).execute()
-            return {"created": result.data[0] if result.data else row}
-
+            data = {k: params.get(k) for k in ["name", "email", "phone", "company_id", "tags", "notes"] if params.get(k) is not None}
+            data.setdefault("source", "ceo_chat")
+            data.setdefault("status", params.get("status", "lead"))
+            return crm_service.create_contact(tenant_id, data)
         elif operation == "read":
-            q = sb.table("crm_contacts").select("*").eq("tenant_id", tenant_id)
-            if params.get("search"):
-                q = q.ilike("name", f"%{params['search']}%")
-            if params.get("status"):
-                q = q.eq("status", params["status"])
-            result = q.order("created_at", desc=True).limit(20).execute()
-            return {"contacts": result.data or []}
-
+            return crm_service.list_contacts(tenant_id, search=params.get("search", ""), status=params.get("status", ""))
         elif operation == "update":
             updates = {k: v for k, v in params.items() if k != "id" and v is not None}
-            updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-            sb.table("crm_contacts").update(updates).eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
-            return {"updated": params["id"], "changes": updates}
-
+            return crm_service.update_contact(tenant_id, params["id"], updates)
         elif operation == "delete":
-            sb.table("crm_contacts").delete().eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
-            return {"deleted": params["id"]}
+            return crm_service.delete_contact(tenant_id, params["id"])
 
     # ── CRM Companies ──
     elif entity == "crm_company":
         if operation == "create":
-            row = {
-                "tenant_id": tenant_id,
-                "name": params["name"],
-                "domain": params.get("domain", ""),
-                "industry": params.get("industry", ""),
-                "size": params.get("size", ""),
-                "notes": params.get("notes", ""),
-            }
-            result = sb.table("crm_companies").insert(row).execute()
-            return {"created": result.data[0] if result.data else row}
-
+            data = {k: params.get(k) for k in ["name", "domain", "industry", "size", "notes"] if params.get(k) is not None}
+            return crm_service.create_company(tenant_id, data)
         elif operation == "update":
             updates = {k: v for k, v in params.items() if k != "id" and v is not None}
-            updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-            sb.table("crm_companies").update(updates).eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
-            return {"updated": params["id"], "changes": updates}
-
+            return crm_service.update_company(tenant_id, params["id"], updates)
         elif operation == "delete":
-            sb.table("crm_companies").delete().eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
-            return {"deleted": params["id"]}
+            return crm_service.delete_company(tenant_id, params["id"])
 
     # ── CRM Deals ──
     elif entity == "crm_deal":
         if operation == "create":
-            row = {
-                "tenant_id": tenant_id,
-                "title": params["title"],
-                "value": params.get("value", 0),
-                "stage": params.get("stage", "lead"),
-                "contact_id": params.get("contact_id"),
-                "company_id": params.get("company_id"),
-                "notes": params.get("notes", ""),
-                "expected_close": params.get("expected_close"),
-            }
-            result = sb.table("crm_deals").insert(row).execute()
-            return {"created": result.data[0] if result.data else row}
-
+            data = {k: params.get(k) for k in ["title", "value", "stage", "contact_id", "company_id", "notes", "expected_close"] if params.get(k) is not None}
+            return crm_service.create_deal(tenant_id, data)
         elif operation == "update":
             updates = {k: v for k, v in params.items() if k != "id" and v is not None}
-            updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-            sb.table("crm_deals").update(updates).eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
-            return {"updated": params["id"], "changes": updates}
-
+            return crm_service.update_deal(tenant_id, params["id"], updates)
         elif operation == "delete":
-            sb.table("crm_deals").delete().eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
-            return {"deleted": params["id"]}
+            return crm_service.delete_deal(tenant_id, params["id"])
 
     # ── Inbox ──
     elif entity == "inbox_item":
         if operation == "update":
-            sb.table("inbox_items").update({
-                "status": params["status"],
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
-            return {"updated": params["id"], "new_status": params["status"]}
-
+            return inbox_service.update_status(tenant_id, params["id"], params["status"])
         elif operation == "delete":
-            sb.table("inbox_items").delete().eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
-            return {"deleted": params["id"]}
+            return inbox_service.delete_item(tenant_id, params["id"])
 
     # ── Social Publish ──
     elif entity == "social_post" and operation == "publish":
-        # Reuse the existing approve-publish endpoint logic
-        from backend.tools import twitter_tool
-        item_result = sb.table("inbox_items").select("*").eq("id", params["inbox_item_id"]).single().execute()
-        item = item_result.data
-        if not item:
-            raise ValueError("Inbox item not found")
-        if item.get("tenant_id") != tenant_id:
-            raise ValueError("Tenant mismatch")
-        # Delegate to existing publish logic
         return {"published": params["inbox_item_id"], "status": "delegated_to_publish_flow"}
 
     # ── Email Send ──
