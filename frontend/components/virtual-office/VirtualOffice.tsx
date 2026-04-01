@@ -44,6 +44,11 @@ const STROLL_SPEED = 0.36; // pixels per frame — idle wander around office (2x
 const THOUGHT_ICONS = ["?", "!", "~", "*", "#"];
 const THOUGHT_LABELS = ["hmm", "idea", "coffee", "note", "plan"];
 
+// Module-level position storage — survives component unmount/remount
+// so agents don't reset when navigating away and back
+let _persistedPositions: Record<string, AnimPos> = {};
+let _persistedPrevStatus: Record<string, string> = {};
+
 export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -52,10 +57,18 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
   const scaleRef = useRef(1);
   const agentList = agents.length > 0 ? agents : DEFAULT_AGENTS;
 
-  // Animated positions — persistent across frames
-  const posRef = useRef<Record<string, AnimPos>>({});
+  // Animated positions — use module-level storage for persistence
+  const posRef = useRef<Record<string, AnimPos>>(_persistedPositions);
   // Track previous status per agent to detect changes
-  const prevStatusRef = useRef<Record<string, string>>({});
+  const prevStatusRef = useRef<Record<string, string>>(_persistedPrevStatus);
+
+  // Sync ref back to module-level on every frame (auto-persists)
+  useEffect(() => {
+    return () => {
+      _persistedPositions = posRef.current;
+      _persistedPrevStatus = prevStatusRef.current;
+    };
+  }, []);
 
   // Helper: compute target position for a given status
   const getTarget = useCallback((agent: OfficeAgent, idx: number) => {
