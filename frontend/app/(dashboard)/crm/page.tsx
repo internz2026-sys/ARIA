@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { crm } from "@/lib/api";
 import {
   CrmContact, CrmCompany, CrmDeal,
@@ -52,6 +52,7 @@ export default function CRMPage() {
   // ─── Contacts state ───
   const [contacts, setContacts] = useState<CrmContact[]>([]);
   const [contactSearch, setContactSearch] = useState("");
+  const [debouncedContactSearch, setDebouncedContactSearch] = useState("");
   const [contactFilter, setContactFilter] = useState("");
   const [contactLoading, setContactLoading] = useState(true);
   const [showAddContact, setShowAddContact] = useState(false);
@@ -59,6 +60,7 @@ export default function CRMPage() {
   // ─── Companies state ───
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
   const [companySearch, setCompanySearch] = useState("");
+  const [debouncedCompanySearch, setDebouncedCompanySearch] = useState("");
   const [companyLoading, setCompanyLoading] = useState(true);
   const [showAddCompany, setShowAddCompany] = useState(false);
 
@@ -68,22 +70,32 @@ export default function CRMPage() {
   const [showAddDeal, setShowAddDeal] = useState(false);
   const [pipelineSummary, setPipelineSummary] = useState<Record<string, { count: number; value: number }>>({});
 
+  // ─── Debounce search inputs (300ms) ───
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedContactSearch(contactSearch), 300);
+    return () => clearTimeout(t);
+  }, [contactSearch]);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedCompanySearch(companySearch), 300);
+    return () => clearTimeout(t);
+  }, [companySearch]);
+
   // ─── Fetchers ───
   const fetchContacts = useCallback(async () => {
     if (!tenantId) return;
     try {
-      const data = await crm.listContacts(tenantId, contactSearch, contactFilter);
+      const data = await crm.listContacts(tenantId, debouncedContactSearch, contactFilter);
       setContacts(data.contacts || []);
     } catch {} finally { setContactLoading(false); }
-  }, [tenantId, contactSearch, contactFilter]);
+  }, [tenantId, debouncedContactSearch, contactFilter]);
 
   const fetchCompanies = useCallback(async () => {
     if (!tenantId) return;
     try {
-      const data = await crm.listCompanies(tenantId, companySearch);
+      const data = await crm.listCompanies(tenantId, debouncedCompanySearch);
       setCompanies(data.companies || []);
     } catch {} finally { setCompanyLoading(false); }
-  }, [tenantId, companySearch]);
+  }, [tenantId, debouncedCompanySearch]);
 
   const fetchDeals = useCallback(async () => {
     if (!tenantId) return;

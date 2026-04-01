@@ -60,21 +60,21 @@ class BaseAgent:
         if config.agent_brief:
             return config.agent_brief
 
-        # Fallback: reconstruct from individual fields
+        # Fallback: reconstruct from individual fields (skip empty ones to save tokens)
         all_lines = {
-            "business": f"Business: {config.business_name}",
-            "product": f"Product: {config.product.name} — {config.product.description}",
-            "value_props": f"Value props: {', '.join(config.product.value_props)}",
-            "competitors": f"Competitors: {', '.join(config.product.competitors)}",
-            "differentiators": f"Differentiators: {', '.join(config.product.differentiators)}",
-            "audience": f"Target audience: {', '.join(config.icp.target_titles)}",
-            "pain_points": f"Pain points: {', '.join(config.icp.pain_points)}",
-            "hangouts": f"Where they hang out: {', '.join(config.icp.online_hangouts)}",
-            "voice": f"Brand voice: {config.brand_voice.tone}",
+            "business": (f"Business: {config.business_name}", bool(config.business_name)),
+            "product": (f"Product: {config.product.name} — {config.product.description}", bool(config.product.name)),
+            "value_props": (f"Value props: {', '.join(config.product.value_props)}", bool(config.product.value_props)),
+            "competitors": (f"Competitors: {', '.join(config.product.competitors)}", bool(config.product.competitors)),
+            "differentiators": (f"Differentiators: {', '.join(config.product.differentiators)}", bool(config.product.differentiators)),
+            "audience": (f"Target audience: {', '.join(config.icp.target_titles)}", bool(config.icp.target_titles)),
+            "pain_points": (f"Pain points: {', '.join(config.icp.pain_points)}", bool(config.icp.pain_points)),
+            "hangouts": (f"Where they hang out: {', '.join(config.icp.online_hangouts)}", bool(config.icp.online_hangouts)),
+            "voice": (f"Brand voice: {config.brand_voice.tone}", bool(config.brand_voice.tone)),
         }
         if fields is None:
-            return "\n".join(all_lines.values())
-        return "\n".join(v for k, v in all_lines.items() if k in fields)
+            return "\n".join(text for text, has_data in all_lines.values() if has_data)
+        return "\n".join(text for k, (text, has_data) in all_lines.items() if k in fields and has_data)
 
     @staticmethod
     def gtm_context(config) -> str:

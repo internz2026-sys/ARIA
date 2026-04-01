@@ -72,21 +72,23 @@ export default function ConversationsPage() {
 
   useEffect(() => { fetchThreads(); }, [fetchThreads]);
 
-  // Real-time updates via Socket.IO + auto-poll every 30s
+  // Real-time updates via Socket.IO with fallback polling
   const selectedRef = useRef<EmailThread | null>(null);
   selectedRef.current = selected;
+  const socketConnectedRef = useRef(false);
 
   useEffect(() => {
     if (!tenantId) return;
     let socket: any = null;
+    let cleanup: (() => void) | undefined;
 
     try {
       const { getSocket } = require("@/lib/socket");
       socket = getSocket();
+      socketConnectedRef.current = true;
 
       const handleReply = () => {
         fetchThreads();
-        // Refresh current thread messages if one is selected
         if (selectedRef.current) {
           emailThreads.get(tenantId, selectedRef.current.id).then(data => {
             setMessages(data.messages || []);
@@ -98,19 +100,21 @@ export default function ConversationsPage() {
       socket.on("email_thread_updated", handleReply);
       socket.on("inbox_item_updated", handleReply);
 
-      return () => {
+      cleanup = () => {
         socket.off("email_reply_received", handleReply);
         socket.off("email_thread_updated", handleReply);
         socket.off("inbox_item_updated", handleReply);
       };
     } catch {
-      // socket lib may not be available
+      socketConnectedRef.current = false;
     }
+
+    return () => { if (cleanup) cleanup(); };
   }, [tenantId, fetchThreads]);
 
-  // Auto-poll for new replies every 30 seconds
+  // Fallback polling only when socket is unavailable (60s instead of 30s)
   useEffect(() => {
-    if (!tenantId) return;
+    if (!tenantId || socketConnectedRef.current) return;
     const interval = setInterval(async () => {
       try {
         await emailThreads.sync(tenantId);
@@ -120,7 +124,7 @@ export default function ConversationsPage() {
           setMessages(data.messages || []);
         }
       } catch {}
-    }, 30000);
+    }, 60000);
     return () => clearInterval(interval);
   }, [tenantId, fetchThreads]);
 
