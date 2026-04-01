@@ -2106,6 +2106,25 @@ async def dashboard_inbox(tenant_id: str):
         return {"tenant_id": tenant_id, "items": []}
 
 
+@app.get("/api/inbox/{tenant_id}/counts")
+async def inbox_status_counts(tenant_id: str):
+    """Return counts per status for inbox tabs."""
+    try:
+        from backend.config.loader import _get_supabase
+        sb = _get_supabase()
+        result = sb.table("inbox_items").select("status").eq("tenant_id", tenant_id).execute()
+        counts: dict[str, int] = {}
+        total = 0
+        for row in (result.data or []):
+            s = row.get("status", "unknown")
+            counts[s] = counts.get(s, 0) + 1
+            total += 1
+        counts["all"] = total
+        return {"counts": counts}
+    except Exception:
+        return {"counts": {}}
+
+
 @app.get("/api/inbox/{tenant_id}")
 async def list_inbox(tenant_id: str, status: str = "", page: int = 1, page_size: int = 20):
     """List inbox items for a tenant with pagination."""

@@ -205,6 +205,27 @@ export default function ConversationsPage() {
     }
   };
 
+  const handleCancelDraft = async (msg: EmailMessage) => {
+    if (!tenantId) return;
+    try {
+      const inboxData = await inbox.list(tenantId, "draft_pending_approval");
+      const items = inboxData.items || [];
+      const match = items.find((item: any) =>
+        item.email_draft?.reply_to_message_id === msg.id
+      );
+      if (match) {
+        await inbox.cancelDraft(tenantId, match.id);
+        const data = await emailThreads.get(tenantId, selected!.id);
+        setMessages(data.messages || []);
+        await fetchThreads();
+      } else {
+        alert("Could not find the draft inbox item.");
+      }
+    } catch (err: any) {
+      alert(err?.message || "Failed to cancel draft.");
+    }
+  };
+
   const filterTabs = [
     { key: "", label: "All" },
     { key: "needs_review", label: "New replies" },
@@ -425,7 +446,13 @@ export default function ConversationsPage() {
                                 </svg>
                                 Approve & Send
                               </button>
-                              <span className="text-xs text-[#9E9C95]">This draft will be sent to {msg.recipients}</span>
+                              <button
+                                onClick={() => handleCancelDraft(msg)}
+                                className="px-3 py-2 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
+                              >
+                                Cancel draft
+                              </button>
+                              <span className="text-xs text-[#9E9C95] ml-auto">This draft will be sent to {msg.recipients}</span>
                             </div>
                           )}
                         </div>

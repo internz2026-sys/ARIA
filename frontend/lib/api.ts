@@ -51,6 +51,7 @@ export const dashboard = {
 };
 
 export const inbox = {
+  counts: (tenantId: string) => fetchAPI(`/api/inbox/${tenantId}/counts`),
   list: (tenantId: string, status?: string, page: number = 1, pageSize: number = 20) => {
     const params = new URLSearchParams();
     if (status) params.set("status", status);

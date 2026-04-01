@@ -119,10 +119,19 @@ export default function InboxPage() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
   const PAGE_SIZE = 20;
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
+
+  const fetchCounts = useCallback(async () => {
+    if (!tenantId) return;
+    try {
+      const data = await inbox.counts(tenantId);
+      setStatusCounts(data.counts || {});
+    } catch {}
+  }, [tenantId]);
 
   const fetchItems = useCallback(async () => {
     if (!tenantId) return;
@@ -131,12 +140,13 @@ export default function InboxPage() {
       setItems(data.items || []);
       setTotalPages(data.total_pages || 1);
       setTotalItems(data.total || 0);
+      fetchCounts();
     } catch {
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [tenantId, activeTab, page]);
+  }, [tenantId, activeTab, page, fetchCounts]);
 
   useEffect(() => {
     fetchItems();
@@ -745,11 +755,17 @@ export default function InboxPage() {
             }`}
           >
             {tab.label}
-            {activeTab === tab.key && totalItems > 0 && (
-              <span className="text-xs px-1.5 py-0.5 rounded-full bg-[#534AB7] text-white">
-                {totalItems}
-              </span>
-            )}
+            {(() => {
+              const count = tab.key === "" ? (statusCounts.all || 0) : (statusCounts[tab.key] || 0);
+              if (count === 0) return null;
+              return (
+                <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                  activeTab === tab.key ? "bg-[#534AB7] text-white" : "bg-[#F0F0EE] text-[#5F5E5A]"
+                }`}>
+                  {count}
+                </span>
+              );
+            })()}
           </button>
         ))}
       </div>
