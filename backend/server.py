@@ -1729,41 +1729,50 @@ def _clean_notification_body(body: str) -> str:
     """Strip JSON/code artifacts from notification body to show clean text."""
     if not body:
         return ""
+    import re
     text = body.strip()
-    # Remove markdown code fences
-    if text.startswith("```"):
-        text = "\n".join(text.split("\n")[1:])
-    if text.endswith("```"):
-        text = "\n".join(text.split("\n")[:-1])
-    # If it looks like JSON, try to extract meaningful text from it
-    stripped = text.lstrip()
-    if stripped.startswith("{") or stripped.startswith("["):
+
+    # Remove all markdown code fences (```json, ```delegate, ```)
+    text = re.sub(r"```\w*\n?", "", text).strip()
+
+    # Try to parse JSON and extract readable text
+    json_match = re.search(r'[{\[]', text)
+    if json_match:
+        json_str = text[json_match.start():]
         try:
             import json as _j
-            if stripped.startswith("["):
-                arr = _j.loads(stripped[stripped.index("["):stripped.rindex("]") + 1])
-                data = arr[0] if isinstance(arr, list) and arr else {}
+            # Try to find complete JSON
+            if json_str.startswith("["):
+                end = json_str.rfind("]")
+                if end > 0:
+                    arr = _j.loads(json_str[:end + 1])
+                    data = arr[0] if isinstance(arr, list) and arr else {}
+                else:
+                    data = {}
             else:
-                data = _j.loads(stripped[stripped.index("{"):stripped.rindex("}") + 1])
-            # Try common fields for a readable summary
-            parts = []
+                end = json_str.rfind("}")
+                if end > 0:
+                    data = _j.loads(json_str[:end + 1])
+                else:
+                    data = {}
+
+            # Extract readable text from known fields
             for key in ("text", "title", "description", "commentary", "body", "subject", "key_message"):
                 if data.get(key):
-                    parts.append(str(data[key])[:150])
-                    break
-            if not parts:
-                # Try nested posts
-                for post in data.get("posts", [])[:1]:
-                    if post.get("text"):
-                        parts.append(post["text"][:150])
-            if parts:
-                return parts[0]
+                    return str(data[key])[:200]
+            # Try nested posts
+            for post in data.get("posts", [])[:2]:
+                if post.get("text"):
+                    return post["text"][:200]
         except Exception:
             pass
-        # Fallback: strip JSON characters
-        import re
-        text = re.sub(r'[{}\[\]":]', ' ', text)
+
+        # Fallback: strip all JSON syntax characters
+        text = re.sub(r'[{}\[\]"\\]', '', text)
+        text = re.sub(r'\s*:\s*', ': ', text)
+        text = re.sub(r',\s*', ', ', text)
         text = re.sub(r'\s+', ' ', text).strip()
+
     return text[:200]
 
 

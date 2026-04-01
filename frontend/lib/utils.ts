@@ -41,3 +41,25 @@ export function getGreeting(): string {
 export function getInitials(name: string): string {
   return name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
 }
+
+/** Clean JSON/code artifacts from notification body text. */
+export function cleanNotificationBody(body: string): string {
+  if (!body) return "";
+  let text = body.replace(/```\w*\n?/g, "").trim();
+  // If it looks like JSON, extract readable text
+  const jsonStart = text.search(/[{\[]/);
+  if (jsonStart >= 0) {
+    try {
+      const jsonStr = text.slice(jsonStart);
+      const parsed = JSON.parse(jsonStr.slice(0, jsonStr.lastIndexOf(jsonStr[0] === "[" ? "]" : "}") + 1));
+      const data = Array.isArray(parsed) ? parsed[0] || {} : parsed;
+      for (const key of ["text", "title", "description", "commentary", "body", "subject"]) {
+        if (data[key]) return String(data[key]).slice(0, 200);
+      }
+      const posts = data.posts || [];
+      if (posts[0]?.text) return posts[0].text.slice(0, 200);
+    } catch {}
+    text = text.replace(/[{}\[\]"\\]/g, "").replace(/\s+/g, " ").trim();
+  }
+  return text.slice(0, 200);
+}

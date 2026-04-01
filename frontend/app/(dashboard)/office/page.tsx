@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useMemo, useState, useCallback } from "react";
-import { AGENTS, type OfficeAgent, type AgentStatus } from "@/lib/office-config";
+import { useEffect, useRef, useState } from "react";
+import { type OfficeAgent, type AgentStatus } from "@/lib/office-config";
 import VirtualOffice from "@/components/virtual-office/VirtualOffice";
 import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
 
-import { useAgentStatus } from "@/lib/socket";
 import { useCeoChat } from "@/lib/use-ceo-chat";
 import { API_URL, authFetch } from "@/lib/api";
 import { AGENT_NAMES } from "@/lib/agent-config";
+import { useOfficeAgents } from "@/lib/use-office-agents";
 
 interface ActivityItem {
   agent: string;
@@ -19,35 +19,17 @@ const EMPTY_ACTIVITY: ActivityItem[] = [
   { agent: "ARIA", action: "No recent activity — ask the CEO to assign tasks to get started" },
 ];
 
-const POLL_INTERVAL = 5000; // Poll every 5s for task-based status
-
-function mergeAgents(remoteAgents: any[]): OfficeAgent[] {
-  return AGENTS.map((local) => {
-    const remote = remoteAgents.find((a: any) => a.agent_id === local.id);
-    if (remote) {
-      return {
-        ...local,
-        status: remote.status || local.status,
-        currentTask: remote.current_task || "",
-        lastUpdated: remote.last_updated || local.lastUpdated,
-      };
-    }
-    return local;
-  });
-}
-
 export default function OfficePage() {
-  const [agents, setAgents] = useState<OfficeAgent[] | null>(null);
+  const { agents: sharedAgents, loaded } = useOfficeAgents();
   const [selectedAgent, setSelectedAgent] = useState<OfficeAgent | null>(null);
-  const [loading, setLoading] = useState(true);
   const [tenantId, setTenantId] = useState<string>("");
   const [activity, setActivity] = useState<ActivityItem[]>(EMPTY_ACTIVITY);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Direct chat-to-office link (instant, no backend round-trip) ──
   const { sending, messages } = useCeoChat();
   const [chatOverrides, setChatOverrides] = useState<Record<string, AgentStatus>>({});
   const prevMsgCount = useRef(0);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // When user sends a message — ALL agents huddle at the meeting room
   useEffect(() => {
@@ -98,66 +80,32 @@ export default function OfficePage() {
     return () => clearTimeout(timer);
   }, [sending, chatOverrides]);
 
-  // ── REST polling for task-based statuses (in_progress tasks) ──
-  const fetchAgents = useCallback((tid: string) => {
-    authFetch(`${API_URL}/api/office/agents/${tid}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.agents) setAgents(mergeAgents(data.agents));
-      })
-      .catch(() => {});
-  }, []);
-
+  // Load tenant + activity on mount
   useEffect(() => {
     const tid = localStorage.getItem("aria_tenant_id");
     setTenantId(tid || "");
-    if (!tid) {
-      setLoading(false);
-      return;
-    }
+    if (!tid) return;
 
-    // Initial fetch
-    authFetch(`${API_URL}/api/office/agents/${tid}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.agents) setAgents(mergeAgents(data.agents));
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-
-    // Poll for task-based status updates
-    pollRef.current = setInterval(() => fetchAgents(tid), POLL_INTERVAL);
-
-    // Fetch real activity
     authFetch(`${API_URL}/api/dashboard/${tid}/activity`)
       .then((r) => r.json())
       .then((data) => {
         if (data.activity && data.activity.length > 0) {
-          setActivity(
-            data.activity.map((a: any) => ({
-              agent: AGENT_NAMES[a.agent] || a.agent,
-              action: a.action,
-            }))
-          );
+          setActivity(data.activity.map((a: any) => ({
+            agent: AGENT_NAMES[a.agent] || a.agent,
+            action: a.action,
+          })));
         }
       })
       .catch(() => {});
+  }, []);
 
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, [fetchAgents]);
-
-  // Socket.IO as bonus instant layer (may not work on Railway)
-  const liveStatuses = useAgentStatus(tenantId);
-
-  // Clear "working" chat overrides when polled status goes idle (task moved to done)
+  // Clear "working" chat overrides when shared agents go idle
   useEffect(() => {
     const toRemove: string[] = [];
     for (const [id, status] of Object.entries(chatOverrides)) {
       if (status !== "working") continue;
-      const polled = (agents || []).find((a) => a.id === id);
-      if (polled && polled.status === "idle") toRemove.push(id);
+      const agent = sharedAgents.find((a) => a.id === id);
+      if (agent && agent.status === "idle") toRemove.push(id);
     }
     if (toRemove.length > 0) {
       setChatOverrides((prev) => {
@@ -166,31 +114,14 @@ export default function OfficePage() {
         return next;
       });
     }
-  }, [agents, chatOverrides]);
+  }, [sharedAgents, chatOverrides]);
 
-  // Merge: chat overrides > socket > polled REST > defaults
-  const finalAgents = useMemo(() => {
-    if (!agents) return AGENTS;
-    return agents.map((agent) => {
-      // 1. Chat-driven overrides (highest priority — instant)
-      const chatStatus = chatOverrides[agent.id];
-      if (chatStatus) {
-        return { ...agent, status: chatStatus };
-      }
-      // 2. Socket.IO live status
-      const live = liveStatuses[agent.id];
-      if (live) {
-        return {
-          ...agent,
-          status: live.status,
-          currentTask: live.current_task,
-          lastUpdated: live.last_updated,
-        };
-      }
-      // 3. Polled REST status (already in agents)
-      return agent;
-    });
-  }, [agents, chatOverrides, liveStatuses]);
+  // Final merge: chat overrides on top of shared context agents
+  const finalAgents = sharedAgents.map((agent) => {
+    const chatStatus = chatOverrides[agent.id];
+    if (chatStatus) return { ...agent, status: chatStatus };
+    return agent;
+  });
 
   useEffect(() => {
     if (!selectedAgent) return;
@@ -248,7 +179,7 @@ export default function OfficePage() {
 
         {/* Canvas area */}
         <div className="flex-1 min-h-0 relative">
-          {loading || !agents ? (
+          {!loaded ? (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
             </div>

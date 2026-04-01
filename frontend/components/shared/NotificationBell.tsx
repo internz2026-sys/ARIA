@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useNotifications, Notification } from "@/lib/use-notifications";
-import { formatDateAgo } from "@/lib/utils";
+import { formatDateAgo, cleanNotificationBody } from "@/lib/utils";
 
 const CATEGORY_COLORS: Record<string, { bg: string; text: string; label: string }> = {
   inbox: { bg: "bg-[#EEEDFE]", text: "text-[#534AB7]", label: "Inbox" },
@@ -107,7 +107,7 @@ export default function NotificationBell() {
                         </span>
                       </div>
                       {n.body && (
-                        <p className="text-xs text-[#5F5E5A] mt-0.5 truncate">{n.body}</p>
+                        <p className="text-xs text-[#5F5E5A] mt-0.5 truncate">{cleanNotificationBody(n.body)}</p>
                       )}
                       <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded-full mt-1 ${cat.bg} ${cat.text}`}>
                         {cat.label}

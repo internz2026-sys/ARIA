@@ -11,6 +11,7 @@ import NotificationBell from "@/components/shared/NotificationBell";
 import ToastContainer from "@/components/shared/ToastContainer";
 import { CeoChatProvider } from "@/lib/use-ceo-chat";
 import { NotificationProvider } from "@/lib/use-notifications";
+import { OfficeAgentsProvider } from "@/lib/use-office-agents";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -77,6 +78,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <CeoChatProvider>
       <NotificationProvider>
+      <OfficeAgentsProvider>
       <div className="min-h-screen bg-[#F8F8F6] flex">
         {/* Mobile overlay */}
         {sidebarOpen && (
@@ -135,6 +137,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <OfficeKanban />
         <ToastContainer />
       </div>
+      </OfficeAgentsProvider>
       </NotificationProvider>
     </CeoChatProvider>
   );
