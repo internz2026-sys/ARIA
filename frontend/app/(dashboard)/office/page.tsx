@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { type OfficeAgent, type AgentStatus } from "@/lib/office-config";
+import { AGENTS, type OfficeAgent, type AgentStatus } from "@/lib/office-config";
 import VirtualOffice from "@/components/virtual-office/VirtualOffice";
 import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
 
