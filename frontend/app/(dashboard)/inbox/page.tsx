@@ -42,6 +42,7 @@ const TYPE_LABELS: Record<string, string> = {
   social_post: "Social Post",
   ad_campaign: "Ad Campaign",
   strategy_update: "Strategy Update",
+  whatsapp_message: "WhatsApp",
   general: "General",
 };
 
@@ -209,6 +210,37 @@ export default function InboxPage() {
       alert(err?.message || "Failed to publish to X. Check connection in Settings.");
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const [waReplyText, setWaReplyText] = useState("");
+  const [waReplying, setWaReplying] = useState(false);
+
+  const handleWhatsAppReply = async (item: InboxItem) => {
+    if (!tenantId || !waReplyText.trim()) return;
+    setWaReplying(true);
+    try {
+      const meta = typeof item.content === "string" ? {} : {};
+      // Parse from_number from item metadata stored in content title
+      const fromMatch = item.title.match(/\+?\d{10,15}/);
+      const toNumber = fromMatch?.[0] || "";
+      if (!toNumber) { alert("Cannot determine recipient number"); return; }
+
+      const res = await fetch(`${API_URL}/api/whatsapp/${tenantId}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: toNumber, message: waReplyText }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `Send failed (${res.status})`);
+      }
+      setWaReplyText("");
+      alert("WhatsApp reply sent!");
+    } catch (err: any) {
+      alert(err?.message || "Failed to send WhatsApp reply");
+    } finally {
+      setWaReplying(false);
     }
   };
 
@@ -542,6 +574,54 @@ export default function InboxPage() {
   };
 
   // ─── Standard (non-email) detail view ───
+  const renderWhatsAppDetail = (item: InboxItem) => (
+    <div className="flex flex-col w-full">
+      <div className="border-b border-[#E0DED8] p-5">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="w-6 h-6 rounded-full bg-[#25D366] flex items-center justify-center">
+            <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+            </svg>
+          </div>
+          <span className="text-sm font-medium text-[#25D366]">WhatsApp</span>
+          <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
+        </div>
+        <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
+      </div>
+      {/* Message bubble */}
+      <div className="flex-1 overflow-auto p-5">
+        <div className="max-w-md">
+          <div className="bg-[#E8F5E8] rounded-xl rounded-tl-sm px-4 py-3 mb-4">
+            <p className="text-sm text-[#2C2C2A] whitespace-pre-wrap">{item.content}</p>
+            <p className="text-[10px] text-[#5F5E5A] mt-1 text-right">{timeAgo(item.created_at)}</p>
+          </div>
+        </div>
+      </div>
+      {/* Reply box */}
+      <div className="border-t border-[#E0DED8] p-4">
+        <div className="flex items-end gap-2">
+          <textarea
+            value={waReplyText}
+            onChange={e => setWaReplyText(e.target.value)}
+            placeholder="Type a reply..."
+            rows={2}
+            className="flex-1 px-3 py-2 bg-white border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A] resize-none focus:outline-none focus:ring-2 focus:ring-[#25D366]/20 focus:border-[#25D366]"
+          />
+          <button
+            onClick={() => handleWhatsAppReply(item)}
+            disabled={waReplying || !waReplyText.trim()}
+            className="px-4 py-2 bg-[#25D366] text-white rounded-lg text-sm font-medium hover:bg-[#1da851] transition-colors disabled:opacity-50 flex items-center gap-1.5"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+            </svg>
+            {waReplying ? "Sending..." : "Reply"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   const renderStandardDetail = (item: InboxItem) => (
     <div className="flex flex-col w-full">
       <div className="border-b border-[#E0DED8] p-5">
@@ -783,6 +863,7 @@ export default function InboxPage() {
               isEmailDraft(selected)
                 ? (isPendingApproval(selected) ? renderEmailEditor(selected) : renderEmailReadOnly(selected))
                 : isSocialPost(selected) ? renderSocialDetail(selected)
+                : selected.type === "whatsapp_message" ? renderWhatsAppDetail(selected)
                 : renderStandardDetail(selected)
             ) : (
               <div className="flex items-center justify-center w-full text-sm text-[#9E9C95]">

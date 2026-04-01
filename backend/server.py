@@ -206,6 +206,14 @@ async def twitter_status(tenant_id: str):
     }
 
 
+@app.get("/api/integrations/{tenant_id}/whatsapp-status")
+async def whatsapp_status(tenant_id: str):
+    """Check if WhatsApp is connected for a tenant."""
+    config = get_tenant_config(tenant_id)
+    connected = bool(config.integrations.whatsapp_access_token and config.integrations.whatsapp_phone_number_id)
+    return {"connected": connected}
+
+
 class TweetRequest(BaseModel):
     text: str
     reply_to: Optional[str] = None
@@ -401,6 +409,184 @@ async def approve_and_publish_social(tenant_id: str, body: SocialApproveRequest)
         raise HTTPException(status_code=400, detail=f"Publish failed: {error_msg}")
 
     return {"status": new_status, "results": results}
+
+
+# ─── WhatsApp Cloud API ───
+
+@app.get("/api/whatsapp/webhook")
+async def whatsapp_webhook_verify(request: Request):
+    """Meta webhook verification (GET) — responds to the hub.challenge."""
+    from backend.tools.whatsapp_tool import WHATSAPP_VERIFY_TOKEN
+    params = request.query_params
+    mode = params.get("hub.mode", "")
+    token = params.get("hub.verify_token", "")
+    challenge = params.get("hub.challenge", "")
+
+    if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
+        logger.info("WhatsApp webhook verified")
+        return int(challenge)
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+
+@app.post("/api/whatsapp/webhook")
+async def whatsapp_webhook_receive(request: Request):
+    """Receive incoming WhatsApp messages and status updates."""
+    body = await request.json()
+
+    # Process each entry
+    for entry in body.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            messages = value.get("messages", [])
+            statuses = value.get("statuses", [])
+
+            # Handle incoming messages
+            for msg in messages:
+                from_number = msg.get("from", "")
+                msg_type = msg.get("type", "")
+                msg_id = msg.get("id", "")
+                timestamp = msg.get("timestamp", "")
+
+                text_body = ""
+                if msg_type == "text":
+                    text_body = msg.get("text", {}).get("body", "")
+
+                logger.info("WhatsApp message from %s: %s", from_number, text_body[:100])
+
+                # Store in inbox for tenant review
+                try:
+                    from backend.config.loader import _get_supabase
+                    sb = _get_supabase()
+
+                    # Find tenant by WhatsApp phone number ID
+                    phone_number_id = value.get("metadata", {}).get("phone_number_id", "")
+                    tenant_id = await _resolve_whatsapp_tenant(phone_number_id)
+
+                    if tenant_id:
+                        sb.table("inbox_items").insert({
+                            "id": str(uuid.uuid4()),
+                            "tenant_id": tenant_id,
+                            "type": "whatsapp_message",
+                            "agent": "whatsapp",
+                            "title": f"WhatsApp from {from_number}",
+                            "content": text_body,
+                            "status": "needs_review",
+                            "metadata": {
+                                "from_number": from_number,
+                                "message_id": msg_id,
+                                "message_type": msg_type,
+                                "timestamp": timestamp,
+                                "phone_number_id": phone_number_id,
+                            },
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        }).execute()
+                        logger.info("Stored WhatsApp message in inbox for tenant %s", tenant_id)
+                except Exception as e:
+                    logger.warning("Failed to store WhatsApp message: %s", e)
+
+            # Handle status updates (sent, delivered, read)
+            for status in statuses:
+                logger.info("WhatsApp status update: %s → %s",
+                            status.get("id", ""), status.get("status", ""))
+
+    return {"status": "ok"}
+
+
+async def _resolve_whatsapp_tenant(phone_number_id: str) -> str | None:
+    """Find the tenant that owns a given WhatsApp phone number ID."""
+    if not phone_number_id:
+        return None
+    try:
+        from backend.config.loader import _get_supabase
+        sb = _get_supabase()
+        # Search tenant_configs for matching WhatsApp phone number ID
+        result = sb.table("tenant_configs").select("tenant_id,config").execute()
+        for row in (result.data or []):
+            config = row.get("config", {})
+            integrations = config.get("integrations", {})
+            if integrations.get("whatsapp_phone_number_id") == phone_number_id:
+                return row.get("tenant_id")
+    except Exception as e:
+        logger.warning("Failed to resolve WhatsApp tenant: %s", e)
+
+    # Fallback: if only one tenant exists, use that
+    try:
+        result = sb.table("tenant_configs").select("tenant_id").limit(1).execute()
+        if result.data:
+            return result.data[0].get("tenant_id")
+    except Exception:
+        pass
+    return None
+
+
+class WhatsAppSendRequest(BaseModel):
+    to: str
+    message: str
+
+
+@app.post("/api/whatsapp/{tenant_id}/send")
+async def whatsapp_send_message(tenant_id: str, body: WhatsAppSendRequest):
+    """Send a WhatsApp message from a tenant's connected number."""
+    from backend.tools import whatsapp_tool
+
+    config = get_tenant_config(tenant_id)
+    token = config.integrations.whatsapp_access_token
+    pid = config.integrations.whatsapp_phone_number_id
+
+    if not token or not pid:
+        raise HTTPException(status_code=400, detail="WhatsApp not connected. Add your credentials in Settings.")
+
+    result = await whatsapp_tool.send_message(
+        to=body.to,
+        text=body.message,
+        access_token=token,
+        phone_number_id=pid,
+    )
+
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    return result
+
+
+class WhatsAppConnectRequest(BaseModel):
+    access_token: str
+    phone_number_id: str
+    business_account_id: str = ""
+
+
+@app.post("/api/whatsapp/{tenant_id}/connect")
+async def whatsapp_connect(tenant_id: str, body: WhatsAppConnectRequest):
+    """Save WhatsApp credentials for a tenant and verify connectivity."""
+    from backend.tools import whatsapp_tool
+
+    # Test the connection by fetching business profile
+    profile = await whatsapp_tool.get_business_profile(
+        access_token=body.access_token,
+        phone_number_id=body.phone_number_id,
+    )
+    if profile.get("error"):
+        raise HTTPException(status_code=400, detail=f"Connection test failed: {profile['error']}")
+
+    # Save credentials to tenant config
+    config = get_tenant_config(tenant_id)
+    config.integrations.whatsapp_access_token = body.access_token
+    config.integrations.whatsapp_phone_number_id = body.phone_number_id
+    config.integrations.whatsapp_business_account_id = body.business_account_id
+    save_tenant_config(config)
+
+    return {"status": "connected", "profile": profile}
+
+
+@app.post("/api/whatsapp/{tenant_id}/disconnect")
+async def whatsapp_disconnect(tenant_id: str):
+    """Remove WhatsApp credentials for a tenant."""
+    config = get_tenant_config(tenant_id)
+    config.integrations.whatsapp_access_token = None
+    config.integrations.whatsapp_phone_number_id = None
+    config.integrations.whatsapp_business_account_id = None
+    save_tenant_config(config)
+    return {"status": "disconnected"}
 
 
 # ─── Usage API ───

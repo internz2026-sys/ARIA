@@ -145,6 +145,15 @@ export const crm = {
   pipelineSummary: (tenantId: string) => fetchAPI(`/api/crm/${tenantId}/pipeline-summary`),
 };
 
+export const whatsapp = {
+  connect: (tenantId: string, data: { access_token: string; phone_number_id: string; business_account_id?: string }) =>
+    fetchAPI(`/api/whatsapp/${tenantId}/connect`, { method: "POST", body: JSON.stringify(data) }),
+  disconnect: (tenantId: string) =>
+    fetchAPI(`/api/whatsapp/${tenantId}/disconnect`, { method: "POST" }),
+  send: (tenantId: string, to: string, message: string) =>
+    fetchAPI(`/api/whatsapp/${tenantId}/send`, { method: "POST", body: JSON.stringify({ to, message }) }),
+};
+
 export const usage = {
   getDashboard: (tenantId: string) => fetchAPI(`/api/usage/${tenantId}`),
 };

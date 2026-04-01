@@ -86,6 +86,10 @@ class IntegrationsConfig(BaseModel):
     google_refresh_token: Optional[str] = None
     gmail_last_sync_at: Optional[str] = None  # ISO timestamp of last inbound sync
     gmail_history_id: Optional[str] = None    # Gmail history ID for incremental sync
+    # WhatsApp Cloud API (per-tenant)
+    whatsapp_access_token: Optional[str] = None
+    whatsapp_phone_number_id: Optional[str] = None
+    whatsapp_business_account_id: Optional[str] = None
     # Payments
     stripe_customer_id: Optional[str] = None
 
