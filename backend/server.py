@@ -282,7 +282,44 @@ async def linkedin_status(tenant_id: str):
     return {
         "connected": connected,
         "name": config.integrations.linkedin_name or "",
+        "org_name": config.integrations.linkedin_org_name or "",
+        "posting_to": "company" if config.integrations.linkedin_org_urn else "personal",
     }
+
+
+@app.get("/api/linkedin/{tenant_id}/organizations")
+async def linkedin_organizations(tenant_id: str):
+    """List company pages the user is admin of."""
+    from backend.tools import linkedin_tool
+
+    config = get_tenant_config(tenant_id)
+    access_token = config.integrations.linkedin_access_token
+    if not access_token:
+        raise HTTPException(status_code=400, detail="LinkedIn not connected.")
+
+    orgs = await linkedin_tool.get_admin_organizations(access_token)
+    return {
+        "organizations": orgs,
+        "current_org_urn": config.integrations.linkedin_org_urn or "",
+    }
+
+
+class LinkedInPostTargetRequest(BaseModel):
+    org_urn: str = ""   # Empty string = post to personal profile
+    org_name: str = ""
+
+
+@app.post("/api/linkedin/{tenant_id}/set-target")
+async def linkedin_set_target(tenant_id: str, body: LinkedInPostTargetRequest):
+    """Set whether LinkedIn posts go to personal profile or a company page."""
+    config = get_tenant_config(tenant_id)
+    config.integrations.linkedin_org_urn = body.org_urn or None
+    config.integrations.linkedin_org_name = body.org_name or None
+    save_tenant_config(config)
+
+    target = "company" if body.org_urn else "personal"
+    logger.info("LinkedIn post target set to %s for tenant %s", target, tenant_id)
+    return {"status": "updated", "posting_to": target, "org_name": body.org_name}
 
 
 @app.post("/api/linkedin/{tenant_id}/post")
@@ -292,9 +329,13 @@ async def publish_linkedin_post(tenant_id: str, body: dict):
 
     config = get_tenant_config(tenant_id)
     access_token = config.integrations.linkedin_access_token
-    author_urn = config.integrations.linkedin_member_urn
 
-    if not access_token or not author_urn:
+    if not access_token:
+        raise HTTPException(status_code=400, detail="LinkedIn not connected. Go to Settings > Integrations.")
+
+    # Use company page URN if set, otherwise personal profile
+    author_urn = config.integrations.linkedin_org_urn or config.integrations.linkedin_member_urn
+    if not author_urn:
         raise HTTPException(status_code=400, detail="LinkedIn not connected. Go to Settings > Integrations.")
 
     text = body.get("text", "")

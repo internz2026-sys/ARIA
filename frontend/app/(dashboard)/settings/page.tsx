@@ -30,6 +30,11 @@ export default function SettingsPage() {
   const [whatsappError, setWhatsappError] = useState("");
   const [linkedinConnected, setLinkedinConnected] = useState<boolean | null>(null);
   const [linkedinName, setLinkedinName] = useState("");
+  const [linkedinPostingTo, setLinkedinPostingTo] = useState<"personal" | "company">("personal");
+  const [linkedinOrgName, setLinkedinOrgName] = useState("");
+  const [linkedinOrgs, setLinkedinOrgs] = useState<{ id: string; name: string; urn: string }[]>([]);
+  const [linkedinOrgsLoading, setLinkedinOrgsLoading] = useState(false);
+  const [linkedinShowOrgs, setLinkedinShowOrgs] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -59,7 +64,12 @@ export default function SettingsPage() {
         .catch(() => setWhatsappConnected(false));
       fetch(`${API_URL}/api/integrations/${tenantId}/linkedin-status`)
         .then(r => r.json())
-        .then(data => { setLinkedinConnected(!!data?.connected); setLinkedinName(data?.name || ""); })
+        .then(data => {
+          setLinkedinConnected(!!data?.connected);
+          setLinkedinName(data?.name || "");
+          setLinkedinPostingTo(data?.posting_to || "personal");
+          setLinkedinOrgName(data?.org_name || "");
+        })
         .catch(() => setLinkedinConnected(false));
     }
   }, []);
@@ -87,6 +97,39 @@ export default function SettingsPage() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
     window.open(`${API_URL}/api/auth/linkedin/connect/${tenantId}`, "linkedin_auth", "width=600,height=700");
+  }
+
+  async function fetchLinkedInOrgs() {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId) return;
+    setLinkedinOrgsLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/linkedin/${tenantId}/organizations`);
+      const data = await res.json();
+      setLinkedinOrgs(data.organizations || []);
+      setLinkedinShowOrgs(true);
+    } catch {
+      alert("Failed to fetch company pages");
+    } finally {
+      setLinkedinOrgsLoading(false);
+    }
+  }
+
+  async function setLinkedinTarget(orgUrn: string, orgName: string) {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId) return;
+    try {
+      await fetch(`${API_URL}/api/linkedin/${tenantId}/set-target`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ org_urn: orgUrn, org_name: orgName }),
+      });
+      setLinkedinPostingTo(orgUrn ? "company" : "personal");
+      setLinkedinOrgName(orgName);
+      setLinkedinShowOrgs(false);
+    } catch {
+      alert("Failed to update posting target");
+    }
   }
 
   async function connectWhatsApp() {
@@ -289,7 +332,7 @@ export default function SettingsPage() {
                   <p className="text-sm font-medium text-[#2C2C2A]">LinkedIn</p>
                   <p className="text-xs text-[#5F5E5A] mt-0.5">
                     {linkedinConnected === null ? "Checking..." : linkedinConnected
-                      ? `Connected — ${linkedinName}`
+                      ? `Connected — ${linkedinName}${linkedinPostingTo === "company" ? ` · Posting to ${linkedinOrgName}` : " · Posting to personal profile"}`
                       : "Not connected — connect to publish posts on LinkedIn"}
                   </p>
                 </div>
@@ -308,6 +351,45 @@ export default function SettingsPage() {
                 </div>
               ) : null}
             </div>
+            {linkedinConnected && (
+              <div className="px-5 pb-4 border-t border-[#E0DED8] pt-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-[#5F5E5A]">Post to:</p>
+                  <button
+                    onClick={fetchLinkedInOrgs}
+                    disabled={linkedinOrgsLoading}
+                    className="text-xs text-[#0A66C2] hover:underline transition-colors"
+                  >
+                    {linkedinOrgsLoading ? "Loading..." : "Change posting target"}
+                  </button>
+                </div>
+                <p className="text-sm text-[#2C2C2A] mt-1">
+                  {linkedinPostingTo === "company" ? `🏢 ${linkedinOrgName}` : `👤 Personal profile (${linkedinName})`}
+                </p>
+                {linkedinShowOrgs && (
+                  <div className="mt-3 space-y-2">
+                    <button
+                      onClick={() => setLinkedinTarget("", "")}
+                      className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${linkedinPostingTo === "personal" ? "border-[#0A66C2] bg-[#EBF4FB] text-[#0A66C2]" : "border-[#E0DED8] text-[#2C2C2A] hover:bg-[#F8F8F6]"}`}
+                    >
+                      👤 Personal profile ({linkedinName})
+                    </button>
+                    {linkedinOrgs.map((org) => (
+                      <button
+                        key={org.urn}
+                        onClick={() => setLinkedinTarget(org.urn, org.name)}
+                        className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${linkedinPostingTo === "company" && linkedinOrgName === org.name ? "border-[#0A66C2] bg-[#EBF4FB] text-[#0A66C2]" : "border-[#E0DED8] text-[#2C2C2A] hover:bg-[#F8F8F6]"}`}
+                      >
+                        🏢 {org.name || `Organization ${org.id}`}
+                      </button>
+                    ))}
+                    {linkedinOrgs.length === 0 && (
+                      <p className="text-xs text-[#9E9C95]">No company pages found. You must be an admin of a LinkedIn Company Page.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* WhatsApp */}

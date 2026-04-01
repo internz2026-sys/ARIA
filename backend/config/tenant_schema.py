@@ -77,6 +77,8 @@ class IntegrationsConfig(BaseModel):
     linkedin_access_token: Optional[str] = None
     linkedin_member_urn: Optional[str] = None
     linkedin_name: Optional[str] = None
+    linkedin_org_urn: Optional[str] = None      # If set, posts go to company page
+    linkedin_org_name: Optional[str] = None
     # Facebook
     facebook_page_token: Optional[str] = None
     facebook_page_id: Optional[str] = None

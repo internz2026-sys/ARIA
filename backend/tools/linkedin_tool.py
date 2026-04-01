@@ -16,7 +16,7 @@ logger = logging.getLogger("aria.linkedin")
 CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET", "")
 
-SCOPES = "openid profile email w_member_social"
+SCOPES = "openid profile email w_member_social w_organization_social r_organization_social rw_organization_admin"
 
 AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
@@ -76,6 +76,49 @@ async def get_profile(access_token: str) -> dict:
         if resp.status_code != 200:
             return {"error": f"api_error ({resp.status_code})"}
         return resp.json()
+
+
+async def get_admin_organizations(access_token: str) -> list[dict]:
+    """Get organizations (company pages) where the user is an admin."""
+    async with httpx.AsyncClient() as client:
+        # Get organization access control — find orgs where user has ADMINISTRATOR role
+        resp = await client.get(
+            "https://api.linkedin.com/v2/organizationAcls",
+            params={"q": "roleAssignee", "role": "ADMINISTRATOR", "projection": "(elements*(organization~(id,localizedName,vanityName)))"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "X-Restli-Protocol-Version": "2.0.0",
+            },
+        )
+
+        logger.info("LinkedIn orgs response: %s %s", resp.status_code, resp.text[:500])
+
+        if resp.status_code != 200:
+            logger.warning("Failed to fetch LinkedIn organizations: %s", resp.text[:300])
+            return []
+
+        data = resp.json()
+        orgs = []
+        for el in data.get("elements", []):
+            org_data = el.get("organization~", {})
+            org_urn = el.get("organization", "")
+            if org_data:
+                orgs.append({
+                    "id": org_data.get("id", ""),
+                    "name": org_data.get("localizedName", ""),
+                    "vanity_name": org_data.get("vanityName", ""),
+                    "urn": org_urn,
+                })
+            elif org_urn:
+                # Extract org ID from URN like "urn:li:organization:12345"
+                org_id = org_urn.split(":")[-1] if ":" in org_urn else ""
+                orgs.append({
+                    "id": org_id,
+                    "name": "",
+                    "vanity_name": "",
+                    "urn": org_urn,
+                })
+        return orgs
 
 
 async def create_post(access_token: str, author_urn: str, text: str) -> dict:
