@@ -110,6 +110,22 @@ export default function CRMPage() {
   useEffect(() => { if (tab === "companies") fetchCompanies(); }, [tab, fetchCompanies]);
   useEffect(() => { if (tab === "deals") fetchDeals(); }, [tab, fetchDeals]);
 
+  // Real-time refresh when CEO creates/updates CRM records
+  useEffect(() => {
+    if (!tenantId) return;
+    try {
+      const { getSocket } = require("@/lib/socket");
+      const socket = getSocket();
+      const handleCrmUpdate = () => {
+        fetchContacts();
+        fetchCompanies();
+        fetchDeals();
+      };
+      socket.on("ceo_action_executed", handleCrmUpdate);
+      return () => { socket.off("ceo_action_executed", handleCrmUpdate); };
+    } catch {}
+  }, [tenantId, fetchContacts, fetchCompanies, fetchDeals]);
+
   // ─── Contact CRUD ───
   const [newContact, setNewContact] = useState({ name: "", email: "", phone: "", source: "manual", status: "lead", notes: "" });
 
