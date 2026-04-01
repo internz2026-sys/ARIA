@@ -194,6 +194,105 @@ ACTION_REGISTRY: dict[str, dict] = {
         "risk": "high",
     },
 
+    # ── LinkedIn: Publish ──
+    "publish_to_linkedin": {
+        "entity": "linkedin_post",
+        "operation": "publish",
+        "description": "Publish a post to LinkedIn (auto-finds latest social post if no ID given)",
+        "required_fields": [],
+        "optional_fields": ["inbox_item_id", "text"],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "high",
+    },
+
+    # ── WhatsApp: Send ──
+    "send_whatsapp": {
+        "entity": "whatsapp_message",
+        "operation": "send",
+        "description": "Send a WhatsApp message to a phone number",
+        "required_fields": ["to", "message"],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "high",
+    },
+
+    # ── Email: Draft Reply ──
+    "draft_email_reply": {
+        "entity": "email_reply",
+        "operation": "create",
+        "description": "Draft a reply to an email thread (goes to inbox for approval)",
+        "required_fields": ["thread_id"],
+        "optional_fields": ["custom_instructions"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "low",
+    },
+
+    # ── Email: Cancel Draft ──
+    "cancel_draft": {
+        "entity": "email_draft",
+        "operation": "cancel",
+        "description": "Cancel a pending email draft",
+        "required_fields": [],
+        "optional_fields": ["inbox_item_id"],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "medium",
+    },
+
+    # ── Gmail: Sync ──
+    "sync_gmail": {
+        "entity": "gmail",
+        "operation": "sync",
+        "description": "Sync Gmail inbox to check for new replies",
+        "required_fields": [],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+
+    # ── Agents: Run ──
+    "run_agent": {
+        "entity": "agent",
+        "operation": "run",
+        "description": "Run a specific agent (content_writer, email_marketer, social_manager, ad_strategist)",
+        "required_fields": ["agent_name"],
+        "optional_fields": ["task"],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "medium",
+    },
+
+    # ── Inbox: Read ──
+    "read_inbox": {
+        "entity": "inbox_item",
+        "operation": "read",
+        "description": "List inbox items, optionally filtered by status",
+        "required_fields": [],
+        "optional_fields": ["status"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+
+    # ── CRM: Read Companies ──
+    "read_companies": {
+        "entity": "crm_company",
+        "operation": "read",
+        "description": "List or search CRM companies",
+        "required_fields": [],
+        "optional_fields": ["search"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+
+    # ── CRM: Read Deals ──
+    "read_deals": {
+        "entity": "crm_deal",
+        "operation": "read",
+        "description": "List CRM deals, optionally filtered by stage",
+        "required_fields": [],
+        "optional_fields": ["stage"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+
     # ── Tasks ──
     "update_task_status": {
         "entity": "task",
@@ -472,6 +571,146 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
         sb.table("inbox_items").update({"status": "sent"}).eq("id", inbox_item_id).execute()
         return {"sent": inbox_item_id, "to": to, "subject": subject, "status": "sent"}
+
+    # ── LinkedIn Publish ──
+    elif entity == "linkedin_post" and operation == "publish":
+        from backend.services.supabase import get_db
+        sb = get_db()
+        inbox_item_id = params.get("inbox_item_id", "")
+        text = params.get("text", "")
+
+        # If text provided directly, post it
+        if not text and not inbox_item_id:
+            result = sb.table("inbox_items").select("id,content").eq(
+                "tenant_id", tenant_id
+            ).eq("type", "social_post").in_(
+                "status", ["ready", "needs_review"]
+            ).order("created_at", desc=True).limit(1).execute()
+            if result.data:
+                inbox_item_id = result.data[0]["id"]
+                content = result.data[0].get("content", "")
+                # Parse LinkedIn post from JSON
+                import json as _json
+                try:
+                    start = content.find("{")
+                    end = content.rfind("}") + 1
+                    if start >= 0 and end > start:
+                        data = _json.loads(content[start:end])
+                        for p in data.get("posts", []):
+                            if p.get("platform", "").lower() == "linkedin":
+                                text = p.get("text", "")
+                                break
+                except Exception:
+                    pass
+                if not text:
+                    text = content[:3000]
+            else:
+                return {"error": "No social posts found ready to publish"}
+
+        from backend.config.loader import get_tenant_config
+        config = get_tenant_config(tenant_id)
+        li_token = config.integrations.linkedin_access_token
+        li_urn = config.integrations.linkedin_org_urn or config.integrations.linkedin_member_urn
+        if not li_token or not li_urn:
+            return {"error": "LinkedIn not connected. Go to Settings > Integrations."}
+
+        from backend.tools import linkedin_tool
+        result = await linkedin_tool.create_post(li_token, li_urn, text[:3000])
+        if result.get("error"):
+            return {"error": result["error"]}
+
+        if inbox_item_id:
+            sb.table("inbox_items").update({"status": "sent"}).eq("id", inbox_item_id).execute()
+        return {"published": "linkedin", "post_id": result.get("post_id", ""), "status": "sent"}
+
+    # ── WhatsApp Send ──
+    elif entity == "whatsapp_message" and operation == "send":
+        from backend.config.loader import get_tenant_config
+        config = get_tenant_config(tenant_id)
+        wa_token = config.integrations.whatsapp_access_token
+        wa_pid = config.integrations.whatsapp_phone_number_id
+        if not wa_token or not wa_pid:
+            return {"error": "WhatsApp not connected. Go to Settings > Integrations."}
+
+        from backend.tools import whatsapp_tool
+        result = await whatsapp_tool.send_message(
+            to=params["to"], text=params["message"],
+            access_token=wa_token, phone_number_id=wa_pid,
+        )
+        if result.get("error"):
+            return {"error": result["error"]}
+        return {"sent": True, "to": params["to"], "message_id": result.get("message_id", "")}
+
+    # ── Email Draft Reply ──
+    elif entity == "email_reply" and operation == "create":
+        from backend.services.supabase import get_db
+        sb = get_db()
+        # Trigger the draft reply via the email marketer
+        thread_id = params.get("thread_id", "")
+        if not thread_id:
+            # Find latest thread that needs a reply
+            result = sb.table("email_threads").select("id").eq(
+                "tenant_id", tenant_id
+            ).eq("status", "needs_review").order("last_message_at", desc=True).limit(1).execute()
+            if result.data:
+                thread_id = result.data[0]["id"]
+            else:
+                return {"error": "No email threads needing a reply"}
+
+        return {"drafted": True, "thread_id": thread_id, "status": "delegated_to_email_marketer"}
+
+    # ── Email Cancel Draft ──
+    elif entity == "email_draft" and operation == "cancel":
+        from backend.services.supabase import get_db
+        sb = get_db()
+        inbox_item_id = params.get("inbox_item_id", "")
+        if not inbox_item_id:
+            result = sb.table("inbox_items").select("id").eq(
+                "tenant_id", tenant_id
+            ).eq("status", "draft_pending_approval").order("created_at", desc=True).limit(1).execute()
+            if result.data:
+                inbox_item_id = result.data[0]["id"]
+            else:
+                return {"error": "No pending email drafts to cancel"}
+
+        sb.table("inbox_items").update({
+            "status": "cancelled",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", inbox_item_id).eq("tenant_id", tenant_id).execute()
+        return {"cancelled": inbox_item_id}
+
+    # ── Gmail Sync ──
+    elif entity == "gmail" and operation == "sync":
+        try:
+            from backend.tools.gmail_sync import sync_tenant
+            result = await sync_tenant(tenant_id)
+            return {"synced": True, "imported": result.get("imported", 0)}
+        except Exception as e:
+            return {"error": f"Gmail sync failed: {e}"}
+
+    # ── Run Agent ──
+    elif entity == "agent" and operation == "run":
+        agent_name = params.get("agent_name", "")
+        if agent_name not in ("content_writer", "email_marketer", "social_manager", "ad_strategist"):
+            return {"error": f"Unknown agent: {agent_name}. Valid: content_writer, email_marketer, social_manager, ad_strategist"}
+
+        from backend.orchestrator import dispatch_agent
+        result = await dispatch_agent(tenant_id, agent_name)
+        return {"ran": agent_name, "status": result.get("status", ""), "result_preview": str(result.get("result", ""))[:200]}
+
+    # ── Inbox Read ──
+    elif entity == "inbox_item" and operation == "read":
+        status_filter = params.get("status", "")
+        items = inbox_service.list_items(tenant_id, status=status_filter, page=1, page_size=10)
+        return items
+
+    # ── CRM Company Read ──
+    elif entity == "crm_company" and operation == "read":
+        return crm_service.list_companies(tenant_id, search=params.get("search", ""))
+
+    # ── CRM Deal Read ──
+    elif entity == "crm_deal" and operation == "read":
+        return crm_service.list_deals(tenant_id, stage=params.get("stage", ""))
 
     # ── Tasks ──
     elif entity == "task" and operation == "update":
