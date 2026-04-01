@@ -8,22 +8,45 @@ import logging
 import os
 from functools import lru_cache
 
+import httpx
 from fastapi import Depends, HTTPException, Request
 from jose import JWTError, jwt
 
 logger = logging.getLogger("aria.auth")
 
-# Supabase JWT secret — this is your project's JWT secret from Supabase dashboard
-# Settings > API > JWT Secret
+# Supabase JWT secret (HS256 legacy) or JWKS URL (ES256 new)
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+
+# Cache for JWKS public keys
+_jwks_cache: dict | None = None
 
 
 @lru_cache()
 def _get_jwt_secret() -> str:
     secret = os.getenv("SUPABASE_JWT_SECRET", "")
-    if not secret:
+    if not secret and not SUPABASE_URL:
         logger.warning("SUPABASE_JWT_SECRET not set — auth will be disabled")
     return secret
+
+
+def _get_jwks() -> dict | None:
+    """Fetch Supabase JWKS (JSON Web Key Set) for ES256 verification."""
+    global _jwks_cache
+    if _jwks_cache:
+        return _jwks_cache
+    if not SUPABASE_URL:
+        return None
+    try:
+        jwks_url = f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+        resp = httpx.get(jwks_url, timeout=5)
+        if resp.status_code == 200:
+            _jwks_cache = resp.json()
+            logger.info("Loaded Supabase JWKS for ES256 verification")
+            return _jwks_cache
+    except Exception as e:
+        logger.warning("Failed to fetch JWKS: %s", e)
+    return None
 
 
 def _extract_token(request: Request) -> str | None:
@@ -35,21 +58,65 @@ def _extract_token(request: Request) -> str | None:
 
 
 def verify_jwt(token: str) -> dict:
-    """Verify a Supabase JWT and return the payload."""
-    secret = _get_jwt_secret()
-    if not secret:
-        raise HTTPException(status_code=500, detail="Auth not configured")
+    """Verify a Supabase JWT and return the payload.
+
+    Supports both:
+    - HS256 (legacy JWT secret)
+    - ES256 (new Supabase JWT signing keys via JWKS)
+    """
+    # Peek at the token header to determine algorithm
+    try:
+        header = jwt.get_unverified_header(token)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token format")
+
+    alg = header.get("alg", "HS256")
 
     try:
-        payload = jwt.decode(
-            token,
-            secret,
-            algorithms=["HS256"],
-            audience="authenticated",
-        )
+        if alg == "ES256":
+            # Use JWKS public key for ES256
+            jwks = _get_jwks()
+            if not jwks:
+                raise HTTPException(status_code=500, detail="JWKS not available for ES256 verification")
+
+            # Find the matching key by kid
+            kid = header.get("kid", "")
+            key = None
+            for k in jwks.get("keys", []):
+                if k.get("kid") == kid:
+                    key = k
+                    break
+
+            if not key:
+                raise HTTPException(status_code=401, detail="JWT signing key not found")
+
+            from jose import jwk
+            public_key = jwk.construct(key, algorithm="ES256")
+
+            payload = jwt.decode(
+                token,
+                public_key,
+                algorithms=["ES256"],
+                audience="authenticated",
+            )
+        else:
+            # HS256 with shared secret
+            secret = _get_jwt_secret()
+            if not secret:
+                raise HTTPException(status_code=500, detail="Auth not configured")
+
+            payload = jwt.decode(
+                token,
+                secret,
+                algorithms=["HS256"],
+                audience="authenticated",
+            )
+
         return payload
+    except HTTPException:
+        raise
     except JWTError as e:
-        logger.warning("JWT verification failed: %s", e)
+        logger.warning("JWT verification failed (%s): %s", alg, e)
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
