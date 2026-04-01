@@ -78,10 +78,11 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       const target = getTarget(agent, idx);
 
       if (!pos[agent.id]) {
-        // First time: start at desk, set target based on current status
-        const deskPx = { x: agent.deskX * T + T / 2, y: agent.deskY * T + T / 2 };
+        // First time: start at the TARGET position (not desk) so agents
+        // appear where they should be based on their persisted status.
+        // This prevents "reset to desk" when navigating away and back.
         pos[agent.id] = {
-          x: deskPx.x, y: deskPx.y,
+          x: target.x, y: target.y,
           targetX: target.x, targetY: target.y,
           walking: false, facingRight: true, walkFrame: 0,
           idleTimer: Math.floor(300 + Math.random() * 500),
