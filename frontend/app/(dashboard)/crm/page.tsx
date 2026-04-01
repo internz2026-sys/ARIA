@@ -110,16 +110,17 @@ export default function CRMPage() {
   useEffect(() => { if (tab === "companies") fetchCompanies(); }, [tab, fetchCompanies]);
   useEffect(() => { if (tab === "deals") fetchDeals(); }, [tab, fetchDeals]);
 
-  // Real-time refresh when CEO creates/updates CRM records
+  // Real-time refresh when CEO creates/updates CRM records (entity-targeted)
   useEffect(() => {
     if (!tenantId) return;
     try {
       const { getSocket } = require("@/lib/socket");
       const socket = getSocket();
-      const handleCrmUpdate = () => {
-        fetchContacts();
-        fetchCompanies();
-        fetchDeals();
+      const handleCrmUpdate = (data: { entity?: string }) => {
+        const entity = data?.entity || "";
+        if (entity === "crm_contact" || !entity) fetchContacts();
+        if (entity === "crm_company" || !entity) fetchCompanies();
+        if (entity === "crm_deal" || !entity) fetchDeals();
       };
       socket.on("ceo_action_executed", handleCrmUpdate);
       return () => { socket.off("ceo_action_executed", handleCrmUpdate); };

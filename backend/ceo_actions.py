@@ -6,12 +6,47 @@ modify codebase, prompts, backend logic, database schema, or infrastructure.
 """
 from __future__ import annotations
 
+import json as _json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from backend.config.loader import get_tenant_config, save_tenant_config
+from backend.services.supabase import get_db
+from backend.services import crm as crm_service, inbox as inbox_service
+
 logger = logging.getLogger("aria.ceo_actions")
+
+
+# ─── Shared helpers ───────────────────────────────────────────────────────────
+
+def _find_latest_inbox_item(tenant_id: str, item_type: str = "", statuses: list[str] | None = None) -> dict | None:
+    """Find the most recent inbox item matching type and status filters."""
+    sb = get_db()
+    query = sb.table("inbox_items").select("id,content,type,status").eq("tenant_id", tenant_id)
+    if item_type:
+        query = query.eq("type", item_type)
+    if statuses:
+        query = query.in_("status", statuses)
+    result = query.order("created_at", desc=True).limit(1).execute()
+    return result.data[0] if result.data else None
+
+
+def _extract_post_text(content: str, platform: str | None = None) -> str:
+    """Extract post text from JSON content, optionally for a specific platform."""
+    try:
+        start = content.find("{")
+        end = content.rfind("}") + 1
+        if start >= 0 and end > start:
+            data = _json.loads(content[start:end])
+            for p in data.get("posts", []):
+                if platform and p.get("platform", "").lower() != platform:
+                    continue
+                return p.get("text", "")
+    except Exception:
+        pass
+    return content[:3000]
 
 # ─── Forbidden patterns — CEO must refuse these ──────────────────────────────
 
@@ -404,8 +439,6 @@ def _build_confirmation(action_name: str, action_def: dict, params: dict) -> dic
 
 async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, params: dict) -> dict:
     """Route to the appropriate shared service handler."""
-    from backend.services import crm as crm_service, inbox as inbox_service
-
     entity = action_def["entity"]
     operation = action_def["operation"]
 
@@ -455,45 +488,22 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── Social Publish ──
     elif entity == "social_post" and operation == "publish":
-        from backend.services.supabase import get_db
         sb = get_db()
         inbox_item_id = params.get("inbox_item_id", "")
 
-        # If no specific item, find the latest social post in inbox
         if not inbox_item_id:
-            result = sb.table("inbox_items").select("id").eq(
-                "tenant_id", tenant_id
-            ).eq("type", "social_post").in_(
-                "status", ["ready", "needs_review"]
-            ).order("created_at", desc=True).limit(1).execute()
-            if result.data:
-                inbox_item_id = result.data[0]["id"]
-            else:
+            item = _find_latest_inbox_item(tenant_id, "social_post", ["ready", "needs_review"])
+            if not item:
                 return {"error": "No social posts found ready to publish"}
+            inbox_item_id = item["id"]
+            content = item.get("content", "")
+        else:
+            item_result = sb.table("inbox_items").select("id,content").eq("id", inbox_item_id).single().execute()
+            if not item_result.data:
+                raise ValueError("Inbox item not found")
+            content = item_result.data.get("content", "")
 
-        # Call the actual publish endpoint logic
-        from backend.config.loader import get_tenant_config
-        from backend.tools import twitter_tool
-        config = get_tenant_config(tenant_id)
-        item_result = sb.table("inbox_items").select("*").eq("id", inbox_item_id).single().execute()
-        item = item_result.data
-        if not item:
-            raise ValueError("Inbox item not found")
-
-        content = item.get("content", "")
-        # Parse post text
-        import json as _json
-        text = content[:280]
-        try:
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start >= 0 and end > start:
-                data = _json.loads(content[start:end])
-                posts = data.get("posts", [])
-                if posts:
-                    text = posts[0].get("text", content[:280])
-        except Exception:
-            pass
+        text = _extract_post_text(content, "twitter")
 
         access_token = config.integrations.twitter_access_token
         if not access_token:
@@ -508,23 +518,15 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── Email Send ──
     elif entity == "email_draft" and operation == "send":
-        from backend.services.supabase import get_db
         sb = get_db()
         inbox_item_id = params.get("inbox_item_id", "")
 
-        # If no specific item, find the latest pending email draft
         if not inbox_item_id:
-            result = sb.table("inbox_items").select("id").eq(
-                "tenant_id", tenant_id
-            ).eq("status", "draft_pending_approval").order(
-                "created_at", desc=True
-            ).limit(1).execute()
-            if result.data:
-                inbox_item_id = result.data[0]["id"]
-            else:
+            item = _find_latest_inbox_item(tenant_id, statuses=["draft_pending_approval"])
+            if not item:
                 return {"error": "No email drafts found pending approval"}
+            inbox_item_id = item["id"]
 
-        # Fetch the draft
         item_result = sb.table("inbox_items").select("*").eq("id", inbox_item_id).single().execute()
         item = item_result.data
         if not item:
@@ -535,7 +537,6 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
             return {"error": "This inbox item has no email draft"}
 
         # Send via Gmail
-        from backend.config.loader import get_tenant_config, save_tenant_config
         config = get_tenant_config(tenant_id)
         google_token = config.integrations.google_access_token
         google_refresh = config.integrations.google_refresh_token
@@ -574,40 +575,17 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── LinkedIn Publish ──
     elif entity == "linkedin_post" and operation == "publish":
-        from backend.services.supabase import get_db
         sb = get_db()
         inbox_item_id = params.get("inbox_item_id", "")
         text = params.get("text", "")
 
-        # If text provided directly, post it
         if not text and not inbox_item_id:
-            result = sb.table("inbox_items").select("id,content").eq(
-                "tenant_id", tenant_id
-            ).eq("type", "social_post").in_(
-                "status", ["ready", "needs_review"]
-            ).order("created_at", desc=True).limit(1).execute()
-            if result.data:
-                inbox_item_id = result.data[0]["id"]
-                content = result.data[0].get("content", "")
-                # Parse LinkedIn post from JSON
-                import json as _json
-                try:
-                    start = content.find("{")
-                    end = content.rfind("}") + 1
-                    if start >= 0 and end > start:
-                        data = _json.loads(content[start:end])
-                        for p in data.get("posts", []):
-                            if p.get("platform", "").lower() == "linkedin":
-                                text = p.get("text", "")
-                                break
-                except Exception:
-                    pass
-                if not text:
-                    text = content[:3000]
-            else:
+            item = _find_latest_inbox_item(tenant_id, "social_post", ["ready", "needs_review"])
+            if not item:
                 return {"error": "No social posts found ready to publish"}
+            inbox_item_id = item["id"]
+            text = _extract_post_text(item.get("content", ""), "linkedin")
 
-        from backend.config.loader import get_tenant_config
         config = get_tenant_config(tenant_id)
         li_token = config.integrations.linkedin_access_token
         li_urn = config.integrations.linkedin_org_urn or config.integrations.linkedin_member_urn
@@ -625,7 +603,6 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── WhatsApp Send ──
     elif entity == "whatsapp_message" and operation == "send":
-        from backend.config.loader import get_tenant_config
         config = get_tenant_config(tenant_id)
         wa_token = config.integrations.whatsapp_access_token
         wa_pid = config.integrations.whatsapp_phone_number_id
@@ -643,7 +620,6 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── Email Draft Reply ──
     elif entity == "email_reply" and operation == "create":
-        from backend.services.supabase import get_db
         sb = get_db()
         # Trigger the draft reply via the email marketer
         thread_id = params.get("thread_id", "")
@@ -661,23 +637,14 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── Email Cancel Draft ──
     elif entity == "email_draft" and operation == "cancel":
-        from backend.services.supabase import get_db
-        sb = get_db()
         inbox_item_id = params.get("inbox_item_id", "")
         if not inbox_item_id:
-            result = sb.table("inbox_items").select("id").eq(
-                "tenant_id", tenant_id
-            ).eq("status", "draft_pending_approval").order("created_at", desc=True).limit(1).execute()
-            if result.data:
-                inbox_item_id = result.data[0]["id"]
-            else:
+            item = _find_latest_inbox_item(tenant_id, statuses=["draft_pending_approval"])
+            if not item:
                 return {"error": "No pending email drafts to cancel"}
+            inbox_item_id = item["id"]
 
-        sb.table("inbox_items").update({
-            "status": "cancelled",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", inbox_item_id).eq("tenant_id", tenant_id).execute()
-        return {"cancelled": inbox_item_id}
+        return inbox_service.update_status(tenant_id, inbox_item_id, "cancelled")
 
     # ── Gmail Sync ──
     elif entity == "gmail" and operation == "sync":
@@ -714,7 +681,6 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── Tasks ──
     elif entity == "task" and operation == "update":
-        from backend.services.supabase import get_db
         sb = get_db()
         sb.table("tasks").update({
             "status": params["status"],

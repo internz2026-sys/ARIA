@@ -2584,9 +2584,16 @@ async def ceo_execute_action(tenant_id: str, body: CEOActionRequest):
     if result["status"] == "error":
         raise HTTPException(status_code=400, detail=result.get("message", "Action failed"))
 
-    # Emit real-time update
+    # Emit real-time update with entity type for targeted refresh
+    action_def = None
+    try:
+        from backend.ceo_actions import ACTION_REGISTRY
+        action_def = ACTION_REGISTRY.get(body.action, {})
+    except Exception:
+        pass
     await sio.emit("ceo_action_executed", {
         "action": body.action,
+        "entity": action_def.get("entity", "") if action_def else "",
         "result": result,
     }, room=tenant_id)
 

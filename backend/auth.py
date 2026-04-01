@@ -102,7 +102,17 @@ def verify_jwt(token: str) -> dict:
                         break
 
                 if not key_data:
-                    raise HTTPException(status_code=401, detail="JWT signing key not found")
+                    # Key not found — maybe keys rotated. Clear cache and retry once.
+                    global _jwks_cache
+                    _jwks_cache = None
+                    jwks = _get_jwks()
+                    if jwks:
+                        for k in jwks.get("keys", []):
+                            if k.get("kid") == kid:
+                                key_data = k
+                                break
+                    if not key_data:
+                        raise HTTPException(status_code=401, detail="JWT signing key not found")
 
                 from jose import jwk
                 public_key = jwk.construct(key_data, algorithm="ES256")
