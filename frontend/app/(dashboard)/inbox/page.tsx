@@ -5,6 +5,7 @@ import { API_URL, authFetch, inbox } from "@/lib/api";
 import { AGENT_NAMES, AGENT_COLORS } from "@/lib/agent-config";
 import EmailEditor from "@/components/shared/EmailEditor";
 import { formatDateAgo } from "@/lib/utils";
+import { renderMarkdown } from "@/lib/render-markdown";
 
 interface EmailDraft {
   to: string;
@@ -712,8 +713,13 @@ export default function InboxPage() {
         </div>
       </div>
       <div className="flex-1 overflow-auto p-5">
-        <div className="prose prose-sm max-w-none text-[#2C2C2A] whitespace-pre-wrap">
-          {looksLikeHtml(item.content) ? stripHtml(item.content) : item.content}
+        <div className="prose prose-sm max-w-none text-[#2C2C2A]">
+          {looksLikeHtml(item.content)
+            ? <div className="whitespace-pre-wrap">{stripHtml(item.content)}</div>
+            : item.content.includes("## ") || item.content.includes("**")
+              ? renderMarkdown(item.content)
+              : <div className="whitespace-pre-wrap">{item.content}</div>
+          }
         </div>
       </div>
     </div>

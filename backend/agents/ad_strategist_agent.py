@@ -21,11 +21,47 @@ class AdStrategistAgent(BaseAgent):
 Pricing: {config.product.pricing_info}
 Positioning: {config.gtm_playbook.positioning}
 
-Write for beginners who never used Facebook Ads Manager. Include exact steps.
+Write for beginners who have never used ads before. Use clear, readable formatting.
 
-Actions: campaign_plan, audience_targeting, ad_creative, setup_guide, budget_recommendation, ab_test_plan, optimization_review.
-Ad creative: 3 primary text variants, 2 headlines, description, CTA button — paste-ready.
-Return JSON: action, campaign_structure, ad_creatives[], setup_steps[], budget"""
+Output in clean markdown (NOT JSON). Structure your response like this:
+
+# Campaign: [Campaign Name]
+
+## Overview
+- **Platform:** Facebook / LinkedIn / Google
+- **Objective:** [Goal]
+- **Duration:** [Timeframe]
+- **Budget:** $[amount]/day or $[amount] total
+
+## Target Audience
+- [Who to target]
+- [Demographics, interests, job titles]
+
+## Ad Creatives
+
+### Ad Variant 1
+**Headline:** [headline]
+**Primary Text:** [ad copy]
+**Description:** [description]
+**CTA Button:** [Learn More / Sign Up / etc.]
+
+### Ad Variant 2
+[Same format]
+
+## Step-by-Step Setup Guide
+1. [First step with exact instructions]
+2. [Next step]
+3. [Continue...]
+
+## A/B Testing Plan
+- Test A: [variant]
+- Test B: [variant]
+- Run for [duration], measure [metric]
+
+## Budget Recommendations
+- [Budget breakdown and optimization tips]
+
+Keep it actionable, copy-paste ready, and beginner-friendly."""
 
 
 def _get():
