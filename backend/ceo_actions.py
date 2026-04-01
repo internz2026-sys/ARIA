@@ -176,9 +176,9 @@ ACTION_REGISTRY: dict[str, dict] = {
     "publish_social_post": {
         "entity": "social_post",
         "operation": "publish",
-        "description": "Publish a social post to connected platforms",
-        "required_fields": ["inbox_item_id"],
-        "optional_fields": ["platform"],
+        "description": "Publish a social post to connected platforms (auto-finds latest if no ID given)",
+        "required_fields": [],
+        "optional_fields": ["inbox_item_id", "platform"],
         "confirm": ConfirmLevel.REQUIRED,
         "risk": "high",
     },
@@ -187,9 +187,9 @@ ACTION_REGISTRY: dict[str, dict] = {
     "send_email_draft": {
         "entity": "email_draft",
         "operation": "send",
-        "description": "Send an approved email draft",
-        "required_fields": ["inbox_item_id"],
-        "optional_fields": [],
+        "description": "Send a pending email draft via Gmail (auto-finds latest if no ID given)",
+        "required_fields": [],
+        "optional_fields": ["inbox_item_id"],
         "confirm": ConfirmLevel.REQUIRED,
         "risk": "high",
     },
@@ -356,14 +356,127 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── Social Publish ──
     elif entity == "social_post" and operation == "publish":
-        return {"published": params["inbox_item_id"], "status": "delegated_to_publish_flow"}
+        from backend.services.supabase import get_db
+        sb = get_db()
+        inbox_item_id = params.get("inbox_item_id", "")
+
+        # If no specific item, find the latest social post in inbox
+        if not inbox_item_id:
+            result = sb.table("inbox_items").select("id").eq(
+                "tenant_id", tenant_id
+            ).eq("type", "social_post").in_(
+                "status", ["ready", "needs_review"]
+            ).order("created_at", desc=True).limit(1).execute()
+            if result.data:
+                inbox_item_id = result.data[0]["id"]
+            else:
+                return {"error": "No social posts found ready to publish"}
+
+        # Call the actual publish endpoint logic
+        from backend.config.loader import get_tenant_config
+        from backend.tools import twitter_tool
+        config = get_tenant_config(tenant_id)
+        item_result = sb.table("inbox_items").select("*").eq("id", inbox_item_id).single().execute()
+        item = item_result.data
+        if not item:
+            raise ValueError("Inbox item not found")
+
+        content = item.get("content", "")
+        # Parse post text
+        import json as _json
+        text = content[:280]
+        try:
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start >= 0 and end > start:
+                data = _json.loads(content[start:end])
+                posts = data.get("posts", [])
+                if posts:
+                    text = posts[0].get("text", content[:280])
+        except Exception:
+            pass
+
+        access_token = config.integrations.twitter_access_token
+        if not access_token:
+            return {"error": "Twitter not connected. Go to Settings > Integrations."}
+
+        result = await twitter_tool.post_tweet(access_token, text[:280])
+        if result.get("error"):
+            return {"error": result["error"]}
+
+        sb.table("inbox_items").update({"status": "sent"}).eq("id", inbox_item_id).execute()
+        return {"published": inbox_item_id, "tweet_id": result.get("tweet_id", ""), "status": "sent"}
 
     # ── Email Send ──
     elif entity == "email_draft" and operation == "send":
-        return {"sent": params["inbox_item_id"], "status": "delegated_to_email_flow"}
+        from backend.services.supabase import get_db
+        sb = get_db()
+        inbox_item_id = params.get("inbox_item_id", "")
+
+        # If no specific item, find the latest pending email draft
+        if not inbox_item_id:
+            result = sb.table("inbox_items").select("id").eq(
+                "tenant_id", tenant_id
+            ).eq("status", "draft_pending_approval").order(
+                "created_at", desc=True
+            ).limit(1).execute()
+            if result.data:
+                inbox_item_id = result.data[0]["id"]
+            else:
+                return {"error": "No email drafts found pending approval"}
+
+        # Fetch the draft
+        item_result = sb.table("inbox_items").select("*").eq("id", inbox_item_id).single().execute()
+        item = item_result.data
+        if not item:
+            raise ValueError("Inbox item not found")
+
+        email_draft = item.get("email_draft", {})
+        if not email_draft:
+            return {"error": "This inbox item has no email draft"}
+
+        # Send via Gmail
+        from backend.config.loader import get_tenant_config, save_tenant_config
+        config = get_tenant_config(tenant_id)
+        google_token = config.integrations.google_access_token
+        google_refresh = config.integrations.google_refresh_token
+
+        if not google_token and not google_refresh:
+            return {"error": "Gmail not connected. Go to Settings > Integrations."}
+
+        from backend.tools import gmail_tool
+        to = email_draft.get("to", "")
+        subject = email_draft.get("subject", "")
+        html_body = email_draft.get("html_body", email_draft.get("text_body", ""))
+
+        if not to:
+            return {"error": "No recipient email in the draft"}
+
+        send_result = await gmail_tool.send_email(
+            access_token=google_token,
+            refresh_token=google_refresh,
+            to=to,
+            subject=subject,
+            body_html=html_body,
+            user_email=config.owner_email,
+        )
+
+        if send_result.get("error"):
+            sb.table("inbox_items").update({"status": "failed"}).eq("id", inbox_item_id).execute()
+            return {"error": send_result["error"]}
+
+        # Update tokens if refreshed
+        if send_result.get("new_access_token"):
+            config.integrations.google_access_token = send_result["new_access_token"]
+            save_tenant_config(config)
+
+        sb.table("inbox_items").update({"status": "sent"}).eq("id", inbox_item_id).execute()
+        return {"sent": inbox_item_id, "to": to, "subject": subject, "status": "sent"}
 
     # ── Tasks ──
     elif entity == "task" and operation == "update":
+        from backend.services.supabase import get_db
+        sb = get_db()
         sb.table("tasks").update({
             "status": params["status"],
             "updated_at": datetime.now(timezone.utc).isoformat(),
