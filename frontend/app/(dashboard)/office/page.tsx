@@ -37,7 +37,7 @@ function mergeAgents(remoteAgents: any[]): OfficeAgent[] {
 }
 
 export default function OfficePage() {
-  const [agents, setAgents] = useState<OfficeAgent[]>(AGENTS);
+  const [agents, setAgents] = useState<OfficeAgent[] | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<OfficeAgent | null>(null);
   const [loading, setLoading] = useState(true);
   const [tenantId, setTenantId] = useState<string>("");
@@ -156,7 +156,7 @@ export default function OfficePage() {
     const toRemove: string[] = [];
     for (const [id, status] of Object.entries(chatOverrides)) {
       if (status !== "working") continue;
-      const polled = agents.find((a) => a.id === id);
+      const polled = (agents || []).find((a) => a.id === id);
       if (polled && polled.status === "idle") toRemove.push(id);
     }
     if (toRemove.length > 0) {
@@ -170,6 +170,7 @@ export default function OfficePage() {
 
   // Merge: chat overrides > socket > polled REST > defaults
   const finalAgents = useMemo(() => {
+    if (!agents) return AGENTS;
     return agents.map((agent) => {
       // 1. Chat-driven overrides (highest priority — instant)
       const chatStatus = chatOverrides[agent.id];
@@ -210,7 +211,7 @@ export default function OfficePage() {
           <div>
             <h1 className="text-base font-bold text-[#2C2C2A]">Virtual Office</h1>
             <p className="text-[10px] text-[#5F5E5A]">
-              {agents.length} agents working across {new Set(agents.map((a) => a.department)).size} departments
+              {finalAgents.length} agents working across {new Set(finalAgents.map((a) => a.department)).size} departments
             </p>
           </div>
           <div className="flex items-center gap-3 text-[10px] text-[#5F5E5A]">
@@ -247,7 +248,7 @@ export default function OfficePage() {
 
         {/* Canvas area */}
         <div className="flex-1 min-h-0 relative">
-          {loading ? (
+          {loading || !agents ? (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
             </div>
