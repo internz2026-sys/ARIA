@@ -29,16 +29,16 @@ export const PRIORITY_STYLES: Record<string, { label: string; color: string; bg:
 
 // ---- API helpers -----------------------------------------------------------
 
-import { API_URL } from "./api";
+import { API_URL, authFetch } from "./api";
 
 export async function fetchTasks(tenantId: string): Promise<Task[]> {
-  const res = await fetch(`${API_URL}/api/tasks/${tenantId}`);
+  const res = await authFetch(`${API_URL}/api/tasks/${tenantId}`);
   const data = await res.json();
   return data.tasks || [];
 }
 
 export async function patchTaskStatus(taskId: string, status: string): Promise<void> {
-  await fetch(`${API_URL}/api/tasks/${taskId}`, {
+  await authFetch(`${API_URL}/api/tasks/${taskId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status }),
@@ -46,5 +46,5 @@ export async function patchTaskStatus(taskId: string, status: string): Promise<v
 }
 
 export async function deleteTaskApi(taskId: string): Promise<void> {
-  await fetch(`${API_URL}/api/tasks/${taskId}`, { method: "DELETE" });
+  await authFetch(`${API_URL}/api/tasks/${taskId}`, { method: "DELETE" });
 }

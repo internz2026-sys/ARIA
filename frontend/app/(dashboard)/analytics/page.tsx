@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 const dateRanges = ["Last 7 days", "Last 30 days", "Last 90 days"];
 
 export default function AnalyticsPage() {
@@ -9,7 +9,7 @@ export default function AnalyticsPage() {
   const [funnel, setFunnel] = useState({ impressions: 0, clicks: 0, signups: 0, activated: 0, converted: 0, retained: 0 });
 
   useEffect(() => {
-    fetch(`${API_URL}/api/analytics/demo?date_range=7d`).then(r => r.json()).then(d => d.funnel && setFunnel(d.funnel)).catch(() => {});
+    authFetch(`${API_URL}/api/analytics/demo?date_range=7d`).then(r => r.json()).then(d => d.funnel && setFunnel(d.funnel)).catch(() => {});
   }, []);
 
   const hasData = Object.values(funnel).some(v => v > 0);

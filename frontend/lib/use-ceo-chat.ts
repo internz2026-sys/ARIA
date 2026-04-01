@@ -87,19 +87,23 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
   // Load messages when session changes
   useEffect(() => {
     if (!sessionId) return;
-    fetch(`${API_URL}/api/ceo/chat/${sessionId}/history`)
-      .then((r) => r.json())
-      .then((d) => { if (mountedRef.current) setMessages(d.messages || []); })
-      .catch(() => { if (mountedRef.current) setMessages([]); });
+    getAuthHeaders().then(headers => {
+      fetch(`${API_URL}/api/ceo/chat/${sessionId}/history`, { headers })
+        .then((r) => r.json())
+        .then((d) => { if (mountedRef.current) setMessages(d.messages || []); })
+        .catch(() => { if (mountedRef.current) setMessages([]); });
+    });
   }, [sessionId]);
 
   const refreshSessions = useCallback(() => {
     const tid = getTenantId();
     if (!tid) return;
-    fetch(`${API_URL}/api/ceo/chat/sessions/${tid}`)
-      .then((r) => r.json())
-      .then((d) => { if (mountedRef.current) setSessions(d.sessions || []); })
-      .catch(() => {});
+    getAuthHeaders().then(headers => {
+      fetch(`${API_URL}/api/ceo/chat/sessions/${tid}`, { headers })
+        .then((r) => r.json())
+        .then((d) => { if (mountedRef.current) setSessions(d.sessions || []); })
+        .catch(() => {});
+    });
   }, []);
 
   useEffect(() => { refreshSessions(); }, [refreshSessions]);

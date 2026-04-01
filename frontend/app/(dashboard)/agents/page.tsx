@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 import { AGENT_DEFS } from "@/lib/agent-config";
 
 /* ───────── Page-specific icon SVGs for each agent ───────── */
@@ -69,7 +69,7 @@ export default function AgentsPage() {
     try {
       const action = newStatus === "paused" ? "pause" : "resume";
       const tenantId = localStorage.getItem("aria_tenant_id") || "";
-      await fetch(`${API_URL}/api/agents/${tenantId}/${slug}/${action}`, { method: "POST" });
+      await authFetch(`${API_URL}/api/agents/${tenantId}/${slug}/${action}`, { method: "POST" });
     } catch {
       // revert on error
       setAgentStates((prev) => ({

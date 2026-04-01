@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 import { AGENT_DEFS } from "@/lib/agent-config";
 import { PRIORITY_STYLES } from "@/lib/task-config";
 
@@ -93,7 +93,7 @@ export default function DashboardPage() {
     setTriaging(true);
     setTriageReason("");
     try {
-      const res = await fetch(`${API_URL}/api/ceo/triage`, {
+      const res = await authFetch(`${API_URL}/api/ceo/triage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: title.trim() }),
@@ -129,18 +129,18 @@ export default function DashboardPage() {
       }
     });
 
-    fetch(`${API_URL}/api/dashboard/${tid}/stats`).then(r => r.json()).then(d => d.kpis && setKpis(d.kpis)).catch(() => {});
-    fetch(`${API_URL}/api/paperclip/status`).then(r => r.json()).then(d => setPaperclipConnected(d.connected)).catch(() => {});
+    authFetch(`${API_URL}/api/dashboard/${tid}/stats`).then(r => r.json()).then(d => d.kpis && setKpis(d.kpis)).catch(() => {});
+    authFetch(`${API_URL}/api/paperclip/status`).then(r => r.json()).then(d => setPaperclipConnected(d.connected)).catch(() => {});
 
     if (tid !== "demo") {
-      fetch(`${API_URL}/api/dashboard/${tid}/config`)
+      authFetch(`${API_URL}/api/dashboard/${tid}/config`)
         .then(r => r.json())
         .then(d => { if (d.business_name) setBiz(d); })
         .catch(() => {});
     }
 
     // Load tasks from API
-    fetch(`${API_URL}/api/tasks/${tid}`)
+    authFetch(`${API_URL}/api/tasks/${tid}`)
       .then(r => r.json())
       .then(data => {
         if (data.tasks) {
@@ -166,13 +166,13 @@ export default function DashboardPage() {
 
   function deleteTask(id: string) {
     setTasks(prev => prev.filter(t => t.id !== id));
-    fetch(`${API_URL}/api/tasks/${id}`, { method: "DELETE" }).catch(() => {});
+    authFetch(`${API_URL}/api/tasks/${id}`, { method: "DELETE" }).catch(() => {});
   }
 
   function moveTask(id: string, to: Column) {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, column: to } : t));
     const apiStatus = to === "todo" ? "to_do" : to;
-    fetch(`${API_URL}/api/tasks/${id}`, {
+    authFetch(`${API_URL}/api/tasks/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: apiStatus }),
@@ -188,7 +188,7 @@ export default function DashboardPage() {
   async function delegateTask(task: Task) {
     moveTask(task.id, "in_progress");
     try {
-      await fetch(`${API_URL}/api/agents/${tenantId}/${task.agent}/run`, { method: "POST" });
+      await authFetch(`${API_URL}/api/agents/${tenantId}/${task.agent}/run`, { method: "POST" });
       moveTask(task.id, "done");
     } catch {
       moveTask(task.id, "todo");

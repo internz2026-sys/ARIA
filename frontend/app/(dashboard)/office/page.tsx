@@ -7,7 +7,7 @@ import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
 
 import { useAgentStatus } from "@/lib/socket";
 import { useCeoChat } from "@/lib/use-ceo-chat";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 import { AGENT_NAMES } from "@/lib/agent-config";
 
 interface ActivityItem {
@@ -100,7 +100,7 @@ export default function OfficePage() {
 
   // ── REST polling for task-based statuses (in_progress tasks) ──
   const fetchAgents = useCallback((tid: string) => {
-    fetch(`${API_URL}/api/office/agents/${tid}`)
+    authFetch(`${API_URL}/api/office/agents/${tid}`)
       .then((r) => r.json())
       .then((data) => {
         if (data.agents) setAgents(mergeAgents(data.agents));
@@ -117,7 +117,7 @@ export default function OfficePage() {
     }
 
     // Initial fetch
-    fetch(`${API_URL}/api/office/agents/${tid}`)
+    authFetch(`${API_URL}/api/office/agents/${tid}`)
       .then((r) => r.json())
       .then((data) => {
         if (data.agents) setAgents(mergeAgents(data.agents));
@@ -129,7 +129,7 @@ export default function OfficePage() {
     pollRef.current = setInterval(() => fetchAgents(tid), POLL_INTERVAL);
 
     // Fetch real activity
-    fetch(`${API_URL}/api/dashboard/${tid}/activity`)
+    authFetch(`${API_URL}/api/dashboard/${tid}/activity`)
       .then((r) => r.json())
       .then((data) => {
         if (data.activity && data.activity.length > 0) {
