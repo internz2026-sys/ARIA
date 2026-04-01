@@ -327,7 +327,8 @@ async def twitter_status(tenant_id: str):
 # ─── LinkedIn OAuth 2.0 ───
 
 # In-memory state store for LinkedIn OAuth (state → tenant_id)
-_linkedin_pending_auth: dict[str, str] = {}
+# state → (tenant_id, timestamp) — entries expire after 10 minutes
+_linkedin_pending_auth: dict[str, tuple[str, float]] = {}
 
 
 @app.get("/api/auth/linkedin/connect/{tenant_id}")
@@ -340,7 +341,13 @@ async def linkedin_connect(tenant_id: str, request: Request):
     base_url = _get_backend_base_url(request)
     redirect_uri = f"{base_url}/api/auth/linkedin/callback"
     state = secrets.token_urlsafe(32)
-    _linkedin_pending_auth[state] = tenant_id
+    import time as _time
+    # Evict expired entries (>10 min old)
+    _now = _time.time()
+    expired = [k for k, (_, ts) in _linkedin_pending_auth.items() if _now - ts > 600]
+    for k in expired:
+        del _linkedin_pending_auth[k]
+    _linkedin_pending_auth[state] = (tenant_id, _now)
     auth_url = linkedin_tool.get_auth_url(redirect_uri, state)
     return RedirectResponse(auth_url)
 
@@ -352,7 +359,8 @@ async def linkedin_callback(code: str = "", state: str = "", error: str = "", re
     if error:
         return HTMLResponse(_safe_oauth_error(f"LinkedIn auth failed: {error}"))
 
-    tenant_id = _linkedin_pending_auth.pop(state, None)
+    entry = _linkedin_pending_auth.pop(state, None)
+    tenant_id = entry[0] if entry else None
     if not tenant_id:
         return HTMLResponse(_safe_oauth_error("Invalid or expired OAuth state"))
 
@@ -2089,7 +2097,7 @@ async def dashboard_inbox(tenant_id: str):
     """Return inbox items for the dashboard (latest 5)."""
     try:
         sb = _get_supabase()
-        result = sb.table("inbox_items").select("*").eq("tenant_id", tenant_id).order("created_at", desc=True).limit(5).execute()
+        result = sb.table("inbox_items").select("id,title,agent,type,status,priority,created_at").eq("tenant_id", tenant_id).order("created_at", desc=True).limit(5).execute()
         return {"tenant_id": tenant_id, "items": result.data}
     except Exception:
         return {"tenant_id": tenant_id, "items": []}
@@ -2596,8 +2604,17 @@ if _SKILLS_DIR.exists():
     for _f in _SKILLS_DIR.glob("*.md"):
         _AGENT_MDS[f"skill_{_f.stem}"] = _f.read_text(encoding="utf-8")
 
-# In-memory chat cache (loaded from DB on first access)
+# In-memory chat cache with LRU eviction (max 100 sessions)
 _chat_sessions: dict[str, list[dict]] = {}
+_MAX_CACHED_SESSIONS = 100
+
+
+def _evict_chat_sessions():
+    """Remove oldest sessions if cache exceeds max size."""
+    if len(_chat_sessions) > _MAX_CACHED_SESSIONS:
+        excess = len(_chat_sessions) - _MAX_CACHED_SESSIONS
+        for key in list(_chat_sessions.keys())[:excess]:
+            del _chat_sessions[key]
 
 
 def _save_chat_message(session_id: str, tenant_id: str, role: str, content: str, delegations: list | None = None):
@@ -2646,6 +2663,7 @@ async def ceo_chat(body: CEOChatMessage):
     from backend.tools.claude_cli import call_claude
     import json as _json
 
+    _evict_chat_sessions()
     session = _chat_sessions.setdefault(body.session_id, [])
     is_first_message = len(session) == 0
     session.append({"role": "user", "content": body.message})
@@ -2670,8 +2688,9 @@ async def ceo_chat(body: CEOChatMessage):
         if name != "ceo" and not name.startswith("skill_")
     )
 
-    # Load tenant config — use compact agent_brief if available
+    # Load tenant config once — reused for business context + integration checks
     business_context = ""
+    tc = None
     tenant_id = body.tenant_id
     if tenant_id:
         try:
@@ -2692,24 +2711,23 @@ Channels: {', '.join(tc.channels)}
         except Exception:
             pass
 
-    # Check connected integrations for this tenant
+    # Check connected integrations for this tenant (reuse tc from above)
     integration_notes = ""
-    if tenant_id:
+    if tenant_id and tc:
         try:
-            _tc = get_tenant_config(tenant_id)
             _gmail_connected = bool(
-                _tc.integrations.google_access_token or _tc.integrations.google_refresh_token
+                tc.integrations.google_access_token or tc.integrations.google_refresh_token
             )
             if _gmail_connected:
                 integration_notes += f"""
-5. **Gmail is connected** ({_tc.owner_email}). When the user asks you to SEND an email,
+5. **Gmail is connected** ({tc.owner_email}). When the user asks you to SEND an email,
    delegate to email_marketer with a task starting with "SEND:" including the recipient email.
    IMPORTANT: Always include the recipient's full email address in the task description."""
 
-            _twitter_connected = bool(_tc.integrations.twitter_access_token or _tc.integrations.twitter_refresh_token)
+            _twitter_connected = bool(tc.integrations.twitter_access_token or tc.integrations.twitter_refresh_token)
             if _twitter_connected:
                 integration_notes += f"""
-6. **X/Twitter is connected** (@{_tc.integrations.twitter_username or 'user'}). When the user asks to post on social media:
+6. **X/Twitter is connected** (@{tc.integrations.twitter_username or 'user'}). When the user asks to post on social media:
    - Delegate to social_manager with task like "Adapt latest content for social media"
    - Social Manager fetches the latest Content Writer output and creates platform-specific posts
    - Posts go to Inbox for user approval — NEVER auto-publish without approval"""
