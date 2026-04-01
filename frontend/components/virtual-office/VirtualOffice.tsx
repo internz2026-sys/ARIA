@@ -37,7 +37,7 @@ interface AnimPos {
 }
 
 const T = TILE_SIZE;
-const WALK_SPEED = 1.05; // pixels per frame — walking to meeting / back to desk (3x faster)
+const WALK_SPEED = 1.75; // pixels per frame — walking to meeting / back to desk (5x faster)
 const STROLL_SPEED = 0.36; // pixels per frame — idle wander around office (2x faster)
 
 // Thought bubble icons (drawn as simple shapes/text, no emoji)
