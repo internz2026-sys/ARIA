@@ -54,6 +54,7 @@ export default function ConversationsPage() {
   const [syncing, setSyncing] = useState(false);
   const [draftLoading, setDraftLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState("");
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
@@ -61,8 +62,18 @@ export default function ConversationsPage() {
   const fetchThreads = useCallback(async () => {
     if (!tenantId) return;
     try {
+      // Fetch filtered threads for display
       const data = await emailThreads.list(tenantId, statusFilter);
       setThreads(data.threads || []);
+
+      // Fetch all threads for tab counts (lightweight — reuses cached data if same request)
+      const allData = statusFilter ? await emailThreads.list(tenantId) : data;
+      const counts: Record<string, number> = { all: 0 };
+      for (const t of (allData.threads || [])) {
+        counts[t.status] = (counts[t.status] || 0) + 1;
+        counts.all++;
+      }
+      setStatusCounts(counts);
     } catch {
       setThreads([]);
     } finally {
@@ -261,6 +272,17 @@ export default function ConversationsPage() {
             }`}
           >
             {tab.label}
+            {(() => {
+              const count = tab.key === "" ? (statusCounts.all || 0) : (statusCounts[tab.key] || 0);
+              if (count === 0) return null;
+              return (
+                <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${
+                  statusFilter === tab.key ? "bg-[#534AB7] text-white" : "bg-[#F0F0EE] text-[#5F5E5A]"
+                }`}>
+                  {count}
+                </span>
+              );
+            })()}
           </button>
         ))}
       </div>
