@@ -7,6 +7,7 @@ make HTTP calls to ARIA's API directly, this poller bridges the gap:
 2. Reads the agent's output from issue comments
 3. Creates inbox items in ARIA from those comments
 4. Marks the issue as processed to avoid duplicates
+5. Syncs agent run status to Virtual Office (running/idle)
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import os
 import re
 from datetime import datetime, timezone
 
-from backend.paperclip_sync import _urllib_request, get_company_id
+from backend.paperclip_sync import _urllib_request, get_company_id, get_paperclip_agent_id
 from backend.services.supabase import get_db
 
 logger = logging.getLogger("aria.paperclip_poller")
@@ -167,3 +168,89 @@ async def poll_completed_issues():
 
         except Exception as e:
             logger.error(f"Failed to import Paperclip issue {issue_id}: {e}")
+
+
+# ─── Agent Status Sync — Virtual Office ─────────────────────────────────────
+
+# Map Paperclip agent names to ARIA agent IDs
+_PAPERCLIP_TO_ARIA = {
+    "CEO": "ceo",
+    "Content Writer": "content_writer",
+    "Email Marketer": "email_marketer",
+    "Social Manager": "social_manager",
+    "Ad Strategist": "ad_strategist",
+}
+
+# Track previous status to only emit on change
+_prev_agent_status: dict[str, str] = {}
+
+
+async def sync_agent_statuses(sio):
+    """Poll Paperclip agent statuses and emit Virtual Office events."""
+    company_id = get_company_id()
+    if not company_id:
+        return
+
+    agents = _urllib_request("GET", f"/api/companies/{company_id}/agents")
+    if not agents:
+        return
+
+    agent_list = agents if isinstance(agents, list) else agents.get("data", [])
+
+    # Get all active tenants to broadcast status changes
+    try:
+        sb = get_db()
+        tenants = sb.table("tenant_configs").select("tenant_id").execute()
+        tenant_ids = [t["tenant_id"] for t in (tenants.data or [])]
+    except Exception:
+        tenant_ids = []
+
+    for agent in agent_list:
+        pc_name = agent.get("name", "")
+        aria_id = _PAPERCLIP_TO_ARIA.get(pc_name)
+        if not aria_id:
+            continue
+
+        # Map Paperclip status to ARIA Virtual Office status
+        pc_status = agent.get("status", "idle")
+        last_heartbeat = agent.get("lastHeartbeatAt")
+
+        # Check if agent has an active run
+        aria_status = "idle"
+        if pc_status in ("running", "active"):
+            aria_status = "working"
+        elif pc_status == "paused":
+            aria_status = "idle"
+
+        # Check for recent runs to determine if working
+        if pc_status == "idle" and last_heartbeat:
+            # Could check if heartbeat was recent, but for now just use status
+            pass
+
+        # Only emit if status changed
+        prev = _prev_agent_status.get(aria_id)
+        if prev == aria_status:
+            continue
+
+        _prev_agent_status[aria_id] = aria_status
+
+        current_task = ""
+        if aria_status == "working":
+            current_task = f"Running via Paperclip"
+
+        payload = {
+            "agent_id": aria_id,
+            "status": aria_status,
+            "current_task": current_task,
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Emit to all tenants
+        for tid in tenant_ids:
+            try:
+                await sio.emit("agent_status_change", payload, room=tid)
+            except Exception:
+                pass
+
+        if aria_status != "idle":
+            logger.info(f"Virtual Office: {aria_id} → {aria_status} (from Paperclip)")

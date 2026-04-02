@@ -109,17 +109,18 @@ async def _scheduler_executor_loop():
 
 
 async def _paperclip_poller_loop():
-    """Background loop: poll Paperclip for completed agent issues every 30 seconds."""
+    """Background loop: poll Paperclip for completed issues + sync agent statuses."""
     import asyncio
     _log = logging.getLogger("aria.paperclip_poller")
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(15)  # 15s for responsive Virtual Office updates
         try:
             from backend.paperclip_sync import is_connected
             if not is_connected():
                 continue
-            from backend.paperclip_poller import poll_completed_issues
+            from backend.paperclip_poller import poll_completed_issues, sync_agent_statuses
             await poll_completed_issues()
+            await sync_agent_statuses(sio)
         except Exception as e:
             _log.warning("Paperclip poller failed: %s", e)
 
