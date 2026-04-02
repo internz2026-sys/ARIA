@@ -225,6 +225,16 @@ async def initialize():
         _agent_id_cache = await sync_agents(client, company_id)
         await sync_org_chart(client, company_id, _agent_id_cache)
 
+        # Create and attach ARIA API skill to all agents
+        try:
+            from backend.paperclip_skill import ensure_skill, attach_skill_to_agents
+            skill_id = await ensure_skill(company_id)
+            if skill_id and _agent_id_cache:
+                await attach_skill_to_agents(company_id, skill_id, _agent_id_cache)
+                logger.info(f"ARIA API skill attached to {len(_agent_id_cache)} agents")
+        except Exception as e:
+            logger.warning(f"Failed to set up ARIA API skill: {e}")
+
         logger.info(f"Paperclip sync complete: {len(_agent_id_cache)} agents registered under company {company_id}")
 
 

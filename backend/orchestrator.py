@@ -139,52 +139,67 @@ async def _dispatch_via_paperclip(
     agent_module,
     context: dict | None,
 ) -> dict | None:
-    """Dispatch agent through Paperclip's heartbeat invoke endpoint.
+    """Dispatch agent through Paperclip by creating an issue assigned to the agent.
 
-    Paperclip manages:
-    - Rate limiting and budget enforcement
-    - Atomic task checkout (no double-work)
-    - Run tracking and cost logging
-    - Agent status lifecycle (active → running → idle)
+    Paperclip manages the full lifecycle:
+    - Creates an issue/task assigned to the agent
+    - Paperclip's Claude adapter runs the agent with its instructions
+    - Agent uses ARIA API skill to save results to inbox
+    - Budget tracking and cost logging handled by Paperclip
     """
-    # Trigger heartbeat on the Paperclip agent
-    resp = await _paperclip_api("POST", f"/api/agents/{paperclip_id}/heartbeat/invoke", json={
-        "metadata": {
-            "tenant_id": tenant_id,
-            "agent_name": agent_name,
-            "context": context or {},
-            "triggered_at": datetime.now(timezone.utc).isoformat(),
-        },
+    from backend.paperclip_sync import get_company_id
+
+    company_id = get_company_id()
+    if not company_id:
+        return None
+
+    task_desc = ""
+    if context and isinstance(context, dict):
+        task_desc = context.get("task", context.get("description", ""))
+    if not task_desc:
+        task_desc = f"Run {agent_name} agent for tenant {tenant_id}"
+
+    # Create an issue in Paperclip assigned to this agent
+    from backend.paperclip_sync import _urllib_request
+    issue = _urllib_request("POST", f"/api/companies/{company_id}/issues", data={
+        "title": task_desc[:200],
+        "body": (
+            f"## Task\n{task_desc}\n\n"
+            f"## Context\n"
+            f"- **Tenant ID**: `{tenant_id}`\n"
+            f"- **Agent**: {agent_name}\n"
+            f"- **API Base URL**: {os.environ.get('API_URL', 'http://172.17.0.1:8000')}\n\n"
+            f"## Instructions\n"
+            f"1. Read tenant config: `GET /api/dashboard/{tenant_id}/config`\n"
+            f"2. Execute the task using your agent instructions\n"
+            f"3. Save results to inbox: `POST /api/inbox/{tenant_id}/items`\n"
+        ),
+        "assigneeAgentId": paperclip_id,
+        "priority": context.get("priority", "medium") if context else "medium",
     })
 
-    if resp is None:
-        return None  # Paperclip unreachable
+    if not issue or not issue.get("id"):
+        logger.warning(f"Failed to create Paperclip issue for {agent_name}")
+        return None
 
-    if resp.status_code not in (200, 201, 202):
-        logger.warning(f"Paperclip heartbeat failed for {agent_name}: {resp.status_code}")
-        return None  # Fall back to local
+    issue_id = issue["id"]
+    identifier = issue.get("identifier", issue_id)
+    logger.info(f"Paperclip issue created for {agent_name}: {identifier}")
 
-    run_data = resp.json()
-    run_id = run_data.get("runId") or run_data.get("id", "unknown")
+    await log_agent_action(tenant_id, agent_name, "paperclip_dispatch", {
+        "status": "dispatched",
+        "paperclip_issue": identifier,
+        "paperclip_issue_id": issue_id,
+        "task": task_desc[:200],
+    })
 
-    logger.info(f"Paperclip accepted {agent_name} dispatch (run={run_id})")
-
-    # Execute the actual agent logic locally (Paperclip coordinates, ARIA executes)
-    try:
-        result = await agent_module.run(
-            tenant_id,
-            **({"context": context} if context and "context" in agent_module.run.__code__.co_varnames else {}),
-        )
-        result["paperclip_run_id"] = run_id
-
-        await log_agent_action(tenant_id, agent_name, "run", result)
-        return result
-
-    except Exception as e:
-        error_result = {"status": "error", "error": str(e), "paperclip_run_id": run_id}
-        await log_agent_action(tenant_id, agent_name, "run", error_result, status="error")
-        logger.error(f"Agent {agent_name} failed (paperclip run={run_id}): {e}")
-        return error_result
+    return {
+        "status": "dispatched_to_paperclip",
+        "paperclip_issue": identifier,
+        "paperclip_issue_id": issue_id,
+        "agent": agent_name,
+        "message": f"Task assigned to {agent_name} via Paperclip ({identifier}). Results will appear in your inbox.",
+    }
 
 
 async def _dispatch_local(tenant_id: str, agent_name: str, agent_module, context: dict | None) -> dict:

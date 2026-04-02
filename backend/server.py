@@ -151,6 +151,7 @@ _PUBLIC_PATHS = {
 _PUBLIC_PREFIXES = (
     "/api/auth/",           # OAuth callbacks (Twitter, LinkedIn)
     "/api/webhooks/",       # External webhooks (Stripe, SendGrid)
+    "/api/inbox/",          # Inbox item creation (used by Paperclip agents)
     "/api/tenant/by-email/", # Tenant lookup during login (returns only tenant_id)
     "/docs",                # Swagger UI
     "/openapi.json",
@@ -2988,6 +2989,55 @@ async def _run_agent_to_inbox(
 
 # ─── CRM API — moved to backend/routers/crm.py ───
 # ─── Inbox API — moved to backend/routers/inbox.py ───
+
+
+# ─── Inbox Item Creation (for Paperclip agents) ───
+
+class CreateInboxItem(BaseModel):
+    title: str
+    content: str
+    type: str = "blog"
+    agent: str = "content_writer"
+    priority: str = "medium"
+    status: str = "needs_review"
+    email_draft: dict | None = None
+
+
+@app.post("/api/inbox/{tenant_id}/items")
+async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
+    """Create an inbox item — used by Paperclip agents to store their output."""
+    sb = _get_supabase()
+    row = {
+        "tenant_id": tenant_id,
+        "title": body.title,
+        "content": body.content,
+        "type": body.type,
+        "agent": body.agent,
+        "priority": body.priority,
+        "status": body.status,
+    }
+    if body.email_draft:
+        row["email_draft"] = body.email_draft
+
+    result = sb.table("inbox_items").insert(row).execute()
+    item = result.data[0] if result.data else None
+
+    # Emit real-time notification
+    if item and tenant_id:
+        await sio.emit("inbox_updated", {"action": "created", "item": item}, room=tenant_id)
+        # Create notification
+        try:
+            sb.table("notifications").insert({
+                "tenant_id": tenant_id,
+                "title": f"New from {body.agent}: {body.title}",
+                "body": body.content[:200],
+                "category": "inbox",
+                "href": "/inbox",
+            }).execute()
+        except Exception:
+            pass
+
+    return {"item": item}
 
 
 # ─── CEO Actions ───
