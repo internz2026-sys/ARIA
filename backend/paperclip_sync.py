@@ -77,17 +77,26 @@ def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | 
 async def ensure_company(client: httpx.AsyncClient) -> str | None:
     """Create or retrieve the ARIA company in Paperclip. Returns company_id."""
     # Use urllib for company lookup (httpx has issues with __Secure- cookies over HTTP)
-    companies = _urllib_request("GET", "/api/companies")
-    if companies is not None:
-        company_list = companies if isinstance(companies, list) else companies.get("data", companies.get("companies", []))
-        for c in company_list:
-            name = c.get("name", "")
-            if name in ("ARIA", "Hoversight AI Agency", os.environ.get("PAPERCLIP_COMPANY_NAME", "")):
-                company_id = c["id"]
-                logger.info(f"Found company '{name}': {company_id}")
-                return company_id
+    # Retry up to 3 times with a small delay (network may not be ready at startup)
+    import time
+    for attempt in range(3):
+        companies = _urllib_request("GET", "/api/companies")
+        if companies is not None:
+            company_list = companies if isinstance(companies, list) else companies.get("data", companies.get("companies", []))
+            logger.info(f"Paperclip returned {len(company_list)} companies")
+            for c in company_list:
+                name = c.get("name", "")
+                if name in ("ARIA", "Hoversight AI Agency", os.environ.get("PAPERCLIP_COMPANY_NAME", "")):
+                    company_id = c["id"]
+                    logger.info(f"Found company '{name}': {company_id}")
+                    return company_id
+            logger.warning(f"No matching company found. Available: {[c.get('name') for c in company_list]}")
+            return None
+        else:
+            logger.warning(f"Paperclip company lookup attempt {attempt+1}/3 failed, retrying...")
+            time.sleep(2)
 
-    logger.error("Failed to find ARIA company in Paperclip")
+    logger.error("Failed to reach Paperclip for company lookup after 3 attempts")
     return None
 
 
