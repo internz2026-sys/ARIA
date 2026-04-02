@@ -44,10 +44,10 @@ async def _api(client: httpx.AsyncClient, method: str, path: str, **kwargs) -> h
     if token:
         headers["Authorization"] = f"Bearer {token}"
     if session_cookie:
-        # Pass cookie via httpx cookies parameter for proper encoding
-        cookies = kwargs.pop("cookies", {})
-        cookies["__Secure-better-auth.session_token"] = session_cookie
-        kwargs["cookies"] = cookies
+        # Send as raw header — httpx won't send __Secure- cookies over HTTP
+        existing_cookie = headers.get("Cookie", "")
+        new_cookie = f"__Secure-better-auth.session_token={session_cookie}"
+        headers["Cookie"] = f"{existing_cookie}; {new_cookie}" if existing_cookie else new_cookie
     headers["Content-Type"] = "application/json"
     url = f"{PAPERCLIP_URL}{path}"
     resp = await client.request(method, url, headers=headers, **kwargs)
