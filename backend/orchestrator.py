@@ -186,6 +186,20 @@ async def _dispatch_via_paperclip(
     identifier = issue.get("identifier", issue_id)
     logger.info(f"Paperclip issue created for {agent_name}: {identifier}")
 
+    # Trigger heartbeat to make the agent run immediately
+    heartbeat = _urllib_request("POST", f"/api/agents/{paperclip_id}/heartbeat/invoke", data={
+        "metadata": {
+            "tenant_id": tenant_id,
+            "agent_name": agent_name,
+            "issue_id": issue_id,
+            "triggered_at": datetime.now(timezone.utc).isoformat(),
+        },
+    })
+    if heartbeat:
+        logger.info(f"Heartbeat triggered for {agent_name} (issue {identifier})")
+    else:
+        logger.warning(f"Heartbeat trigger failed for {agent_name} — agent will pick up issue on next timer")
+
     await log_agent_action(tenant_id, agent_name, "paperclip_dispatch", {
         "status": "dispatched",
         "paperclip_issue": identifier,
