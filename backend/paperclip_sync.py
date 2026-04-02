@@ -55,6 +55,7 @@ async def _api(client: httpx.AsyncClient, method: str, path: str, **kwargs) -> h
 def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | list | None:
     """Make a request to Paperclip using urllib (bypasses httpx cookie issues)."""
     import urllib.request
+    import ssl
     import json as _json
     session_cookie = os.environ.get("PAPERCLIP_SESSION_COOKIE", "")
     token = os.environ.get("PAPERCLIP_API_TOKEN", "")
@@ -68,7 +69,11 @@ def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | 
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        r = urllib.request.urlopen(req, timeout=15)
+        # Skip SSL verification for internal connections (self-signed certs / Traefik)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        r = urllib.request.urlopen(req, timeout=15, context=ctx)
         return _json.loads(r.read().decode())
     except Exception as e:
         logger.warning(f"urllib {method} {path} failed: {type(e).__name__}: {e}")
@@ -191,9 +196,9 @@ async def initialize():
 
     logger.info(f"Syncing with Paperclip at {PAPERCLIP_URL}...")
 
-    # Wait for Docker network DNS to be ready
+    # Wait for Docker network and SSL to be ready
     import asyncio
-    await asyncio.sleep(5)
+    await asyncio.sleep(10)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         # Check if Paperclip is reachable
