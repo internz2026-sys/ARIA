@@ -60,15 +60,16 @@ async def ensure_company(client: httpx.AsyncClient) -> str | None:
     # companies could be a list or have a .data wrapper
     company_list = companies if isinstance(companies, list) else companies.get("data", companies.get("companies", []))
 
+    target_name = os.environ.get("PAPERCLIP_COMPANY_NAME", "ARIA")
     for c in company_list:
-        if c.get("name") == "ARIA":
+        if c.get("name") in (target_name, "ARIA", "Hoversight AI Agency"):
             company_id = c["id"]
-            logger.info(f"Found existing ARIA company: {company_id}")
+            logger.info(f"Found existing company '{c.get('name')}': {company_id}")
             return company_id
 
     # Create the company
     resp = await _api(client, "POST", "/api/companies", json={
-        "name": "ARIA",
+        "name": target_name,
         "description": "AI marketing team for developer founders — 5 autonomous marketing agents",
     })
     if resp.status_code in (200, 201):
