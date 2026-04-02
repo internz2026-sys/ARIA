@@ -64,7 +64,7 @@ async def _gmail_sync_loop():
     import asyncio
     _log = logging.getLogger("aria.gmail_sync_loop")
     while True:
-        await asyncio.sleep(120)  # 2 minutes
+        await asyncio.sleep(60)  # 1 minute
         try:
             from backend.tools.gmail_sync import sync_all_tenants
             results = await sync_all_tenants()
