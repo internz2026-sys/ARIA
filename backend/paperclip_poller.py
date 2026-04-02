@@ -26,13 +26,37 @@ _processed_issues: set[str] = set()
 
 
 def _extract_tenant_id(issue: dict) -> str | None:
-    """Extract tenant_id from issue body."""
+    """Extract tenant_id from issue body or by fetching full issue details."""
     body = issue.get("body") or issue.get("description") or ""
-    # Look for tenant_id in the issue body
+
+    # Try body first
     match = re.search(r"Tenant ID[:\s]*`?([a-f0-9-]{36})`?", body, re.IGNORECASE)
     if match:
         return match.group(1)
-    # Also check metadata
+
+    # Body might be empty in list response — fetch full issue
+    if not body:
+        full = _urllib_request("GET", f"/api/issues/{issue['id']}")
+        if full:
+            body = full.get("body") or full.get("description") or ""
+            match = re.search(r"Tenant ID[:\s]*`?([a-f0-9-]{36})`?", body, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+    # Fallback: look for any UUID-like tenant_id pattern in body
+    match = re.search(r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})", body)
+    if match:
+        return match.group(1)
+
+    # Last resort: get from active tenants (single-tenant setup)
+    try:
+        sb = get_db()
+        result = sb.table("tenant_configs").select("tenant_id").limit(1).execute()
+        if result.data:
+            return result.data[0]["tenant_id"]
+    except Exception:
+        pass
+
     return None
 
 
@@ -59,14 +83,10 @@ def _determine_content_type(agent_name: str, title: str) -> str:
 
 def _get_issue_output(issue: dict) -> str | None:
     """Get the agent's output from issue comments."""
-    company_id = get_company_id()
-    if not company_id:
-        return None
-
     issue_id = issue["id"]
 
-    # Try to get comments on the issue
-    comments = _urllib_request("GET", f"/api/companies/{company_id}/issues/{issue_id}/comments")
+    # Correct path: /api/issues/{id}/comments
+    comments = _urllib_request("GET", f"/api/issues/{issue_id}/comments")
     if not comments:
         return None
 
