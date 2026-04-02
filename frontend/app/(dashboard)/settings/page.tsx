@@ -77,24 +77,36 @@ export default function SettingsPage() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
     setGmailReconnecting(true);
-    // Open dedicated Google OAuth flow via backend (like Twitter/LinkedIn)
+
+    function refreshGmailStatus() {
+      authFetch(`${API_URL}/api/integrations/${tenantId}/gmail-status`)
+        .then(r => r.json())
+        .then(data => setGmailConnected(!!data?.connected))
+        .catch(() => {});
+      setGmailReconnecting(false);
+    }
+
+    // Listen for postMessage from the popup
+    function onMessage(e: MessageEvent) {
+      if (e.data === "gmail_connected") {
+        window.removeEventListener("message", onMessage);
+        refreshGmailStatus();
+      }
+    }
+    window.addEventListener("message", onMessage);
+
+    // Open dedicated Google OAuth flow via backend
     const popup = window.open(
       `${API_URL}/api/auth/google/connect/${tenantId}`,
       "google_auth",
       "width=600,height=700"
     );
-    // Poll for popup close, then refresh status
+    // Fallback: poll for popup close (may fail cross-origin, so also use timer)
     const timer = setInterval(() => {
-      if (!popup || popup.closed) {
-        clearInterval(timer);
-        setGmailReconnecting(false);
-        // Refresh Gmail status
-        authFetch(`${API_URL}/api/integrations/${tenantId}/gmail-status`)
-          .then(r => r.json())
-          .then(data => setGmailConnected(!!data?.connected))
-          .catch(() => {});
-      }
+      try { if (!popup || popup.closed) { clearInterval(timer); refreshGmailStatus(); } } catch { /* cross-origin */ }
     }, 500);
+    // Safety fallback: refresh status after 15s regardless
+    setTimeout(() => { window.removeEventListener("message", onMessage); refreshGmailStatus(); }, 15000);
   }
 
   function connectTwitter() {

@@ -1338,7 +1338,10 @@ async def google_callback(request: Request, code: str = "", state: str = "", err
     return HTMLResponse(
         "<h3 style='color:green'>Gmail connected successfully!</h3>"
         "<p>You can close this window.</p>"
-        "<script>setTimeout(()=>window.close(),2000)</script>"
+        "<script>"
+        "try { window.opener && window.opener.postMessage('gmail_connected', '*'); } catch(e) {}"
+        "setTimeout(()=>window.close(),2000);"
+        "</script>"
     )
 
 
