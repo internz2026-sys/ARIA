@@ -3,37 +3,73 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { API_URL, getAuthHeaders } from "@/lib/api";
+import { API_URL } from "@/lib/api";
 
 export default function AuthCallbackPage() {
   const router = useRouter();
 
   useEffect(() => {
+    // ── Extract Google tokens from URL hash (Supabase implicit flow) ──
+    // Supabase puts provider_token in the hash fragment after OAuth redirect.
+    // We capture it here because getSession()/onAuthStateChange may not include it.
+    function extractTokensFromHash(): { providerToken: string | null; providerRefreshToken: string | null } {
+      const hash = window.location.hash.substring(1);
+      const params = new URLSearchParams(hash);
+      return {
+        providerToken: params.get("provider_token"),
+        providerRefreshToken: params.get("provider_refresh_token"),
+      };
+    }
+
+    const hashTokens = extractTokensFromHash();
+
     async function handleAuth() {
-      // Use onAuthStateChange to get the session — it includes
-      // provider_token and provider_refresh_token from the OAuth redirect,
-      // whereas getSession() returns a cached session without them.
       let handled = false;
+
       const { data: { subscription } } = supabase.auth.onAuthStateChange(
-        async (_event, newSession) => {
-          if (newSession && !handled) {
-            handled = true;
-            subscription.unsubscribe();
-            await processSession(newSession);
-          }
+        async (event, newSession) => {
+          if (!newSession || handled) return;
+
+          // Prefer the SIGNED_IN event (has provider tokens) over INITIAL_SESSION
+          const hasProviderToken = !!(
+            newSession.provider_token ||
+            hashTokens.providerToken
+          );
+
+          // Skip INITIAL_SESSION if it has no provider token — wait for SIGNED_IN
+          if (event === "INITIAL_SESSION" && !hasProviderToken) return;
+
+          handled = true;
+          subscription.unsubscribe();
+
+          // Merge hash tokens into session if session doesn't have them
+          const sessionWithTokens = {
+            ...newSession,
+            provider_token: newSession.provider_token || hashTokens.providerToken,
+            provider_refresh_token: newSession.provider_refresh_token || hashTokens.providerRefreshToken,
+          };
+
+          await processSession(sessionWithTokens);
         }
       );
 
-      // Fallback: if no auth event fires within 3s, try getSession
+      // Fallback: if no SIGNED_IN fires within 4s, proceed with whatever we have
       setTimeout(async () => {
         if (handled) return;
+        handled = true;
+        subscription.unsubscribe();
         const { data: { session } } = await supabase.auth.getSession();
-        if (session && !handled) {
-          handled = true;
-          subscription.unsubscribe();
-          await processSession(session);
+        if (session) {
+          const sessionWithTokens = {
+            ...session,
+            provider_token: session.provider_token || hashTokens.providerToken,
+            provider_refresh_token: session.provider_refresh_token || hashTokens.providerRefreshToken,
+          };
+          await processSession(sessionWithTokens);
+        } else {
+          router.replace("/login");
         }
-      }, 3000);
+      }, 4000);
     }
 
     async function storeGoogleTokens(
@@ -43,17 +79,16 @@ export default function AuthCallbackPage() {
     ) {
       if (!providerToken) return;
       try {
-        const authHeaders = await getAuthHeaders();
         await fetch(`${API_URL}/api/integrations/${tenantId}/google-tokens`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...authHeaders },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             google_access_token: providerToken,
             google_refresh_token: providerRefreshToken || null,
           }),
         });
       } catch {
-        // Non-blocking — tokens will be captured on next login
+        // Non-blocking
       }
     }
 
@@ -75,36 +110,32 @@ export default function AuthCallbackPage() {
         }
       }
 
-      // Check if user already has a tenant config (server-side, survives localStorage clears)
+      // Check if user already has a tenant config
       const email = session.user.email;
       if (email) {
         try {
           const res = await fetch(`${API_URL}/api/tenant/by-email/${encodeURIComponent(email)}`);
           const data = await res.json();
           if (data.tenant_id) {
-            // Restore tenant_id — user already completed onboarding
             localStorage.setItem("aria_tenant_id", data.tenant_id);
-            // Store Google OAuth tokens for Gmail sending
             await storeGoogleTokens(data.tenant_id, session.provider_token, session.provider_refresh_token);
             router.replace("/dashboard");
             return;
           }
         } catch {
-          // If backend is down, fall through to localStorage check
+          // Backend down — fall through
         }
       }
 
-      // No server-side config found — check localStorage as fallback
+      // Check localStorage
       const tenantId = localStorage.getItem("aria_tenant_id");
       if (tenantId) {
-        // Store Google OAuth tokens for Gmail sending
         await storeGoogleTokens(tenantId, session.provider_token, session.provider_refresh_token);
         router.replace("/dashboard");
         return;
       }
 
-      // No config anywhere — go to onboarding (tokens will be stored on first login after onboarding)
-      // Save tokens temporarily so they can be stored after onboarding completes
+      // New user — save tokens for after onboarding
       if (session.provider_token) {
         localStorage.setItem("aria_google_token", session.provider_token);
         if (session.provider_refresh_token) {
