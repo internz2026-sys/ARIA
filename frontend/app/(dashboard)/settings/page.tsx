@@ -113,12 +113,29 @@ export default function SettingsPage() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
     window.open(`${API_URL}/api/auth/twitter/connect/${tenantId}`, "twitter_auth", "width=600,height=700");
+    // Listen for postMessage from popup
+    function onMsg(e: MessageEvent) {
+      if (e.data === "twitter_connected") {
+        window.removeEventListener("message", onMsg);
+        authFetch(`${API_URL}/api/integrations/${tenantId}/twitter-status`).then(r => r.json()).then(data => { setTwitterConnected(!!data?.connected); setTwitterUsername(data?.username || ""); }).catch(() => {});
+      }
+    }
+    window.addEventListener("message", onMsg);
+    setTimeout(() => window.removeEventListener("message", onMsg), 30000);
   }
 
   function connectLinkedIn() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
     window.open(`${API_URL}/api/auth/linkedin/connect/${tenantId}`, "linkedin_auth", "width=600,height=700");
+    function onMsg(e: MessageEvent) {
+      if (e.data === "linkedin_connected") {
+        window.removeEventListener("message", onMsg);
+        authFetch(`${API_URL}/api/integrations/${tenantId}/linkedin-status`).then(r => r.json()).then(data => { setLinkedinConnected(!!data?.connected); setLinkedinName(data?.name || ""); setLinkedinPostingTo(data?.posting_to || "personal"); setLinkedinOrgName(data?.org_name || ""); }).catch(() => {});
+      }
+    }
+    window.addEventListener("message", onMsg);
+    setTimeout(() => window.removeEventListener("message", onMsg), 30000);
   }
 
   async function fetchLinkedInOrgs() {

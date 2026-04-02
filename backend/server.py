@@ -335,11 +335,15 @@ async def twitter_callback(code: str = "", state: str = "", error: str = "", req
 
     logger.info("Twitter connected for tenant %s (@%s)", tenant_id, username)
 
-    # Close popup and refresh parent
-    return HTMLResponse("""<html><body><script>
-        if (window.opener) { window.opener.location.reload(); }
-        window.close();
-    </script><p>Twitter connected! You can close this window.</p></body></html>""")
+    return HTMLResponse(
+        "<html><body>"
+        "<h3 style='color:green'>Twitter connected successfully!</h3>"
+        "<p>You can close this window.</p>"
+        "<script>"
+        "try { window.opener && window.opener.postMessage('twitter_connected', '*'); } catch(e) {}"
+        "setTimeout(()=>window.close(),2000);"
+        "</script></body></html>"
+    )
 
 
 @app.get("/api/integrations/{tenant_id}/twitter-status")
@@ -423,10 +427,15 @@ async def linkedin_callback(code: str = "", state: str = "", error: str = "", re
 
     logger.info("LinkedIn connected for tenant %s (%s)", tenant_id, linkedin_name)
 
-    return HTMLResponse("""<html><body><script>
-        if (window.opener) { window.opener.location.reload(); }
-        window.close();
-    </script><p>LinkedIn connected! You can close this window.</p></body></html>""")
+    return HTMLResponse(
+        "<html><body>"
+        "<h3 style='color:green'>LinkedIn connected successfully!</h3>"
+        "<p>You can close this window.</p>"
+        "<script>"
+        "try { window.opener && window.opener.postMessage('linkedin_connected', '*'); } catch(e) {}"
+        "setTimeout(()=>window.close(),2000);"
+        "</script></body></html>"
+    )
 
 
 @app.get("/api/integrations/{tenant_id}/linkedin-status")
