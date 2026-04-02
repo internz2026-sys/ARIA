@@ -179,9 +179,34 @@ export default function SettingsPage() {
     }
   }
 
+  async function disconnectGmail() {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId || !confirm("Disconnect Gmail? Email Marketer will only be able to draft, not send.")) return;
+    await authFetch(`${API_URL}/api/integrations/${tenantId}/gmail-disconnect`, { method: "POST" });
+    setGmailConnected(false);
+  }
+
+  async function disconnectTwitter() {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId || !confirm("Disconnect X/Twitter? Social Manager will only be able to draft, not publish.")) return;
+    await authFetch(`${API_URL}/api/integrations/${tenantId}/twitter-disconnect`, { method: "POST" });
+    setTwitterConnected(false);
+    setTwitterUsername("");
+  }
+
+  async function disconnectLinkedIn() {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId || !confirm("Disconnect LinkedIn? You won't be able to publish posts to LinkedIn.")) return;
+    await authFetch(`${API_URL}/api/integrations/${tenantId}/linkedin-disconnect`, { method: "POST" });
+    setLinkedinConnected(false);
+    setLinkedinName("");
+    setLinkedinPostingTo("personal");
+    setLinkedinOrgName("");
+  }
+
   async function disconnectWhatsApp() {
     const tenantId = localStorage.getItem("aria_tenant_id");
-    if (!tenantId) return;
+    if (!tenantId || !confirm("Disconnect WhatsApp?")) return;
     await authFetch(`${API_URL}/api/whatsapp/${tenantId}/disconnect`, { method: "POST" });
     setWhatsappConnected(false);
   }
@@ -302,6 +327,7 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
                   <button onClick={reconnectGmail} className="text-[10px] text-[#534AB7] hover:underline transition-colors">Reconnect</button>
+                  <button onClick={disconnectGmail} className="text-[10px] text-[#5F5E5A] hover:text-[#D85A30] transition-colors">Disconnect</button>
                 </div>
               ) : null}
             </div>
@@ -336,6 +362,7 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
                   <button onClick={connectTwitter} className="text-[10px] text-[#534AB7] hover:underline transition-colors">Reconnect</button>
+                  <button onClick={disconnectTwitter} className="text-[10px] text-[#5F5E5A] hover:text-[#D85A30] transition-colors">Disconnect</button>
                 </div>
               ) : null}
             </div>
@@ -370,6 +397,7 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
                   <button onClick={connectLinkedIn} className="text-[10px] text-[#534AB7] hover:underline transition-colors">Reconnect</button>
+                  <button onClick={disconnectLinkedIn} className="text-[10px] text-[#5F5E5A] hover:text-[#D85A30] transition-colors">Disconnect</button>
                 </div>
               ) : null}
             </div>

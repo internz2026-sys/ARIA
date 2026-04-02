@@ -894,6 +894,38 @@ async def whatsapp_disconnect(tenant_id: str):
     return {"status": "disconnected"}
 
 
+@app.post("/api/integrations/{tenant_id}/gmail-disconnect")
+async def gmail_disconnect(tenant_id: str):
+    """Remove Gmail/Google credentials for a tenant."""
+    config = get_tenant_config(tenant_id)
+    config.integrations.google_access_token = None
+    config.integrations.google_refresh_token = None
+    save_tenant_config(config)
+    return {"status": "disconnected"}
+
+
+@app.post("/api/integrations/{tenant_id}/twitter-disconnect")
+async def twitter_disconnect(tenant_id: str):
+    """Remove Twitter/X credentials for a tenant."""
+    config = get_tenant_config(tenant_id)
+    config.integrations.twitter_access_token = None
+    config.integrations.twitter_refresh_token = None
+    save_tenant_config(config)
+    return {"status": "disconnected"}
+
+
+@app.post("/api/integrations/{tenant_id}/linkedin-disconnect")
+async def linkedin_disconnect(tenant_id: str):
+    """Remove LinkedIn credentials for a tenant."""
+    config = get_tenant_config(tenant_id)
+    config.integrations.linkedin_access_token = None
+    config.integrations.linkedin_member_urn = None
+    config.integrations.linkedin_org_urn = None
+    config.integrations.linkedin_org_name = None
+    save_tenant_config(config)
+    return {"status": "disconnected"}
+
+
 # ─── Usage API ───
 
 @app.get("/api/usage/{tenant_id}")
