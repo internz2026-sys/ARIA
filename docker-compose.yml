@@ -13,12 +13,10 @@ services:
       - REDIS_URL=redis://redis:6379
     depends_on:
       - redis
+    networks:
+      - default
+      - paperclip
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   # ── Frontend (Next.js) ──────────────────────────────────────────────────
   frontend:
@@ -60,6 +58,11 @@ services:
     depends_on:
       - backend
       - frontend
+
+networks:
+  paperclip:
+    external: true
+    name: paperclip-tgdk_default
 
 volumes:
   redis_data:
