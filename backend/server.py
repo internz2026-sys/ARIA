@@ -56,7 +56,7 @@ _allowed_origins = [
 ]
 
 # Socket.IO for real-time events
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=_allowed_origins)
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
 
 async def _gmail_sync_loop():
@@ -239,8 +239,28 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# Mount Socket.IO
-socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
+# Mount Socket.IO with CORS-aware wrapper
+_sio_asgi = socketio.ASGIApp(sio, other_asgi_app=app)
+
+
+async def socket_app(scope, receive, send):
+    """ASGI wrapper that ensures CORS headers on all responses."""
+    if scope["type"] == "http":
+        headers = dict(scope.get("headers", []))
+        origin = headers.get(b"origin", b"").decode()
+        if origin in _allowed_origins:
+            # Intercept OPTIONS preflight
+            if scope["method"] == "OPTIONS":
+                await send({"type": "http.response.start", "status": 204, "headers": [
+                    [b"access-control-allow-origin", origin.encode()],
+                    [b"access-control-allow-methods", b"GET, POST, PUT, PATCH, DELETE, OPTIONS"],
+                    [b"access-control-allow-headers", b"authorization, content-type"],
+                    [b"access-control-allow-credentials", b"true"],
+                    [b"access-control-max-age", b"86400"],
+                ]})
+                await send({"type": "http.response.body", "body": b""})
+                return
+    await _sio_asgi(scope, receive, send)
 
 # In-memory live status store + persisted to Supabase
 _live_agent_status: dict[str, dict[str, dict]] = {}
