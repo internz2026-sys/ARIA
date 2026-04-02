@@ -127,18 +127,13 @@ export default function AuthCallbackPage() {
             await storeGoogleTokens(data.tenant_id, session.provider_token, session.provider_refresh_token);
             router.replace("/dashboard");
             return;
+          } else {
+            // This user has no tenant — clear any stale tenant_id from a previous user
+            localStorage.removeItem("aria_tenant_id");
           }
         } catch {
-          // Backend down — fall through
+          // Backend down — fall through to localStorage check
         }
-      }
-
-      // Check localStorage
-      const tenantId = localStorage.getItem("aria_tenant_id");
-      if (tenantId) {
-        await storeGoogleTokens(tenantId, session.provider_token, session.provider_refresh_token);
-        router.replace("/dashboard");
-        return;
       }
 
       // New user — save tokens for after onboarding
