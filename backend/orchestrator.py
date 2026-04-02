@@ -16,7 +16,6 @@ import os
 from datetime import datetime, timezone
 
 import httpx
-from supabase import create_client
 
 from backend.agents import AGENT_REGISTRY, DEPARTMENT_MAP
 from backend.config.loader import get_tenant_config, get_active_tenants
@@ -25,25 +24,18 @@ from backend.paperclip_sync import (
     get_company_id,
     is_connected as paperclip_connected,
     PAPERCLIP_URL,
+    _urllib_request,
 )
+from backend.services.supabase import get_db
 from backend.tasks.task_definitions import CRON_SCHEDULES, WORKFLOW_TEMPLATES
 
 logger = logging.getLogger("aria.orchestrator")
-
-_sb = None
-
-
-def _get_sb():
-    global _sb
-    if _sb is None:
-        _sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
-    return _sb
 
 
 async def log_agent_action(tenant_id: str, agent_name: str, action: str, result: dict, status: str = "completed"):
     """Log every agent action to Supabase for dashboard activity feed."""
     try:
-        _get_sb().table("agent_logs").insert({
+        get_db().table("agent_logs").insert({
             "tenant_id": tenant_id,
             "agent_name": agent_name,
             "action": action,
@@ -128,8 +120,6 @@ async def _dispatch_via_paperclip(
     - Poller imports results from issue comments to ARIA inbox
     - Budget tracking and cost logging handled by Paperclip
     """
-    from backend.paperclip_sync import get_company_id
-
     company_id = get_company_id()
     if not company_id:
         return None
@@ -142,7 +132,6 @@ async def _dispatch_via_paperclip(
 
     # Create an issue in Paperclip assigned to this agent
     # Include tenant_id in title since Paperclip doesn't store issue body
-    from backend.paperclip_sync import _urllib_request
     issue = _urllib_request("POST", f"/api/companies/{company_id}/issues", data={
         "title": f"[{tenant_id}] {task_desc[:170]}",
         "assigneeAgentId": paperclip_id,
@@ -319,7 +308,7 @@ async def get_agent_status(tenant_id: str) -> list[dict]:
 
     for agent_name in config.active_agents:
         last_log = (
-            _get_sb()
+            get_db()
             .table("agent_logs")
             .select("*")
             .eq("tenant_id", tenant_id)

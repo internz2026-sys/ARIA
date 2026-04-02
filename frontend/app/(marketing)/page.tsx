@@ -315,24 +315,7 @@ export default function AriaLanding() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: "linear-gradient(135deg, #E94560, #c23152)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontFamily: "'Sora'",
-                fontWeight: 700,
-                fontSize: 16,
-                color: "#fff",
-              }}
-            >
-              A
-            </div>
-            <span style={{ fontFamily: "'Sora'", fontWeight: 600, fontSize: 18, letterSpacing: 2 }}>ARIA</span>
+            <img src="/logo.webp" alt="ARIA" style={{ height: 32, width: "auto" }} />
           </div>
           <div style={{ display: "flex", gap: 36, alignItems: "center" }}>
             <a

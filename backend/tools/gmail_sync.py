@@ -17,8 +17,8 @@ logger = logging.getLogger("aria.gmail_sync")
 
 
 def _get_supabase():
-    from backend.config.loader import _get_supabase
-    return _get_supabase()
+    from backend.services.supabase import get_db
+    return get_db()
 
 
 def _extract_email_address(raw: str) -> str:

@@ -230,9 +230,7 @@ export default function DescribePage() {
             {messages.map((msg, i) => (
               <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
                 {msg.role === "aria" && (
-                  <div className="w-8 h-8 rounded-full bg-[#534AB7] flex items-center justify-center flex-shrink-0 mr-3 mt-0.5">
-                    <span className="text-white text-xs font-bold">A</span>
-                  </div>
+                  <img src="/logo.webp" alt="ARIA" className="w-8 h-8 rounded-full object-contain flex-shrink-0 mr-3 mt-0.5" />
                 )}
                 <div>
                   <div className={`max-w-full rounded-2xl px-4 py-3 text-sm leading-relaxed ${
@@ -265,9 +263,7 @@ export default function DescribePage() {
 
             {loading && (
               <div className="flex justify-start">
-                <div className="w-8 h-8 rounded-full bg-[#534AB7] flex items-center justify-center flex-shrink-0 mr-3">
-                  <span className="text-white text-xs font-bold">A</span>
-                </div>
+                <img src="/logo.webp" alt="ARIA" className="w-8 h-8 rounded-full object-contain flex-shrink-0 mr-3" />
                 <div className="bg-[#F8F8F6] border border-[#E0DED8] rounded-2xl rounded-bl-md px-4 py-3">
                   <div className="flex gap-1">
                     <span className="w-2 h-2 bg-[#534AB7] rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />

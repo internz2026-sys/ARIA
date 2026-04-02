@@ -36,8 +36,8 @@ def _get_client() -> anthropic.AsyncAnthropic:
 # ── Supabase helper ─────────────────────────────────────────────────────────
 
 def _get_supabase():
-    from backend.config.loader import _get_supabase
-    return _get_supabase()
+    from backend.services.supabase import get_db
+    return get_db()
 
 
 # ── Usage tracking (persisted to Supabase) ──────────────────────────────────

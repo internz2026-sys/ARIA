@@ -73,9 +73,7 @@ function LoginForm() {
       <div className="bg-white rounded-2xl border border-[#E0DED8] shadow-sm p-8">
         {/* Logo */}
         <div className="flex justify-center mb-6">
-          <div className="w-14 h-14 rounded-2xl bg-[#534AB7] flex items-center justify-center shadow-lg shadow-[#534AB7]/20">
-            <span className="text-white text-2xl font-bold">A</span>
-          </div>
+          <img src="/logo.webp" alt="ARIA" className="h-14 w-auto" />
         </div>
 
         <h1 className="text-[26px] font-bold text-[#2C2C2A] text-center mb-1">Welcome back</h1>

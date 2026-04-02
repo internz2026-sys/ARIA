@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 
 from backend.paperclip_sync import _urllib_request, get_company_id, get_paperclip_agent_id
@@ -21,8 +22,28 @@ from backend.services.supabase import get_db
 
 logger = logging.getLogger("aria.paperclip_poller")
 
-# Track which issues we've already processed
+# In-memory set to skip known issues without hitting the DB every cycle
 _processed_issues: set[str] = set()
+
+# ─── Tenant ID cache (refreshed every 60s instead of every poll) ─────────────
+_tenant_ids_cache: list[str] = []
+_tenant_ids_last_refresh: float = 0
+_TENANT_CACHE_TTL = 60  # seconds
+
+
+def _get_cached_tenant_ids() -> list[str]:
+    """Return cached tenant IDs, refreshing from DB at most once per minute."""
+    global _tenant_ids_cache, _tenant_ids_last_refresh
+    now = time.monotonic()
+    if now - _tenant_ids_last_refresh > _TENANT_CACHE_TTL:
+        try:
+            sb = get_db()
+            tenants = sb.table("tenant_configs").select("tenant_id").execute()
+            _tenant_ids_cache = [t["tenant_id"] for t in (tenants.data or [])]
+            _tenant_ids_last_refresh = now
+        except Exception:
+            pass  # keep stale cache on error
+    return _tenant_ids_cache
 
 
 def _extract_tenant_id(issue: dict) -> str | None:
@@ -74,7 +95,6 @@ def _get_issue_output(issue: dict) -> str | None:
     """Get the agent's output from issue comments."""
     issue_id = issue["id"]
 
-    # Correct path: /api/issues/{id}/comments
     comments = _urllib_request("GET", f"/api/issues/{issue_id}/comments")
     if not comments:
         return None
@@ -91,11 +111,30 @@ def _get_issue_output(issue: dict) -> str | None:
     return best_comment if best_comment else None
 
 
+def _load_processed_ids_from_db():
+    """On first run, seed the in-memory set from inbox items that have a paperclip_issue_id."""
+    global _processed_issues
+    if _processed_issues:
+        return  # already seeded
+    try:
+        sb = get_db()
+        # Load all known paperclip issue IDs in one query
+        result = sb.table("inbox_items").select("paperclip_issue_id").neq("paperclip_issue_id", None).execute()
+        _processed_issues = {row["paperclip_issue_id"] for row in (result.data or []) if row.get("paperclip_issue_id")}
+        logger.info(f"Seeded {len(_processed_issues)} processed Paperclip issue IDs from DB")
+    except Exception as e:
+        # Column might not exist yet — that's fine, we'll fall back to ilike
+        logger.debug(f"Could not seed processed IDs (column may not exist): {e}")
+
+
 async def poll_completed_issues():
     """Check Paperclip for completed agent issues and import results to ARIA inbox."""
     company_id = get_company_id()
     if not company_id:
         return
+
+    # Seed in-memory cache from DB on first run (survives restarts)
+    _load_processed_ids_from_db()
 
     # Get all issues that are done or in_review
     issues = _urllib_request("GET", f"/api/companies/{company_id}/issues")
@@ -137,8 +176,13 @@ async def poll_completed_issues():
                 _processed_issues.add(issue_id)
                 continue
 
-        # Check if we already created an inbox item for this issue
-        existing = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).ilike("title", f"%{title[:50]}%").limit(1).execute()
+        # Check if we already created an inbox item for this Paperclip issue
+        # Use exact paperclip_issue_id match (fast, indexed) instead of ilike on title
+        try:
+            existing = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).eq("paperclip_issue_id", issue_id).limit(1).execute()
+        except Exception:
+            # Fallback if paperclip_issue_id column doesn't exist yet
+            existing = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).ilike("title", f"%{title[:50]}%").limit(1).execute()
         if existing.data:
             _processed_issues.add(issue_id)
             continue
@@ -157,6 +201,7 @@ async def poll_completed_issues():
                 "agent": agent_name,
                 "priority": issue.get("priority", "medium"),
                 "status": inbox_status,
+                "paperclip_issue_id": issue_id,
             }
 
             result = sb.table("inbox_items").insert(row).execute()
@@ -208,13 +253,8 @@ async def sync_agent_statuses(sio):
 
     agent_list = agents if isinstance(agents, list) else agents.get("data", [])
 
-    # Get all active tenants to broadcast status changes
-    try:
-        sb = get_db()
-        tenants = sb.table("tenant_configs").select("tenant_id").execute()
-        tenant_ids = [t["tenant_id"] for t in (tenants.data or [])]
-    except Exception:
-        tenant_ids = []
+    # Use cached tenant IDs instead of querying DB every 5s
+    tenant_ids = _get_cached_tenant_ids()
 
     for agent in agent_list:
         pc_name = agent.get("name", "")
@@ -224,19 +264,12 @@ async def sync_agent_statuses(sio):
 
         # Map Paperclip status to ARIA Virtual Office status
         pc_status = agent.get("status", "idle")
-        last_heartbeat = agent.get("lastHeartbeatAt")
 
-        # Check if agent has an active run
         aria_status = "idle"
         if pc_status in ("running", "active"):
             aria_status = "working"
         elif pc_status == "paused":
             aria_status = "idle"
-
-        # Check for recent runs to determine if working
-        if pc_status == "idle" and last_heartbeat:
-            # Could check if heartbeat was recent, but for now just use status
-            pass
 
         # Only emit if status changed
         prev = _prev_agent_status.get(aria_id)

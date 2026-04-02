@@ -8,10 +8,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
       {/* ARIA Logo */}
       <div className="w-full flex justify-center pt-8 pb-4">
         <a href="/" className="flex items-center gap-2">
-          <div className="w-9 h-9 rounded-lg bg-[#534AB7] flex items-center justify-center">
-            <span className="text-white font-bold text-lg tracking-tight">A</span>
-          </div>
-          <span className="text-[22px] font-bold text-[#2C2C2A] tracking-tight">ARIA</span>
+          <img src="/logo.webp" alt="ARIA" className="h-9 w-auto" />
         </a>
       </div>
 

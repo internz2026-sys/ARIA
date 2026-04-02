@@ -61,12 +61,11 @@ sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 
 async def _gmail_sync_loop():
     """Background loop: sync Gmail inbound replies every 2 minutes."""
-    import asyncio
+    from backend.tools.gmail_sync import sync_all_tenants
     _log = logging.getLogger("aria.gmail_sync_loop")
     while True:
         await asyncio.sleep(60)  # 1 minute
         try:
-            from backend.tools.gmail_sync import sync_all_tenants
             results = await sync_all_tenants()
             for sr in results:
                 tid = sr.get("tenant_id", "")
@@ -81,12 +80,11 @@ async def _gmail_sync_loop():
 
 async def _scheduler_executor_loop():
     """Background loop: execute due scheduled tasks every 30 seconds."""
-    import asyncio
+    from backend.services.scheduler import get_due_tasks, execute_task
     _log = logging.getLogger("aria.scheduler_executor")
     while True:
         await asyncio.sleep(30)
         try:
-            from backend.services.scheduler import get_due_tasks, execute_task
             due = get_due_tasks()
             for task in due:
                 try:
@@ -110,15 +108,13 @@ async def _scheduler_executor_loop():
 
 async def _paperclip_poller_loop():
     """Background loop: poll Paperclip for completed issues + sync agent statuses."""
-    import asyncio
+    from backend.paperclip_poller import poll_completed_issues, sync_agent_statuses
     _log = logging.getLogger("aria.paperclip_poller")
     while True:
         await asyncio.sleep(5)  # 5s for responsive updates
         try:
-            from backend.paperclip_sync import is_connected
-            if not is_connected():
+            if not paperclip_connected():
                 continue
-            from backend.paperclip_poller import poll_completed_issues, sync_agent_statuses
             await poll_completed_issues()
             await sync_agent_statuses(sio)
         except Exception as e:

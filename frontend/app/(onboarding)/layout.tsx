@@ -44,10 +44,7 @@ export default function OnboardingLayout({ children }: { children: React.ReactNo
       <header className="flex items-center justify-between px-6 md:px-10 py-5 border-b border-[#E0DED8]">
         {/* Logo */}
         <a href="/" className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-[#534AB7] flex items-center justify-center">
-            <span className="text-white font-bold text-base">A</span>
-          </div>
-          <span className="text-lg font-bold text-[#2C2C2A] tracking-tight">ARIA</span>
+          <img src="/logo.webp" alt="ARIA" className="h-8 w-auto" />
         </a>
 
         {/* Progress dots */}

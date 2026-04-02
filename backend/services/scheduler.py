@@ -76,7 +76,8 @@ def list_tasks(
 ) -> dict:
     """List scheduled tasks with optional filters."""
     sb = get_db()
-    query = sb.table("scheduled_tasks").select("*").eq("tenant_id", tenant_id)
+    # Single query with count="exact" — avoids duplicating the query for count
+    query = sb.table("scheduled_tasks").select("*", count="exact").eq("tenant_id", tenant_id)
 
     if status:
         query = query.eq("status", status)
@@ -87,21 +88,9 @@ def list_tasks(
     if to_date:
         query = query.lte("scheduled_at", to_date)
 
-    # Count
-    count_q = sb.table("scheduled_tasks").select("id", count="exact").eq("tenant_id", tenant_id)
-    if status:
-        count_q = count_q.eq("status", status)
-    if task_type:
-        count_q = count_q.eq("task_type", task_type)
-    if from_date:
-        count_q = count_q.gte("scheduled_at", from_date)
-    if to_date:
-        count_q = count_q.lte("scheduled_at", to_date)
-    count_result = count_q.execute()
-    total = count_result.count if count_result.count is not None else len(count_result.data)
-
     offset = (max(page, 1) - 1) * page_size
     result = query.order("scheduled_at", desc=False).range(offset, offset + page_size - 1).execute()
+    total = result.count if result.count is not None else len(result.data or [])
 
     return {"tasks": result.data or [], "total": total, "page": page, "page_size": page_size}
 

@@ -187,9 +187,7 @@ export default function CEOChatPage() {
             <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
               <div className={`max-w-[75%] ${msg.role === "user" ? "" : "flex gap-3"}`}>
                 {msg.role === "assistant" && (
-                  <div className="w-8 h-8 rounded-lg bg-[#534AB7] flex items-center justify-center shrink-0 mt-1">
-                    <span className="text-white text-xs font-bold">AI</span>
-                  </div>
+                  <img src="/logo.webp" alt="ARIA" className="w-8 h-8 rounded-lg object-contain shrink-0 mt-1" />
                 )}
                 <div>
                   <div
@@ -256,9 +254,7 @@ export default function CEOChatPage() {
           {sending && (
             <div className="flex justify-start">
               <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-lg bg-[#534AB7] flex items-center justify-center shrink-0">
-                  <span className="text-white text-xs font-bold">AI</span>
-                </div>
+                <img src="/logo.webp" alt="ARIA" className="w-8 h-8 rounded-lg object-contain shrink-0" />
                 <div className="bg-[#F8F8F6] border border-[#E0DED8] rounded-2xl rounded-bl-md px-4 py-3">
                   <div className="flex items-center gap-2">
                     <div className="flex gap-1">

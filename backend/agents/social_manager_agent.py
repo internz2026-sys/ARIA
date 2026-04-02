@@ -82,8 +82,8 @@ Rules:
 async def _fetch_recent_content(tenant_id: str) -> str:
     """Fetch the most recent content from inbox (Content Writer output)."""
     try:
-        from backend.config.loader import _get_supabase
-        sb = _get_supabase()
+        from backend.services.supabase import get_db
+        sb = get_db()
         result = sb.table("inbox_items").select("title,content").eq(
             "tenant_id", tenant_id
         ).eq("agent", "content_writer").order(

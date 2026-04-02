@@ -163,10 +163,7 @@ export default function Sidebar() {
       {/* Logo */}
       <div className="h-16 flex items-center px-6 border-b border-[#E0DED8]">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-[#534AB7] flex items-center justify-center">
-            <span className="text-white font-bold text-sm">A</span>
-          </div>
-          <span className="text-[#2C2C2A] font-semibold text-lg tracking-tight">ARIA</span>
+          <img src="/logo.webp" alt="ARIA" className="h-8 w-auto" />
         </div>
       </div>
 

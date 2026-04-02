@@ -949,8 +949,7 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 async def _audit_log(tenant_id: str, action_name: str, params: dict, result: dict, confirmed: bool):
     """Log every CEO-triggered business action for traceability."""
     try:
-        from backend.config.loader import _get_supabase
-        sb = _get_supabase()
+        sb = get_db()
         sb.table("agent_logs").insert({
             "tenant_id": tenant_id,
             "agent_name": "ceo",
