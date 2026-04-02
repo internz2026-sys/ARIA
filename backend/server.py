@@ -154,15 +154,23 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
         return await call_next(request)
 
     token = _extract_token(request)
+    origin = request.headers.get("origin", "")
+    cors_headers = {}
+    if origin in _allowed_origins:
+        cors_headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        }
+
     if not token:
         from starlette.responses import JSONResponse
-        return JSONResponse(status_code=401, content={"detail": "Missing authorization token"})
+        return JSONResponse(status_code=401, content={"detail": "Missing authorization token"}, headers=cors_headers)
 
     try:
         user = verify_jwt(token)
     except HTTPException:
         from starlette.responses import JSONResponse
-        return JSONResponse(status_code=401, content={"detail": "Invalid or expired token"})
+        return JSONResponse(status_code=401, content={"detail": "Invalid or expired token"}, headers=cors_headers)
 
     # Tenant ownership check: if path has a tenant_id segment, verify ownership
     # Skip for paths that don't use tenant_id (CEO chat uses session_id instead)
