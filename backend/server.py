@@ -120,6 +120,7 @@ _PUBLIC_PATHS = {
 _PUBLIC_PREFIXES = (
     "/api/auth/",           # OAuth callbacks (Twitter, LinkedIn)
     "/api/webhooks/",       # External webhooks (Stripe, SendGrid)
+    "/api/tenant/by-email/", # Tenant lookup during login (returns only tenant_id)
     "/docs",                # Swagger UI
     "/openapi.json",
 )
@@ -982,12 +983,8 @@ class OnboardingStart(BaseModel):
 
 
 @app.get("/api/tenant/by-email/{email}")
-async def tenant_by_email(email: str, user: dict = Depends(get_current_user)):
-    """Look up a tenant config by owner email. Requires auth — only returns tenant for the authenticated user."""
-    # Only allow users to look up their own email
-    user_email = user.get("email", "")
-    if user_email and user_email != email and user.get("sub") != "dev-user":
-        raise HTTPException(status_code=403, detail="You can only look up your own tenant")
+async def tenant_by_email(email: str):
+    """Look up a tenant config by owner email. Returns only the tenant_id (no sensitive data)."""
     try:
         sb = _get_supabase()
         result = sb.table("tenant_configs").select("tenant_id").eq("owner_email", email).limit(1).execute()
