@@ -45,6 +45,8 @@ async def _api(client: httpx.AsyncClient, method: str, path: str, **kwargs) -> h
         headers["Authorization"] = f"Bearer {token}"
     if session_cookie:
         headers["cookie"] = f"__Secure-better-auth.session_token={session_cookie}"
+        headers["origin"] = PAPERCLIP_URL
+        headers["referer"] = PAPERCLIP_URL + "/"
     headers["Content-Type"] = "application/json"
     url = f"{PAPERCLIP_URL}{path}"
     logger.debug(f"Paperclip API: {method} {path} cookie={'yes' if session_cookie else 'no'}")
@@ -66,6 +68,8 @@ def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | 
     req.add_header("Content-Type", "application/json")
     if session_cookie:
         req.add_header("Cookie", f"__Secure-better-auth.session_token={session_cookie}")
+        req.add_header("Origin", PAPERCLIP_URL)
+        req.add_header("Referer", PAPERCLIP_URL + "/")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
