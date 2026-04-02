@@ -52,41 +52,42 @@ async def _api(client: httpx.AsyncClient, method: str, path: str, **kwargs) -> h
     return resp
 
 
+def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | list | None:
+    """Make a request to Paperclip using urllib (bypasses httpx cookie issues)."""
+    import urllib.request
+    import json as _json
+    session_cookie = os.environ.get("PAPERCLIP_SESSION_COOKIE", "")
+    token = os.environ.get("PAPERCLIP_API_TOKEN", "")
+    url = f"{PAPERCLIP_URL}{path}"
+    body = _json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, method=method)
+    req.add_header("Content-Type", "application/json")
+    if session_cookie:
+        req.add_header("Cookie", f"__Secure-better-auth.session_token={session_cookie}")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        r = urllib.request.urlopen(req, timeout=15)
+        return _json.loads(r.read().decode())
+    except Exception as e:
+        logger.debug(f"urllib {method} {path} failed: {e}")
+        return None
+
+
 async def ensure_company(client: httpx.AsyncClient) -> str | None:
     """Create or retrieve the ARIA company in Paperclip. Returns company_id."""
-    # Try direct slug lookup first (avoids needing board-level access)
-    slug = os.environ.get("PAPERCLIP_COMPANY_SLUG", "HOV")
-    resp = await _api(client, "GET", f"/api/companies/{slug}")
-    if resp.status_code == 200:
-        data = resp.json()
-        company_id = data.get("id", data.get("companyId", ""))
-        if company_id:
-            logger.info(f"Found company by slug '{slug}': {company_id}")
-            return company_id
-
-    # Fallback: list companies
-    resp = await _api(client, "GET", "/api/companies")
-    if resp.status_code == 200:
-        companies = resp.json()
+    # Use urllib for company lookup (httpx has issues with __Secure- cookies over HTTP)
+    companies = _urllib_request("GET", "/api/companies")
+    if companies is not None:
         company_list = companies if isinstance(companies, list) else companies.get("data", companies.get("companies", []))
-        target_name = os.environ.get("PAPERCLIP_COMPANY_NAME", "ARIA")
         for c in company_list:
-            if c.get("name") in (target_name, "ARIA", "Hoversight AI Agency") or c.get("slug") == slug:
+            name = c.get("name", "")
+            if name in ("ARIA", "Hoversight AI Agency", os.environ.get("PAPERCLIP_COMPANY_NAME", "")):
                 company_id = c["id"]
-                logger.info(f"Found company '{c.get('name')}': {company_id}")
+                logger.info(f"Found company '{name}': {company_id}")
                 return company_id
 
-    # Create the company
-    resp = await _api(client, "POST", "/api/companies", json={
-        "name": os.environ.get("PAPERCLIP_COMPANY_NAME", "ARIA"),
-        "description": "AI marketing team for developer founders — 5 autonomous marketing agents",
-    })
-    if resp.status_code in (200, 201):
-        company_id = resp.json().get("id")
-        logger.info(f"Created company in Paperclip: {company_id}")
-        return company_id
-
-    logger.error(f"Failed to create/find company: {resp.status_code} {resp.text}")
+    logger.error("Failed to find ARIA company in Paperclip")
     return None
 
 
