@@ -275,6 +275,29 @@ ONBOARDING_FIELDS = [
     "goal_30_days",
 ]
 
+def _ensure_generated_fields(gp: dict) -> dict:
+    """Fill in positioning_summary and 30_day_gtm_focus if the model left them empty."""
+    if not gp.get("positioning_summary"):
+        biz = gp.get("business_name", "This business")
+        audience = gp.get("audience", "its target customers")
+        problem = gp.get("problem", "key challenges")
+        offer = gp.get("offer", "its product")
+        diff = gp.get("differentiator", "")
+        diff_part = f", differentiated by {diff}" if diff else ""
+        gp["positioning_summary"] = (
+            f"{biz} helps {audience} solve {problem} through {offer}{diff_part}."
+        )
+    if not gp.get("30_day_gtm_focus"):
+        channels = gp.get("primary_channels", [])
+        ch_str = ", ".join(channels) if isinstance(channels, list) and channels else "key marketing channels"
+        goal = gp.get("goal_30_days", "grow awareness and acquire users")
+        voice = gp.get("brand_voice", "professional")
+        gp["30_day_gtm_focus"] = (
+            f"Over the next 30 days, prioritize {ch_str} to support the goal of {goal}, using a {voice} tone."
+        )
+    return gp
+
+
 # Legacy topic names used by the frontend skip UI — maps to field names.
 ONBOARDING_TOPICS = ONBOARDING_FIELDS
 
@@ -545,6 +568,8 @@ class OnboardingAgent:
             elif field == "goal_30_days":
                 gp["goal_30_days"] = val
 
+        # Generate positioning_summary and 30_day_gtm_focus from collected fields
+        gp = _ensure_generated_fields(gp)
         config["gtm_profile"] = gp
         return config
 
@@ -563,6 +588,9 @@ class OnboardingAgent:
         )
         result = self._try_parse_json(raw)
         if result:
+            # Ensure generated fields are always populated
+            if "gtm_profile" in result:
+                result["gtm_profile"] = _ensure_generated_fields(result["gtm_profile"])
             self._extracted_config = result
             return result
 
@@ -583,6 +611,8 @@ class OnboardingAgent:
         )
         result = self._try_parse_json(raw2)
         if result:
+            if "gtm_profile" in result:
+                result["gtm_profile"] = _ensure_generated_fields(result["gtm_profile"])
             self._extracted_config = result
             return result
 

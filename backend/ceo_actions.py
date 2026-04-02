@@ -329,6 +329,24 @@ ACTION_REGISTRY: dict[str, dict] = {
     },
 
     # ── Tasks ──
+    "create_task": {
+        "entity": "task",
+        "operation": "create",
+        "description": "Create a new task and assign it to an agent",
+        "required_fields": ["agent", "task"],
+        "optional_fields": ["priority", "status"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "low",
+    },
+    "read_tasks": {
+        "entity": "task",
+        "operation": "read",
+        "description": "List tasks, optionally filtered by agent or status",
+        "required_fields": [],
+        "optional_fields": ["agent", "status"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
     "update_task_status": {
         "entity": "task",
         "operation": "update",
@@ -337,6 +355,86 @@ ACTION_REGISTRY: dict[str, dict] = {
         "optional_fields": [],
         "confirm": ConfirmLevel.REQUIRED,
         "risk": "medium",
+    },
+    "delete_task": {
+        "entity": "task",
+        "operation": "delete",
+        "description": "Permanently delete a task",
+        "required_fields": ["id"],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "high",
+    },
+
+    # ── CRM Activities ──
+    "read_activities": {
+        "entity": "crm_activity",
+        "operation": "read",
+        "description": "List CRM activity history, optionally filtered by contact",
+        "required_fields": [],
+        "optional_fields": ["contact_id"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+    "create_activity": {
+        "entity": "crm_activity",
+        "operation": "create",
+        "description": "Log a new CRM activity (call, meeting, note, follow-up)",
+        "required_fields": ["type", "description"],
+        "optional_fields": ["contact_id"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "low",
+    },
+
+    # ── Email Threads ──
+    "read_email_threads": {
+        "entity": "email_thread",
+        "operation": "read",
+        "description": "List email threads, optionally filtered by status",
+        "required_fields": [],
+        "optional_fields": ["status"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+    "update_email_thread": {
+        "entity": "email_thread",
+        "operation": "update",
+        "description": "Update an email thread's status (open, awaiting_reply, replied, closed)",
+        "required_fields": ["id", "status"],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "medium",
+    },
+
+    # ── Notifications ──
+    "read_notifications": {
+        "entity": "notification",
+        "operation": "read",
+        "description": "List recent notifications",
+        "required_fields": [],
+        "optional_fields": ["unread_only"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+    "mark_notifications_read": {
+        "entity": "notification",
+        "operation": "update",
+        "description": "Mark notifications as read (all, or specific IDs)",
+        "required_fields": [],
+        "optional_fields": ["ids"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "low",
+    },
+
+    # ── Agent Logs ──
+    "read_agent_logs": {
+        "entity": "agent_log",
+        "operation": "read",
+        "description": "View recent agent run history and results",
+        "required_fields": [],
+        "optional_fields": ["agent_name", "status"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
     },
 }
 
@@ -680,13 +778,89 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
         return crm_service.list_deals(tenant_id, stage=params.get("stage", ""))
 
     # ── Tasks ──
-    elif entity == "task" and operation == "update":
+    elif entity == "task":
         sb = get_db()
-        sb.table("tasks").update({
-            "status": params["status"],
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
-        return {"updated": params["id"], "new_status": params["status"]}
+        if operation == "create":
+            row = {
+                "tenant_id": tenant_id,
+                "agent": params["agent"],
+                "task": params["task"],
+                "priority": params.get("priority", "medium"),
+                "status": params.get("status", "to_do"),
+            }
+            result = sb.table("tasks").insert(row).execute()
+            task = result.data[0] if result.data else None
+            return {"task": task}
+        elif operation == "read":
+            query = sb.table("tasks").select("*").eq("tenant_id", tenant_id)
+            if params.get("agent"):
+                query = query.eq("agent", params["agent"])
+            if params.get("status"):
+                query = query.eq("status", params["status"])
+            result = query.order("created_at", desc=True).limit(30).execute()
+            return {"tasks": result.data or []}
+        elif operation == "update":
+            sb.table("tasks").update({
+                "status": params["status"],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
+            return {"updated": params["id"], "new_status": params["status"]}
+        elif operation == "delete":
+            sb.table("tasks").delete().eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
+            return {"deleted": params["id"]}
+
+    # ── CRM Activities ──
+    elif entity == "crm_activity":
+        if operation == "read":
+            return crm_service.list_activities(tenant_id, contact_id=params.get("contact_id", ""))
+        elif operation == "create":
+            data = {k: params.get(k) for k in ["type", "description", "contact_id"] if params.get(k) is not None}
+            return crm_service.create_activity(tenant_id, data)
+
+    # ── Email Threads ──
+    elif entity == "email_thread":
+        sb = get_db()
+        if operation == "read":
+            query = sb.table("email_threads").select("id,subject,contact_email,status,last_message_at").eq("tenant_id", tenant_id)
+            if params.get("status"):
+                query = query.eq("status", params["status"])
+            result = query.order("last_message_at", desc=True).limit(20).execute()
+            return {"threads": result.data or []}
+        elif operation == "update":
+            sb.table("email_threads").update({
+                "status": params["status"],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", params["id"]).eq("tenant_id", tenant_id).execute()
+            return {"updated": params["id"], "new_status": params["status"]}
+
+    # ── Notifications ──
+    elif entity == "notification":
+        sb = get_db()
+        if operation == "read":
+            query = sb.table("notifications").select("id,title,body,category,is_read,created_at").eq("tenant_id", tenant_id)
+            if params.get("unread_only"):
+                query = query.eq("is_read", False)
+            result = query.order("created_at", desc=True).limit(20).execute()
+            return {"notifications": result.data or []}
+        elif operation == "update":
+            ids = params.get("ids", [])
+            if ids:
+                sb.table("notifications").update({"is_read": True}).in_("id", ids).eq("tenant_id", tenant_id).execute()
+                return {"marked_read": len(ids)}
+            else:
+                sb.table("notifications").update({"is_read": True}).eq("tenant_id", tenant_id).eq("is_read", False).execute()
+                return {"marked_read": "all"}
+
+    # ── Agent Logs ──
+    elif entity == "agent_log" and operation == "read":
+        sb = get_db()
+        query = sb.table("agent_logs").select("agent_name,action,status,timestamp,result").eq("tenant_id", tenant_id)
+        if params.get("agent_name"):
+            query = query.eq("agent_name", params["agent_name"])
+        if params.get("status"):
+            query = query.eq("status", params["status"])
+        result = query.order("timestamp", desc=True).limit(20).execute()
+        return {"logs": result.data or []}
 
     return {"status": "unknown_action"}
 

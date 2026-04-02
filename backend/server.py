@@ -1052,6 +1052,9 @@ async def save_config_direct(body: SaveConfigDirect):
 
     # Build GTMProfile from the flat gtm_profile extraction.
     gp_raw = extracted.get("gtm_profile", {})
+    # Ensure generated fields are always populated
+    from backend.onboarding_agent import _ensure_generated_fields
+    gp_raw = _ensure_generated_fields(gp_raw)
     gtm_profile = GTMProfile(
         business_name=gp_raw.get("business_name", extracted.get("business_name", "")),
         offer=gp_raw.get("offer", extracted.get("description", "")),
@@ -2644,6 +2647,214 @@ def _get_ceo_action_descriptions() -> str:
     return get_action_descriptions()
 
 
+def _format_action_result(action_name: str, result: dict) -> str:
+    """Format an action result as readable markdown for the chat response."""
+    if not result:
+        return ""
+
+    # ── Error results ──
+    if result.get("error"):
+        return f"**Error:** {result['error']}"
+
+    # ═══════════ READ operations ═══════════
+
+    # ── Contacts ──
+    if action_name == "read_contacts":
+        contacts = result.get("contacts", [])
+        total = result.get("total", len(contacts))
+        if not contacts:
+            return "No contacts found in your CRM."
+        lines = [f"**CRM Contacts** ({total} total)\n"]
+        lines.append("| Name | Email | Status | Source |")
+        lines.append("|------|-------|--------|--------|")
+        for c in contacts[:20]:
+            lines.append(f"| {c.get('name', '—')} | {c.get('email') or '—'} | {c.get('status') or '—'} | {c.get('source') or '—'} |")
+        if total > 20:
+            lines.append(f"\n*Showing 20 of {total} contacts.*")
+        return "\n".join(lines)
+
+    if action_name == "read_companies":
+        companies = result.get("companies", [])
+        if not companies:
+            return "No companies found in your CRM."
+        lines = [f"**CRM Companies** ({len(companies)} total)\n"]
+        lines.append("| Name | Domain | Industry | Size |")
+        lines.append("|------|--------|----------|------|")
+        for c in companies[:20]:
+            lines.append(f"| {c.get('name', '—')} | {c.get('domain') or '—'} | {c.get('industry') or '—'} | {c.get('size') or '—'} |")
+        return "\n".join(lines)
+
+    if action_name == "read_deals":
+        deals = result.get("deals", [])
+        if not deals:
+            return "No deals found in your pipeline."
+        lines = [f"**CRM Deals** ({len(deals)} total)\n"]
+        lines.append("| Title | Value | Stage |")
+        lines.append("|-------|-------|-------|")
+        for d in deals[:20]:
+            val = d.get("value", 0)
+            lines.append(f"| {d.get('title', '—')} | {f'${val:,.0f}' if val else '—'} | {d.get('stage') or '—'} |")
+        return "\n".join(lines)
+
+    if action_name == "read_inbox":
+        items = result.get("items", [])
+        if not items:
+            return "Your inbox is empty."
+        lines = [f"**Inbox** ({len(items)} items)\n"]
+        for i, item in enumerate(items[:15], 1):
+            title = item.get("title", item.get("type", "Item"))
+            lines.append(f"{i}. **{title}** — {item.get('status', '—')} (from {item.get('agent', '—')})")
+        return "\n".join(lines)
+
+    if action_name == "read_tasks":
+        tasks = result.get("tasks", [])
+        if not tasks:
+            return "No tasks found."
+        lines = [f"**Tasks** ({len(tasks)} total)\n"]
+        lines.append("| Agent | Task | Priority | Status |")
+        lines.append("|-------|------|----------|--------|")
+        for t in tasks[:20]:
+            lines.append(f"| {t.get('agent', '—')} | {t.get('task', '—')[:60]} | {t.get('priority') or '—'} | {t.get('status') or '—'} |")
+        return "\n".join(lines)
+
+    if action_name == "read_activities":
+        activities = result.get("activities", [])
+        if not activities:
+            return "No CRM activities found."
+        lines = [f"**CRM Activities** ({len(activities)} recent)\n"]
+        for a in activities[:15]:
+            ts = a.get("created_at", "")[:10] if a.get("created_at") else ""
+            lines.append(f"- **{a.get('type', '—')}** — {a.get('description', '—')} ({ts})")
+        return "\n".join(lines)
+
+    if action_name == "read_email_threads":
+        threads = result.get("threads", [])
+        if not threads:
+            return "No email threads found."
+        lines = [f"**Email Threads** ({len(threads)} total)\n"]
+        lines.append("| Subject | Contact | Status |")
+        lines.append("|---------|---------|--------|")
+        for t in threads[:20]:
+            lines.append(f"| {t.get('subject') or '—'} | {t.get('contact_email') or '—'} | {t.get('status') or '—'} |")
+        return "\n".join(lines)
+
+    if action_name == "read_notifications":
+        notifs = result.get("notifications", [])
+        if not notifs:
+            return "No notifications."
+        lines = [f"**Notifications** ({len(notifs)} recent)\n"]
+        for n in notifs[:15]:
+            read_icon = "" if n.get("is_read") else " (unread)"
+            lines.append(f"- **{n.get('title', '—')}**{read_icon} — {n.get('category', '')} — {(n.get('created_at') or '')[:10]}")
+        return "\n".join(lines)
+
+    if action_name == "read_agent_logs":
+        logs = result.get("logs", [])
+        if not logs:
+            return "No agent logs found."
+        lines = [f"**Agent Logs** ({len(logs)} recent)\n"]
+        lines.append("| Agent | Action | Status | Time |")
+        lines.append("|-------|--------|--------|------|")
+        for l in logs[:20]:
+            ts = (l.get("timestamp") or "")[:16].replace("T", " ")
+            lines.append(f"| {l.get('agent_name', '—')} | {l.get('action', '—')[:40]} | {l.get('status') or '—'} | {ts} |")
+        return "\n".join(lines)
+
+    # ═══════════ CREATE operations ═══════════
+
+    if action_name == "create_contact":
+        c = result.get("contact", {})
+        if c:
+            return f"**Contact created:** {c.get('name', '')} ({c.get('email') or 'no email'}) — Status: {c.get('status', 'lead')}"
+        return "Contact created."
+
+    if action_name == "create_company":
+        c = result.get("company", {})
+        if c:
+            return f"**Company created:** {c.get('name', '')}"
+        return "Company created."
+
+    if action_name == "create_deal":
+        d = result.get("deal", {})
+        if d:
+            val = d.get("value", 0)
+            return f"**Deal created:** {d.get('title', '')} — {f'${val:,.0f}' if val else 'no value'} — Stage: {d.get('stage', 'lead')}"
+        return "Deal created."
+
+    if action_name == "create_task":
+        t = result.get("task", {})
+        if t:
+            return f"**Task created:** {t.get('task', '')} — Assigned to: {t.get('agent', '')} — Priority: {t.get('priority', 'medium')}"
+        return "Task created."
+
+    if action_name == "create_activity":
+        a = result.get("activity", {})
+        if a:
+            return f"**Activity logged:** {a.get('type', '')} — {a.get('description', '')}"
+        return "Activity logged."
+
+    # ═══════════ UPDATE operations ═══════════
+
+    if action_name == "update_contact":
+        changes = result.get("changes", {})
+        return f"**Contact updated** (ID: {result.get('updated', '—')}). Changes: {', '.join(f'{k}={v}' for k, v in changes.items() if k != 'updated_at')}"
+
+    if action_name == "update_company":
+        changes = result.get("changes", {})
+        return f"**Company updated** (ID: {result.get('updated', '—')}). Changes: {', '.join(f'{k}={v}' for k, v in changes.items() if k != 'updated_at')}"
+
+    if action_name == "update_deal":
+        changes = result.get("changes", {})
+        return f"**Deal updated** (ID: {result.get('updated', '—')}). Changes: {', '.join(f'{k}={v}' for k, v in changes.items() if k != 'updated_at')}"
+
+    if action_name == "update_task_status":
+        return f"**Task updated** (ID: {result.get('updated', '—')}) — New status: {result.get('new_status', '—')}"
+
+    if action_name == "update_inbox_status":
+        return f"**Inbox item updated** (ID: {result.get('updated', '—')}) — New status: {result.get('new_status', '—')}"
+
+    if action_name == "update_email_thread":
+        return f"**Email thread updated** (ID: {result.get('updated', '—')}) — New status: {result.get('new_status', '—')}"
+
+    if action_name == "mark_notifications_read":
+        count = result.get("marked_read", 0)
+        return f"**Notifications marked as read:** {count}"
+
+    # ═══════════ DELETE operations ═══════════
+
+    if action_name in ("delete_contact", "delete_company", "delete_deal", "delete_task", "delete_inbox_item"):
+        entity = action_name.replace("delete_", "").replace("_", " ").title()
+        return f"**{entity} deleted** (ID: {result.get('deleted', '—')})"
+
+    # ═══════════ Special operations ═══════════
+
+    if action_name == "publish_social_post":
+        return f"**Post published to Twitter** — Tweet ID: {result.get('tweet_id', '—')}"
+
+    if action_name == "publish_to_linkedin":
+        return f"**Post published to LinkedIn** — Post ID: {result.get('post_id', '—')}"
+
+    if action_name == "send_email_draft":
+        return f"**Email sent** to {result.get('to', '—')} — Subject: {result.get('subject', '—')}"
+
+    if action_name == "send_whatsapp":
+        return f"**WhatsApp message sent** to {result.get('to', '—')}"
+
+    if action_name == "sync_gmail":
+        return f"**Gmail synced** — {result.get('imported', 0)} new messages imported"
+
+    if action_name == "run_agent":
+        return f"**Agent `{result.get('ran', '—')}` started** — Status: {result.get('status', '—')}"
+
+    if action_name == "draft_email_reply":
+        return f"**Email reply drafted** for thread {result.get('thread_id', '—')} — sent to inbox for approval"
+
+    if action_name == "cancel_draft":
+        return f"**Draft cancelled** (ID: {result.get('updated', '—')})"
+
+    return ""
+
+
 class CEOActionRequest(BaseModel):
     action: str
     params: dict = {}
@@ -2865,7 +3076,7 @@ Channels: {', '.join(tc.channels)}
 ## Instructions
 You are chatting with a developer founder who needs marketing help.
 You already know their business from the onboarding data above — use it to give specific, personalized advice.
-If CRM data is provided above, use it to reference specific contacts, deals, and pipeline status.
+If CRM data is provided above, you can reference it for context. But when the user explicitly asks to LIST or SHOW contacts, companies, or deals, ALWAYS use the corresponding read action block (read_contacts, read_companies, read_deals) so the full formatted data is returned to them.
 
 CRITICAL RULE — DO NOT AUTO-DELEGATE OR AUTO-ACT:
 - ONLY perform actions or delegate tasks when the user EXPLICITLY asks you to.
@@ -2904,6 +3115,7 @@ RULES FOR ACTIONS:
 - CREATE actions can proceed directly if the user's intent is clear.
 - PUBLISH and SEND actions always require confirmation.
 - If data is missing, ask for it before creating the action block.
+- For ALL actions: the result will be automatically formatted and appended to your response. Just write a brief intro (e.g., "Here are your contacts:" or "Done, I've created the contact:") and include the action block — the system will append the formatted result below your message. Do NOT fabricate results yourself.
 - If the user asks you to modify code, backend, prompts, database schema, or infrastructure — REFUSE.
 - Never bypass confirmations or approval flows.
 
@@ -2994,7 +3206,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     action_results = []
     pending_confirmations = []
     if ceo_actions and tenant_id:
-        from backend.ceo_actions import execute_action
+        from backend.ceo_actions import execute_action, ACTION_REGISTRY
         for a in ceo_actions:
             action_name = a.get("action", "")
             params = a.get("params", {})
@@ -3005,6 +3217,16 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 action_results.append(result)
             else:
                 action_results.append(result)
+
+    # Append formatted action results to the response so data appears in chat
+    for ar in action_results:
+        if ar.get("status") not in ("executed", "error"):
+            continue
+        action_name = ar.get("action", "")
+        data = ar.get("result", {}) if ar["status"] == "executed" else {"error": ar.get("message", "Unknown error")}
+        formatted = _format_action_result(action_name, data)
+        if formatted:
+            clean_response = clean_response.rstrip() + "\n\n" + formatted
 
     session.append({"role": "assistant", "content": clean_response})
 

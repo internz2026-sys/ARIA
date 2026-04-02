@@ -285,10 +285,10 @@ export default function DescribePage() {
           <div className="px-6 py-4 border-t border-[#E0DED8]">
             <form onSubmit={handleSend} className="flex items-end gap-3">
               <textarea
-                value={input}
-                onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px"; }}
+                value={stt.listening && stt.transcript ? stt.transcript : input}
+                onChange={e => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px"; } }}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(e); } }}
-                placeholder="Type your answer..."
+                placeholder={stt.listening ? "Listening... (sends after 5s of silence)" : "Type your answer..."}
                 disabled={loading}
                 rows={1}
                 className="flex-1 min-h-[44px] max-h-[120px] rounded-lg border border-[#E0DED8] px-4 py-2.5 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60 resize-none"

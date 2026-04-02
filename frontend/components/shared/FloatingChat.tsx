@@ -256,9 +256,9 @@ export default function FloatingChat() {
           {/* Input */}
           <div className="border-t border-[#E0DED8] px-3 py-2 shrink-0">
             <div className="flex items-end gap-2">
-              <textarea value={input} onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 80) + "px"; }}
+              <textarea value={stt.listening && stt.transcript ? stt.transcript : input} onChange={e => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 80) + "px"; } }}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                placeholder="Ask the CEO..." disabled={sending} rows={1}
+                placeholder={stt.listening ? "Listening... (sends after 5s of silence)" : "Ask the CEO..."} disabled={sending} rows={1}
                 className="flex-1 min-h-[36px] max-h-[80px] px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none" />
               {tts.supported && (
                 <button

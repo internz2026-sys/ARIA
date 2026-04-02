@@ -7,46 +7,104 @@ import { useState, useRef, useCallback, useEffect } from "react";
 interface UseSpeechToTextReturn {
   listening: boolean;
   supported: boolean;
+  transcript: string;
   start: () => void;
   stop: () => void;
   toggle: () => void;
 }
 
+const SILENCE_DELAY_MS = 5000; // Wait 5s of silence before auto-sending
+
 export function useSpeechToText(onResult: (text: string) => void): UseSpeechToTextReturn {
   const [listening, setListening] = useState(false);
+  const [transcript, setTranscript] = useState("");
   const recognitionRef = useRef<any>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transcriptRef = useRef("");
+  const onResultRef = useRef(onResult);
+  onResultRef.current = onResult;
   const supported = typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
 
+  const clearSilenceTimer = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  }, []);
+
   const stop = useCallback(() => {
+    clearSilenceTimer();
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
     }
+    // Send accumulated transcript on manual stop
+    const text = transcriptRef.current.trim();
+    if (text) {
+      onResultRef.current(text);
+      transcriptRef.current = "";
+      setTranscript("");
+    }
     setListening(false);
-  }, []);
+  }, [clearSilenceTimer]);
 
   const start = useCallback(() => {
     if (!supported) return;
     stop();
+    transcriptRef.current = "";
+    setTranscript("");
 
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.interimResults = true;
     recognition.lang = "en-US";
 
     recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      if (transcript) onResult(transcript);
+      // Build full transcript from all results
+      let full = "";
+      for (let i = 0; i < event.results.length; i++) {
+        full += event.results[i][0].transcript;
+      }
+      transcriptRef.current = full;
+      setTranscript(full);
+
+      // Reset the silence timer on every new speech input
+      clearSilenceTimer();
+      silenceTimerRef.current = setTimeout(() => {
+        // 5s of silence — auto-send and stop
+        const text = transcriptRef.current.trim();
+        if (text) {
+          onResultRef.current(text);
+          transcriptRef.current = "";
+          setTranscript("");
+        }
+        if (recognitionRef.current) {
+          recognitionRef.current.stop();
+          recognitionRef.current = null;
+        }
+        setListening(false);
+      }, SILENCE_DELAY_MS);
     };
 
-    recognition.onerror = () => { setListening(false); };
-    recognition.onend = () => { setListening(false); recognitionRef.current = null; };
+    recognition.onerror = () => { clearSilenceTimer(); setListening(false); };
+    recognition.onend = () => {
+      // If ended unexpectedly (browser limit), send what we have
+      clearSilenceTimer();
+      const text = transcriptRef.current.trim();
+      if (text) {
+        onResultRef.current(text);
+        transcriptRef.current = "";
+        setTranscript("");
+      }
+      setListening(false);
+      recognitionRef.current = null;
+    };
 
     recognitionRef.current = recognition;
     recognition.start();
     setListening(true);
-  }, [supported, onResult, stop]);
+  }, [supported, stop, clearSilenceTimer]);
 
   const toggle = useCallback(() => {
     if (listening) stop();
@@ -55,10 +113,13 @@ export function useSpeechToText(onResult: (text: string) => void): UseSpeechToTe
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => { if (recognitionRef.current) recognitionRef.current.stop(); };
-  }, []);
+    return () => {
+      clearSilenceTimer();
+      if (recognitionRef.current) recognitionRef.current.stop();
+    };
+  }, [clearSilenceTimer]);
 
-  return { listening, supported, start, stop, toggle };
+  return { listening, supported, transcript, start, stop, toggle };
 }
 
 // ─── Text-to-Speech ───
