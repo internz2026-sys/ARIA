@@ -196,8 +196,9 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
             if config.owner_email and user_email and config.owner_email != user_email:
                 # Also allow if user sub matches tenant_id
                 if str(config.tenant_id) != user.get("sub", ""):
+                    logger.warning("Tenant ownership denied: jwt_email=%s owner_email=%s tenant=%s", user_email, config.owner_email, tenant_id)
                     from starlette.responses import JSONResponse
-                    return JSONResponse(status_code=403, content={"detail": "Access denied to this tenant"})
+                    return JSONResponse(status_code=403, content={"detail": "Access denied to this tenant"}, headers=cors_headers)
         except Exception:
             pass  # Tenant not found — let the endpoint handle it
 
