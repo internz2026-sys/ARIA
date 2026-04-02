@@ -90,7 +90,7 @@ export default function AgentsPage() {
       {/* Org Chart Header */}
       <div className="bg-white rounded-xl border border-[#E0DED8] p-5">
         <div className="flex items-center gap-3 mb-4">
-          <img src="/logo.webp" alt="ARIA" className="h-8 w-auto" />
+          <img src="/logo.webp" alt="ARIA" className="h-8 w-8 rounded-full object-cover" />
           <div>
             <h2 className="text-sm font-semibold text-[#2C2C2A]">ARIA Marketing Team</h2>
             <p className="text-xs text-[#5F5E5A]">CEO orchestrates all agents</p>

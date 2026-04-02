@@ -54,7 +54,7 @@ export default function SignUpPage() {
       <div className="bg-white rounded-2xl border border-[#E0DED8] shadow-sm p-8">
         {/* Logo */}
         <div className="flex justify-center mb-6">
-          <img src="/logo.webp" alt="ARIA" className="h-14 w-auto" />
+          <img src="/logo.webp" alt="ARIA" className="h-14 w-14 rounded-full object-cover shadow-lg shadow-[#534AB7]/20" />
         </div>
 
         {/* Badge */}

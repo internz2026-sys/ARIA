@@ -90,7 +90,7 @@ export default function LaunchingPage() {
                 className="absolute inset-0 rounded-full border-4 border-[#534AB7] border-t-transparent animate-spin"
               />
               <div className="absolute inset-0 flex items-center justify-center">
-                <img src="/logo.webp" alt="ARIA" className="h-8 w-auto" />
+                <img src="/logo.webp" alt="ARIA" className="h-8 w-8 rounded-full object-cover" />
               </div>
             </div>
 

@@ -315,7 +315,8 @@ export default function AriaLanding() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img src="/logo.webp" alt="ARIA" style={{ height: 32, width: "auto" }} />
+            <img src="/logo.webp" alt="ARIA" style={{ height: 32, width: 32, borderRadius: "50%", objectFit: "cover" }} />
+            <span style={{ fontFamily: "'Sora'", fontWeight: 600, fontSize: 18, letterSpacing: 2 }}>ARIA</span>
           </div>
           <div style={{ display: "flex", gap: 36, alignItems: "center" }}>
             <a

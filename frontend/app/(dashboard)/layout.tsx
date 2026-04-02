@@ -115,7 +115,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               </svg>
             </button>
             <div className="ml-3 flex items-center gap-2 flex-1">
-              <img src="/logo.webp" alt="ARIA" className="h-7 w-auto" />
+              <img src="/logo.webp" alt="ARIA" className="h-7 w-7 rounded-full object-cover" />
+              <span className="text-[#2C2C2A] font-semibold text-base">ARIA</span>
             </div>
             <NotificationBell />
           </div>
