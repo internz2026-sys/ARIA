@@ -1215,6 +1215,120 @@ async def save_google_tokens(tenant_id: str, body: GoogleTokens):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ─── Google OAuth Connect (dedicated flow, independent of Supabase) ───
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_GMAIL_SCOPES = "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly"
+
+
+@app.get("/api/auth/google/connect/{tenant_id}")
+async def google_connect(tenant_id: str, request: Request):
+    """Redirect user to Google OAuth consent screen for Gmail access."""
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    if not client_id:
+        return HTMLResponse("<h3>GOOGLE_CLIENT_ID not configured</h3>", status_code=500)
+
+    # Build redirect URI — use the request origin for flexibility
+    base_url = os.environ.get("API_URL", "").rstrip("/")
+    if not base_url:
+        proto = request.headers.get("x-forwarded-proto", "https")
+        host = request.headers.get("host", "localhost:8000")
+        base_url = f"{proto}://{host}"
+    redirect_uri = f"{base_url}/api/auth/google/callback"
+
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": GOOGLE_GMAIL_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": tenant_id,
+    }
+    from urllib.parse import urlencode
+    auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
+    return RedirectResponse(auth_url)
+
+
+@app.get("/api/auth/google/callback")
+async def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    """Handle Google OAuth callback — exchange code for tokens and save."""
+    if error or not code:
+        return HTMLResponse(
+            f"<h3>Gmail connection failed</h3><p>{_safe_oauth_error(error or 'No code')}</p>"
+            "<script>setTimeout(()=>window.close(),3000)</script>",
+            status_code=400,
+        )
+
+    tenant_id = state
+    if not tenant_id:
+        return HTMLResponse(
+            "<h3>Missing tenant ID</h3><script>setTimeout(()=>window.close(),3000)</script>",
+            status_code=400,
+        )
+
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+    base_url = os.environ.get("API_URL", "").rstrip("/")
+    if not base_url:
+        proto = request.headers.get("x-forwarded-proto", "https")
+        host = request.headers.get("host", "localhost:8000")
+        base_url = f"{proto}://{host}"
+    redirect_uri = f"{base_url}/api/auth/google/callback"
+
+    # Exchange code for tokens
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(GOOGLE_TOKEN_URL, data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "client_id": client_id,
+            "client_secret": client_secret,
+        })
+
+    if resp.status_code != 200:
+        err_data = resp.json() if resp.status_code < 500 else {}
+        err_msg = err_data.get("error_description", err_data.get("error", "Token exchange failed"))
+        return HTMLResponse(
+            f"<h3>Gmail connection failed</h3><p>{_safe_oauth_error(err_msg)}</p>"
+            "<script>setTimeout(()=>window.close(),3000)</script>",
+            status_code=400,
+        )
+
+    tokens = resp.json()
+    access_token = tokens.get("access_token", "")
+    refresh_token = tokens.get("refresh_token", "")
+
+    if not access_token:
+        return HTMLResponse(
+            "<h3>No access token received</h3>"
+            "<script>setTimeout(()=>window.close(),3000)</script>",
+            status_code=400,
+        )
+
+    # Save tokens to tenant config
+    try:
+        config = get_tenant_config(tenant_id)
+        config.integrations.google_access_token = access_token
+        if refresh_token:
+            config.integrations.google_refresh_token = refresh_token
+        save_tenant_config(config)
+    except Exception as e:
+        return HTMLResponse(
+            f"<h3>Failed to save tokens</h3><p>{_safe_oauth_error(str(e))}</p>"
+            "<script>setTimeout(()=>window.close(),3000)</script>",
+            status_code=500,
+        )
+
+    return HTMLResponse(
+        "<h3 style='color:green'>Gmail connected successfully!</h3>"
+        "<p>You can close this window.</p>"
+        "<script>setTimeout(()=>window.close(),2000)</script>"
+    )
+
+
 @app.get("/api/integrations/{tenant_id}/gmail-status")
 async def gmail_status(tenant_id: str):
     """Check if Gmail is connected for a tenant.

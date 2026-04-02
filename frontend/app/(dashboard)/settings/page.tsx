@@ -73,17 +73,28 @@ export default function SettingsPage() {
     }
   }, []);
 
-  async function reconnectGmail() {
+  function reconnectGmail() {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId) return;
     setGmailReconnecting(true);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback?mode=login`,
-        scopes: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
-        queryParams: { access_type: "offline", prompt: "consent" },
-      },
-    });
-    if (error) setGmailReconnecting(false);
+    // Open dedicated Google OAuth flow via backend (like Twitter/LinkedIn)
+    const popup = window.open(
+      `${API_URL}/api/auth/google/connect/${tenantId}`,
+      "google_auth",
+      "width=600,height=700"
+    );
+    // Poll for popup close, then refresh status
+    const timer = setInterval(() => {
+      if (!popup || popup.closed) {
+        clearInterval(timer);
+        setGmailReconnecting(false);
+        // Refresh Gmail status
+        authFetch(`${API_URL}/api/integrations/${tenantId}/gmail-status`)
+          .then(r => r.json())
+          .then(data => setGmailConnected(!!data?.connected))
+          .catch(() => {});
+      }
+    }, 500);
   }
 
   function connectTwitter() {
