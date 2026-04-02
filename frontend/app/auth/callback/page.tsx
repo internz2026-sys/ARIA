@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { API_URL } from "@/lib/api";
+import { API_URL, getAuthHeaders } from "@/lib/api";
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -43,9 +43,10 @@ export default function AuthCallbackPage() {
     ) {
       if (!providerToken) return;
       try {
+        const authHeaders = await getAuthHeaders();
         await fetch(`${API_URL}/api/integrations/${tenantId}/google-tokens`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({
             google_access_token: providerToken,
             google_refresh_token: providerRefreshToken || null,

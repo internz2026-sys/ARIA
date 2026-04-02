@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { API_URL } from "@/lib/api";
+import { API_URL, getAuthHeaders } from "@/lib/api";
 
 const agents = [
   { slug: "ceo", name: "ARIA CEO", role: "Chief Marketing Strategist", description: "Builds your GTM playbook, coordinates all agents, reviews outputs, adjusts strategy", color: "#534AB7", required: true },
@@ -35,9 +35,10 @@ export default function SelectAgentsPage() {
     if (!accessToken) return;
     const refreshToken = localStorage.getItem("aria_google_refresh_token");
     try {
+      const authHeaders = await getAuthHeaders();
       await fetch(`${API_URL}/api/integrations/${tenantId}/google-tokens`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({
           google_access_token: accessToken,
           google_refresh_token: refreshToken || null,

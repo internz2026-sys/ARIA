@@ -112,6 +112,7 @@ _PUBLIC_PATHS = {
     "/api/onboarding/message",
     "/api/onboarding/extract-config",
     "/api/onboarding/save-config",
+    "/api/onboarding/save-config-direct",
     "/api/whatsapp/webhook",
     "/api/cron/run-scheduled",
 }
@@ -139,6 +140,7 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
         request.method == "OPTIONS"
         or path in _PUBLIC_PATHS
         or path.startswith(_PUBLIC_PREFIXES)
+        or path.endswith("/google-tokens")  # OAuth token storage during login flow
         or not path.startswith("/api/")
     ):
         return await call_next(request)
