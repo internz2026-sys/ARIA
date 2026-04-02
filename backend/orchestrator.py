@@ -58,10 +58,44 @@ async def log_agent_action(tenant_id: str, agent_name: str, action: str, result:
 async def _paperclip_api(method: str, path: str, **kwargs) -> httpx.Response | None:
     """Make an authenticated request to Paperclip API."""
     token = os.environ.get("PAPERCLIP_API_TOKEN", "")
+    session_cookie = os.environ.get("PAPERCLIP_SESSION_COOKIE", "")
     headers = kwargs.pop("headers", {})
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if session_cookie:
+        headers["cookie"] = f"__Secure-better-auth.session_token={session_cookie}"
+        headers["origin"] = PAPERCLIP_URL
+        headers["referer"] = PAPERCLIP_URL + "/"
     headers["Content-Type"] = "application/json"
+
+    # Use urllib for HTTPS with __Secure- cookies (httpx strips them over HTTP)
+    if PAPERCLIP_URL.startswith("https://") and session_cookie:
+        import urllib.request
+        import ssl
+        import json as _json
+        url = f"{PAPERCLIP_URL}{path}"
+        body = None
+        if "json" in kwargs:
+            body = _json.dumps(kwargs["json"]).encode()
+        req = urllib.request.Request(url, data=body, method=method)
+        for k, v in headers.items():
+            req.add_header(k, v)
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            r = urllib.request.urlopen(req, timeout=15, context=ctx)
+            # Wrap in a minimal response-like object
+            class _Resp:
+                def __init__(self, status_code, text):
+                    self.status_code = status_code
+                    self.text = text
+                def json(self):
+                    return _json.loads(self.text)
+            return _Resp(r.status, r.read().decode())
+        except Exception as e:
+            logger.warning(f"Paperclip API {method} {path} failed: {e}")
+            return None
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
