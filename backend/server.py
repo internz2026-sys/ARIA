@@ -108,15 +108,33 @@ async def _scheduler_executor_loop():
             _log.warning("Scheduler executor loop failed: %s", e)
 
 
+async def _paperclip_poller_loop():
+    """Background loop: poll Paperclip for completed agent issues every 30 seconds."""
+    import asyncio
+    _log = logging.getLogger("aria.paperclip_poller")
+    while True:
+        await asyncio.sleep(30)
+        try:
+            from backend.paperclip_sync import is_connected
+            if not is_connected():
+                continue
+            from backend.paperclip_poller import poll_completed_issues
+            await poll_completed_issues()
+        except Exception as e:
+            _log.warning("Paperclip poller failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: sync agents with Paperclip AI orchestrator + start background loops."""
     await paperclip_init()
     sync_task = asyncio.create_task(_gmail_sync_loop())
     scheduler_task = asyncio.create_task(_scheduler_executor_loop())
+    poller_task = asyncio.create_task(_paperclip_poller_loop())
     yield
     sync_task.cancel()
     scheduler_task.cancel()
+    poller_task.cancel()
 
 
 app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
