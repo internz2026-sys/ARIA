@@ -9,6 +9,7 @@ interface EmailEditorProps {
   onSave: (data: { to: string; subject: string; html_body: string }) => Promise<void>;
   onSend: () => void;
   onCancel: () => void;
+  onSchedule?: () => void;
   sendDisabled?: boolean;
   sendLoading?: boolean;
   cancelLoading?: boolean;
@@ -23,6 +24,7 @@ export default function EmailEditor({
   onSave,
   onSend,
   onCancel,
+  onSchedule,
   sendDisabled,
   sendLoading,
   cancelLoading,
@@ -159,6 +161,16 @@ export default function EmailEditor({
           </svg>
           {sendLoading ? "Sending..." : "Approve & Send"}
         </button>
+        {onSchedule && (
+          <button
+            onClick={onSchedule}
+            disabled={!to}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#534AB7] bg-white text-[#534AB7] hover:bg-[#EEEDFE] transition-colors disabled:opacity-60"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" /></svg>
+            Schedule
+          </button>
+        )}
         <button
           onClick={handleSave}
           disabled={saving}

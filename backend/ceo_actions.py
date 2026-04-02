@@ -436,6 +436,53 @@ ACTION_REGISTRY: dict[str, dict] = {
         "confirm": ConfirmLevel.NONE,
         "risk": "none",
     },
+
+    # ── Scheduler ──
+    "schedule_task": {
+        "entity": "scheduled_task",
+        "operation": "create",
+        "description": "Schedule an email, post, or follow-up for a specific date/time",
+        "required_fields": ["task_type", "title", "scheduled_at"],
+        "optional_fields": ["payload", "timezone", "related_entity_id", "approval_required"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "low",
+    },
+    "read_scheduled_tasks": {
+        "entity": "scheduled_task",
+        "operation": "read",
+        "description": "List scheduled tasks, optionally filtered by status or type",
+        "required_fields": [],
+        "optional_fields": ["status", "task_type"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+    "reschedule_task": {
+        "entity": "scheduled_task",
+        "operation": "update",
+        "description": "Reschedule a task to a new date/time",
+        "required_fields": ["id", "scheduled_at"],
+        "optional_fields": ["timezone"],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "medium",
+    },
+    "cancel_scheduled_task": {
+        "entity": "scheduled_task",
+        "operation": "cancel",
+        "description": "Cancel a scheduled task",
+        "required_fields": ["id"],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "medium",
+    },
+    "execute_scheduled_now": {
+        "entity": "scheduled_task",
+        "operation": "execute",
+        "description": "Execute a scheduled task immediately (send now / publish now)",
+        "required_fields": ["id"],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "high",
+    },
 }
 
 
@@ -861,6 +908,40 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
             query = query.eq("status", params["status"])
         result = query.order("timestamp", desc=True).limit(20).execute()
         return {"logs": result.data or []}
+
+    # ── Scheduled Tasks ──
+    elif entity == "scheduled_task":
+        from backend.services import scheduler as sched_service
+        if operation == "create":
+            return sched_service.create_task(
+                tenant_id=tenant_id,
+                task_type=params["task_type"],
+                title=params["title"],
+                scheduled_at=params["scheduled_at"],
+                payload=params.get("payload", {}),
+                timezone_str=params.get("timezone", "UTC"),
+                approval_status="pending" if params.get("approval_required") else "none",
+                created_by="ceo",
+                triggered_by_agent="ceo",
+                related_entity_id=params.get("related_entity_id"),
+            )
+        elif operation == "read":
+            return sched_service.list_tasks(
+                tenant_id, status=params.get("status", ""), task_type=params.get("task_type", ""),
+            )
+        elif operation == "update":
+            return sched_service.reschedule_task(
+                tenant_id, params["id"], params["scheduled_at"], params.get("timezone", ""),
+            )
+        elif operation == "cancel":
+            return sched_service.cancel_task(tenant_id, params["id"])
+        elif operation == "execute":
+            task = sched_service.get_task(tenant_id, params["id"])
+            if not task:
+                return {"error": "Scheduled task not found"}
+            if task.get("approval_status") == "pending":
+                return {"error": "Task requires approval before execution"}
+            return await sched_service.execute_task(task)
 
     return {"status": "unknown_action"}
 

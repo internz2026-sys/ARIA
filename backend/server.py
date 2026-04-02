@@ -79,13 +79,44 @@ async def _gmail_sync_loop():
             _log.warning("Background Gmail sync failed: %s", e)
 
 
+async def _scheduler_executor_loop():
+    """Background loop: execute due scheduled tasks every 30 seconds."""
+    import asyncio
+    _log = logging.getLogger("aria.scheduler_executor")
+    while True:
+        await asyncio.sleep(30)
+        try:
+            from backend.services.scheduler import get_due_tasks, execute_task
+            due = get_due_tasks()
+            for task in due:
+                try:
+                    result = await execute_task(task)
+                    tid = task.get("tenant_id", "")
+                    if tid:
+                        await sio.emit("scheduled_task_executed", {
+                            "id": task["id"],
+                            "task_type": task["task_type"],
+                            "title": task.get("title", ""),
+                            "status": "sent" if not result.get("error") else "failed",
+                            "result": result,
+                        }, room=tid)
+                except Exception as e:
+                    _log.warning("Failed to execute task %s: %s", task.get("id"), e)
+            if due:
+                _log.info("Scheduler: processed %d due tasks", len(due))
+        except Exception as e:
+            _log.warning("Scheduler executor loop failed: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: sync agents with Paperclip AI orchestrator + start background Gmail sync."""
+    """Startup: sync agents with Paperclip AI orchestrator + start background loops."""
     await paperclip_init()
     sync_task = asyncio.create_task(_gmail_sync_loop())
+    scheduler_task = asyncio.create_task(_scheduler_executor_loop())
     yield
     sync_task.cancel()
+    scheduler_task.cancel()
 
 
 app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
@@ -934,6 +965,135 @@ async def linkedin_disconnect(tenant_id: str):
     config.integrations.linkedin_org_name = None
     save_tenant_config(config)
     return {"status": "disconnected"}
+
+
+# ─── Scheduler API ───
+
+from backend.services import scheduler as scheduler_service
+
+
+class ScheduleTaskRequest(BaseModel):
+    task_type: str
+    title: str
+    scheduled_at: str
+    payload: dict = {}
+    related_entity_type: str | None = None
+    related_entity_id: str | None = None
+    timezone: str = "UTC"
+    approval_required: bool = False
+    created_by: str = "user"
+
+
+@app.post("/api/schedule/{tenant_id}/tasks")
+async def create_scheduled_task(tenant_id: str, body: ScheduleTaskRequest):
+    """Create a new scheduled task."""
+    result = scheduler_service.create_task(
+        tenant_id=tenant_id,
+        task_type=body.task_type,
+        title=body.title,
+        scheduled_at=body.scheduled_at,
+        payload=body.payload,
+        related_entity_type=body.related_entity_type,
+        related_entity_id=body.related_entity_id,
+        timezone_str=body.timezone,
+        approval_status="pending" if body.approval_required else "none",
+        created_by=body.created_by,
+    )
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/api/schedule/{tenant_id}/tasks")
+async def list_scheduled_tasks(
+    tenant_id: str,
+    status: str = "",
+    task_type: str = "",
+    from_date: str = "",
+    to_date: str = "",
+    page: int = 1,
+    page_size: int = 50,
+):
+    """List scheduled tasks with optional filters."""
+    return scheduler_service.list_tasks(tenant_id, status, task_type, from_date, to_date, page, page_size)
+
+
+@app.get("/api/schedule/{tenant_id}/tasks/{task_id}")
+async def get_scheduled_task(tenant_id: str, task_id: str):
+    """Get a single scheduled task."""
+    task = scheduler_service.get_task(tenant_id, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
+class UpdateScheduleRequest(BaseModel):
+    scheduled_at: str | None = None
+    timezone: str | None = None
+    title: str | None = None
+    status: str | None = None
+    payload: dict | None = None
+
+
+@app.patch("/api/schedule/{tenant_id}/tasks/{task_id}")
+async def update_scheduled_task(tenant_id: str, task_id: str, body: UpdateScheduleRequest):
+    """Update a scheduled task (reschedule, change title, etc.)."""
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+    return scheduler_service.update_task(tenant_id, task_id, updates)
+
+
+@app.post("/api/schedule/{tenant_id}/tasks/{task_id}/cancel")
+async def cancel_scheduled_task(tenant_id: str, task_id: str):
+    """Cancel a scheduled task."""
+    return scheduler_service.cancel_task(tenant_id, task_id)
+
+
+@app.post("/api/schedule/{tenant_id}/tasks/{task_id}/approve")
+async def approve_scheduled_task(tenant_id: str, task_id: str):
+    """Approve a pending scheduled task — moves to 'scheduled' for execution."""
+    return scheduler_service.approve_task(tenant_id, task_id)
+
+
+@app.post("/api/schedule/{tenant_id}/tasks/{task_id}/reject")
+async def reject_scheduled_task(tenant_id: str, task_id: str):
+    """Reject a pending scheduled task."""
+    return scheduler_service.reject_task(tenant_id, task_id)
+
+
+class RescheduleRequest(BaseModel):
+    scheduled_at: str
+    timezone: str = ""
+
+
+@app.post("/api/schedule/{tenant_id}/tasks/{task_id}/reschedule")
+async def reschedule_task(tenant_id: str, task_id: str, body: RescheduleRequest):
+    """Reschedule a task to a new time."""
+    return scheduler_service.reschedule_task(tenant_id, task_id, body.scheduled_at, body.timezone)
+
+
+@app.post("/api/schedule/{tenant_id}/tasks/{task_id}/execute-now")
+async def execute_task_now(tenant_id: str, task_id: str):
+    """Execute a scheduled task immediately (bypass schedule)."""
+    task = scheduler_service.get_task(tenant_id, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.get("approval_status") == "pending":
+        raise HTTPException(status_code=400, detail="Task requires approval before execution")
+    result = await scheduler_service.execute_task(task)
+    return {"executed": True, "result": result}
+
+
+@app.get("/api/schedule/{tenant_id}/calendar")
+async def get_calendar(tenant_id: str, start: str = "", end: str = ""):
+    """Get scheduled tasks for the calendar view."""
+    if not start or not end:
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        start = start or (now - timedelta(days=7)).isoformat()
+        end = end or (now + timedelta(days=60)).isoformat()
+    return {"tasks": scheduler_service.calendar_tasks(tenant_id, start, end)}
 
 
 # ─── Usage API ───
@@ -3022,6 +3182,37 @@ def _format_action_result(action_name: str, result: dict) -> str:
 
     if action_name == "cancel_draft":
         return f"**Draft cancelled** (ID: {result.get('updated', '—')})"
+
+    # ═══════════ Scheduler operations ═══════════
+
+    if action_name == "schedule_task":
+        t = result.get("task", {})
+        if t:
+            return f"**Task scheduled:** {t.get('title', '')} — {t.get('task_type', '')} at {t.get('scheduled_at', '')}"
+        return "Task scheduled."
+
+    if action_name == "read_scheduled_tasks":
+        tasks = result.get("tasks", [])
+        if not tasks:
+            return "No scheduled tasks found."
+        lines = [f"**Scheduled Tasks** ({len(tasks)} total)\n"]
+        lines.append("| Title | Type | Scheduled At | Status |")
+        lines.append("|-------|------|-------------|--------|")
+        for t in tasks[:20]:
+            sa = (t.get("scheduled_at") or "")[:16].replace("T", " ")
+            lines.append(f"| {t.get('title', '—')} | {t.get('task_type', '—')} | {sa} | {t.get('status', '—')} |")
+        return "\n".join(lines)
+
+    if action_name == "reschedule_task":
+        return f"**Task rescheduled** (ID: {result.get('updated', '—')}) — New time: {result.get('changes', {}).get('scheduled_at', '—')}"
+
+    if action_name == "cancel_scheduled_task":
+        return f"**Scheduled task cancelled** (ID: {result.get('updated', '—')})"
+
+    if action_name == "execute_scheduled_now":
+        if result.get("error"):
+            return f"**Execution failed:** {result['error']}"
+        return "**Task executed immediately** — check inbox/notifications for results."
 
     return ""
 

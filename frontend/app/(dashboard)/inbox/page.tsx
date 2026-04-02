@@ -255,6 +255,49 @@ export default function InboxPage() {
     }
   };
 
+  // ─── Schedule Picker ──
+  const [scheduleItem, setScheduleItem] = useState<InboxItem | null>(null);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [scheduleTime, setScheduleTime] = useState("09:00");
+  const [schedulePlatform, setSchedulePlatform] = useState("");
+  const [scheduling, setScheduling] = useState(false);
+
+  const handleSchedule = async () => {
+    if (!tenantId || !scheduleItem || !scheduleDate || !scheduleTime) return;
+    setScheduling(true);
+    try {
+      const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
+      const isEmail = scheduleItem.type === "email" || scheduleItem.email_draft;
+      const taskType = isEmail ? "send_email" : "publish_post";
+      const title = scheduleItem.title || (isEmail ? "Scheduled email" : "Scheduled post");
+
+      let payload: Record<string, any> = { inbox_item_id: scheduleItem.id };
+      if (isEmail && scheduleItem.email_draft) {
+        payload = { ...payload, to: scheduleItem.email_draft.to, subject: scheduleItem.email_draft.subject, html_body: scheduleItem.email_draft.html_body };
+      } else {
+        const posts = parseSocialPosts(scheduleItem.content);
+        const post = schedulePlatform === "linkedin"
+          ? posts.find(p => p.platform?.toLowerCase() === "linkedin") || posts[0]
+          : posts.find(p => p.platform?.toLowerCase() === "twitter") || posts[0];
+        if (post) payload = { ...payload, text: post.text, platform: schedulePlatform || post.platform || "twitter" };
+      }
+
+      await authFetch(`${API_URL}/api/schedule/${tenantId}/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_type: taskType, title, scheduled_at: scheduledAt, payload, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+      });
+      alert(`Scheduled for ${new Date(scheduledAt).toLocaleString()}`);
+      setScheduleItem(null);
+      setScheduleDate("");
+      setScheduleTime("09:00");
+    } catch (err: any) {
+      alert(err?.message || "Failed to schedule");
+    } finally {
+      setScheduling(false);
+    }
+  };
+
   const [waReplyText, setWaReplyText] = useState("");
   const [waReplying, setWaReplying] = useState(false);
 
@@ -366,6 +409,7 @@ export default function InboxPage() {
         htmlBody={draft.html_body || ""}
         onSave={(data) => handleSaveDraft(item, data)}
         onSend={() => handleApproveSend(item)}
+        onSchedule={() => setScheduleItem(item)}
         onCancel={() => handleCancelDraft(item)}
         sendDisabled={actionLoading === "approve"}
         sendLoading={actionLoading === "approve"}
@@ -533,6 +577,15 @@ export default function InboxPage() {
                   <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
                 </svg>
                 {actionLoading === "linkedin" ? "Publishing..." : "Publish to LinkedIn"}
+              </button>
+            )}
+            {isSocialPost(item) && (item.status === "ready" || item.status === "needs_review") && (
+              <button
+                onClick={() => { setScheduleItem(item); setSchedulePlatform(""); }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-white text-[#534AB7] border border-[#534AB7] hover:bg-[#EEEDFE] transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" /></svg>
+                Schedule
               </button>
             )}
             {isSocialPost(item) && item.status === "sent" && (
@@ -935,6 +988,49 @@ export default function InboxPage() {
                 Select an item to view its content
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {/* Schedule Picker Modal */}
+      {scheduleItem && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30" onClick={() => setScheduleItem(null)}>
+          <div className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl w-[400px]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-[#E0DED8]">
+              <h3 className="text-sm font-semibold text-[#2C2C2A]">Schedule Task</h3>
+              <button onClick={() => setScheduleItem(null)} className="text-[#B0AFA8] hover:text-[#2C2C2A]">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <div className="text-sm text-[#2C2C2A] font-medium truncate">{scheduleItem.title}</div>
+              {isSocialPost(scheduleItem) && (
+                <div>
+                  <label className="block text-xs font-medium text-[#5F5E5A] mb-1">Platform</label>
+                  <select value={schedulePlatform} onChange={(e) => setSchedulePlatform(e.target.value)} className="w-full px-3 py-2 border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A]">
+                    <option value="">Auto-detect</option>
+                    <option value="twitter">X / Twitter</option>
+                    <option value="linkedin">LinkedIn</option>
+                  </select>
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-[#5F5E5A] mb-1">Date</label>
+                  <input type="date" value={scheduleDate} onChange={(e) => setScheduleDate(e.target.value)} min={new Date().toISOString().split("T")[0]} className="w-full px-3 py-2 border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A]" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[#5F5E5A] mb-1">Time</label>
+                  <input type="time" value={scheduleTime} onChange={(e) => setScheduleTime(e.target.value)} className="w-full px-3 py-2 border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A]" />
+                </div>
+              </div>
+              <p className="text-[10px] text-[#9E9C95]">Timezone: {Intl.DateTimeFormat().resolvedOptions().timeZone}</p>
+              <div className="flex items-center gap-2 pt-2 border-t border-[#E0DED8]">
+                <button onClick={handleSchedule} disabled={scheduling || !scheduleDate} className="flex-1 px-4 py-2 bg-[#534AB7] text-white text-sm font-medium rounded-lg hover:bg-[#433AA0] transition-colors disabled:opacity-50">
+                  {scheduling ? "Scheduling..." : "Schedule"}
+                </button>
+                <button onClick={() => setScheduleItem(null)} className="px-4 py-2 text-sm text-[#5F5E5A] hover:text-[#2C2C2A]">Cancel</button>
+              </div>
+            </div>
           </div>
         </div>
       )}
