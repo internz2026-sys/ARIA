@@ -125,7 +125,7 @@ async def _dispatch_via_paperclip(
     Paperclip manages the full lifecycle:
     - Creates an issue/task assigned to the agent
     - Paperclip's Claude adapter runs the agent with its instructions
-    - Agent uses ARIA API skill to save results to inbox
+    - Poller imports results from issue comments to ARIA inbox
     - Budget tracking and cost logging handled by Paperclip
     """
     from backend.paperclip_sync import get_company_id
@@ -141,20 +141,10 @@ async def _dispatch_via_paperclip(
         task_desc = f"Run {agent_name} agent for tenant {tenant_id}"
 
     # Create an issue in Paperclip assigned to this agent
+    # Include tenant_id in title since Paperclip doesn't store issue body
     from backend.paperclip_sync import _urllib_request
     issue = _urllib_request("POST", f"/api/companies/{company_id}/issues", data={
-        "title": task_desc[:200],
-        "body": (
-            f"## Task\n{task_desc}\n\n"
-            f"## Context\n"
-            f"- **Tenant ID**: `{tenant_id}`\n"
-            f"- **Agent**: {agent_name}\n"
-            f"- **API Base URL**: {os.environ.get('API_URL', 'http://172.17.0.1:8000')}\n\n"
-            f"## Instructions\n"
-            f"1. Read tenant config: `GET /api/dashboard/{tenant_id}/config`\n"
-            f"2. Execute the task using your agent instructions\n"
-            f"3. Save results to inbox: `POST /api/inbox/{tenant_id}/items`\n"
-        ),
+        "title": f"[{tenant_id}] {task_desc[:170]}",
         "assigneeAgentId": paperclip_id,
         "priority": context.get("priority", "medium") if context else "medium",
     })

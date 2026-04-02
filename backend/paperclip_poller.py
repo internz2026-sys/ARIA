@@ -26,36 +26,25 @@ _processed_issues: set[str] = set()
 
 
 def _extract_tenant_id(issue: dict) -> str | None:
-    """Extract tenant_id from issue body or by fetching full issue details."""
-    body = issue.get("body") or issue.get("description") or ""
+    """Extract tenant_id from issue title (format: [tenant_id] task description)."""
+    title = issue.get("title", "")
 
-    # Try body first
+    # Primary: extract from title prefix [uuid]
+    match = re.match(r"\[([a-f0-9-]{36})\]", title)
+    if match:
+        return match.group(1)
+
+    # Fallback: check body
+    body = issue.get("body") or issue.get("description") or ""
     match = re.search(r"Tenant ID[:\s]*`?([a-f0-9-]{36})`?", body, re.IGNORECASE)
     if match:
         return match.group(1)
 
-    # Body might be empty in list response — fetch full issue
-    if not body:
-        full = _urllib_request("GET", f"/api/issues/{issue['id']}")
-        if full:
-            body = full.get("body") or full.get("description") or ""
-            match = re.search(r"Tenant ID[:\s]*`?([a-f0-9-]{36})`?", body, re.IGNORECASE)
-            if match:
-                return match.group(1)
-
-    # Fallback: look for any UUID-like tenant_id pattern in body
-    match = re.search(r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})", body)
-    if match:
-        return match.group(1)
-
-    # Last resort: get from active tenants (single-tenant setup)
-    try:
-        sb = get_db()
-        result = sb.table("tenant_configs").select("tenant_id").limit(1).execute()
-        if result.data:
-            return result.data[0]["tenant_id"]
-    except Exception:
-        pass
+    # Fallback: any UUID in title or body
+    for text in [title, body]:
+        match = re.search(r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})", text)
+        if match:
+            return match.group(1)
 
     return None
 
@@ -120,7 +109,9 @@ async def poll_completed_issues():
     for issue in issue_list:
         issue_id = issue.get("id", "")
         status = issue.get("status", "")
-        title = issue.get("title", "")
+        raw_title = issue.get("title", "")
+        # Strip tenant_id prefix from title: [uuid] actual title
+        title = re.sub(r"^\[[a-f0-9-]{36}\]\s*", "", raw_title)
 
         # Skip already processed or non-completed issues
         if issue_id in _processed_issues:
