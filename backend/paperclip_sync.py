@@ -190,6 +190,10 @@ async def initialize():
 
     logger.info(f"Syncing with Paperclip at {PAPERCLIP_URL}...")
 
+    # Wait for Docker network DNS to be ready
+    import asyncio
+    await asyncio.sleep(5)
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         # Check if Paperclip is reachable
         try:
