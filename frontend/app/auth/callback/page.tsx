@@ -10,19 +10,30 @@ export default function AuthCallbackPage() {
 
   useEffect(() => {
     async function handleAuth() {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        await processSession(session);
-        return;
-      }
+      // Use onAuthStateChange to get the session — it includes
+      // provider_token and provider_refresh_token from the OAuth redirect,
+      // whereas getSession() returns a cached session without them.
+      let handled = false;
       const { data: { subscription } } = supabase.auth.onAuthStateChange(
         async (_event, newSession) => {
-          if (newSession) {
+          if (newSession && !handled) {
+            handled = true;
             subscription.unsubscribe();
             await processSession(newSession);
           }
         }
       );
+
+      // Fallback: if no auth event fires within 3s, try getSession
+      setTimeout(async () => {
+        if (handled) return;
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session && !handled) {
+          handled = true;
+          subscription.unsubscribe();
+          await processSession(session);
+        }
+      }, 3000);
     }
 
     async function storeGoogleTokens(
