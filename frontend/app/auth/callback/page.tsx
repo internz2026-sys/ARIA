@@ -22,12 +22,15 @@ export default function AuthCallbackPage() {
     }
 
     const hashTokens = extractTokensFromHash();
+    console.log("[ARIA Auth] Hash tokens:", hashTokens.providerToken ? "present" : "null", hashTokens.providerRefreshToken ? "present" : "null");
+    console.log("[ARIA Auth] URL hash:", window.location.hash.substring(0, 100));
 
     async function handleAuth() {
       let handled = false;
 
       const { data: { subscription } } = supabase.auth.onAuthStateChange(
         async (event, newSession) => {
+          console.log("[ARIA Auth] Event:", event, "provider_token:", newSession?.provider_token ? "present" : "null");
           if (!newSession || handled) return;
 
           // Prefer the SIGNED_IN event (has provider tokens) over INITIAL_SESSION
@@ -48,6 +51,7 @@ export default function AuthCallbackPage() {
             provider_token: newSession.provider_token || hashTokens.providerToken,
             provider_refresh_token: newSession.provider_refresh_token || hashTokens.providerRefreshToken,
           };
+          console.log("[ARIA Auth] Final provider_token:", sessionWithTokens.provider_token ? "present" : "null");
 
           await processSession(sessionWithTokens);
         }
@@ -56,6 +60,7 @@ export default function AuthCallbackPage() {
       // Fallback: if no SIGNED_IN fires within 4s, proceed with whatever we have
       setTimeout(async () => {
         if (handled) return;
+        console.log("[ARIA Auth] Fallback triggered after 4s");
         handled = true;
         subscription.unsubscribe();
         const { data: { session } } = await supabase.auth.getSession();
@@ -65,6 +70,7 @@ export default function AuthCallbackPage() {
             provider_token: session.provider_token || hashTokens.providerToken,
             provider_refresh_token: session.provider_refresh_token || hashTokens.providerRefreshToken,
           };
+          console.log("[ARIA Auth] Fallback provider_token:", sessionWithTokens.provider_token ? "present" : "null");
           await processSession(sessionWithTokens);
         } else {
           router.replace("/login");
