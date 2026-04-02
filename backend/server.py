@@ -3710,19 +3710,30 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             await _emit_agent_status(tenant_id, agent_id, "running",
                                      current_task=task_desc,
                                      action="walk_to_meeting")
-        # Execute agent in background — _run_agent_to_inbox handles the full
-        # lifecycle: meeting delay → CEO returns → agent works → agent done
+        # Execute agent — route through Paperclip if connected, else local fallback
         try:
-            from backend.agents import AGENT_REGISTRY
-            agent_module = AGENT_REGISTRY.get(agent_id)
-            if agent_module:
-                import asyncio as _aio
-                _aio.create_task(_run_agent_to_inbox(
-                    agent_module, agent_id, tenant_id, task_desc,
-                    body.session_id,
-                    saved_tasks[-1]["id"] if saved_tasks else None,
-                    d.get("priority", "medium"),
-                ))
+            from backend.orchestrator import dispatch_agent
+            from backend.paperclip_sync import is_connected
+            import asyncio as _aio
+
+            if is_connected():
+                # Paperclip-first: create issue + trigger heartbeat
+                _aio.create_task(dispatch_agent(tenant_id, agent_id, context={
+                    "task": task_desc,
+                    "priority": d.get("priority", "medium"),
+                    "session_id": body.session_id,
+                }))
+            else:
+                # Local fallback
+                from backend.agents import AGENT_REGISTRY
+                agent_module = AGENT_REGISTRY.get(agent_id)
+                if agent_module:
+                    _aio.create_task(_run_agent_to_inbox(
+                        agent_module, agent_id, tenant_id, task_desc,
+                        body.session_id,
+                        saved_tasks[-1]["id"] if saved_tasks else None,
+                        d.get("priority", "medium"),
+                    ))
         except Exception:
             pass
 
