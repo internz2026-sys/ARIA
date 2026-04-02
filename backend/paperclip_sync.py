@@ -241,12 +241,37 @@ async def initialize():
 
 
 def get_paperclip_agent_id(agent_name: str) -> str | None:
-    return _agent_id_cache.get(agent_name)
+    # Try cache first, fall back to env-configured agent IDs
+    cached = _agent_id_cache.get(agent_name)
+    if cached:
+        return cached
+    # Fallback: check if agent API keys are configured (means Paperclip is set up)
+    from backend.orchestrator import AGENT_API_KEYS
+    if AGENT_API_KEYS.get(agent_name):
+        # Agent IDs from Paperclip (discovered during setup)
+        _KNOWN_AGENT_IDS = {
+            "ceo": os.environ.get("PAPERCLIP_CEO_AGENT_ID", "1b64e9b0-4bb3-4aca-b8ad-d1eb9a7ffa7f"),
+            "content_writer": os.environ.get("PAPERCLIP_CONTENT_WRITER_AGENT_ID", "f9e9abcc-e51f-4a41-8e67-7bc8111230c5"),
+            "email_marketer": os.environ.get("PAPERCLIP_EMAIL_MARKETER_AGENT_ID", "da5109c3-2ab5-4a50-988e-896f078a712c"),
+            "social_manager": os.environ.get("PAPERCLIP_SOCIAL_MANAGER_AGENT_ID", "37f25bf9-8dfa-4943-9cf8-f6eb1e5157f7"),
+            "ad_strategist": os.environ.get("PAPERCLIP_AD_STRATEGIST_AGENT_ID", "8f827b80-b441-4065-bc50-fe3b470790af"),
+        }
+        return _KNOWN_AGENT_IDS.get(agent_name)
+    return None
 
 
 def get_company_id() -> str | None:
-    return _company_id_cache
+    if _company_id_cache:
+        return _company_id_cache
+    # Fallback: use known company ID if agent keys are configured
+    any_key = any(os.environ.get(f"PAPERCLIP_{k}_KEY") for k in ["CEO", "CONTENT_WRITER", "EMAIL_MARKETER", "SOCIAL_MANAGER", "AD_STRATEGIST"])
+    if any_key:
+        return os.environ.get("PAPERCLIP_COMPANY_ID", "a33b6679-9b72-44ed-9b73-92035f32d887")
+    return None
 
 
 def is_connected() -> bool:
-    return _company_id_cache is not None
+    if _company_id_cache is not None:
+        return True
+    # Also connected if agent API keys are configured
+    return any(os.environ.get(f"PAPERCLIP_{k}_KEY") for k in ["CEO", "CONTENT_WRITER", "EMAIL_MARKETER", "SOCIAL_MANAGER", "AD_STRATEGIST"])
