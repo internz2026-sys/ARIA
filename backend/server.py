@@ -189,15 +189,15 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
                 break
 
     if tenant_id:
-        user_email = user.get("email", "")
+        user_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
         try:
             from backend.config.loader import get_tenant_config
             config = get_tenant_config(tenant_id)
-            # Allow if owner_email matches or no owner set (legacy)
-            if config.owner_email and user_email and config.owner_email != user_email:
-                # Also allow if user sub matches tenant_id
+            owner_email = (config.owner_email or "").lower().strip()
+            # Allow if: no owner set, emails match (case-insensitive), or user sub matches
+            if owner_email and user_email and owner_email != user_email:
                 if str(config.tenant_id) != user.get("sub", ""):
-                    logger.warning("Tenant ownership denied: jwt_email=%s owner_email=%s tenant=%s", user_email, config.owner_email, tenant_id)
+                    logger.warning("Tenant ownership denied: jwt_email=%s owner_email=%s tenant=%s", user_email, owner_email, tenant_id)
                     from starlette.responses import JSONResponse
                     return JSONResponse(status_code=403, content={"detail": "Access denied to this tenant"}, headers=cors_headers)
         except Exception:
