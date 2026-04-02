@@ -39,9 +39,12 @@ def _get_department(agent_name: str) -> str:
 async def _api(client: httpx.AsyncClient, method: str, path: str, **kwargs) -> httpx.Response:
     """Make an authenticated request to Paperclip API."""
     token = os.environ.get("PAPERCLIP_API_TOKEN", "")
+    session_cookie = os.environ.get("PAPERCLIP_SESSION_COOKIE", "")
     headers = kwargs.pop("headers", {})
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if session_cookie:
+        headers["Cookie"] = f"__Secure-better-auth.session_token={session_cookie}"
     headers["Content-Type"] = "application/json"
     url = f"{PAPERCLIP_URL}{path}"
     resp = await client.request(method, url, headers=headers, **kwargs)
