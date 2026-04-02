@@ -1225,11 +1225,14 @@ GOOGLE_GMAIL_SCOPES = "https://www.googleapis.com/auth/gmail.send https://www.go
 @app.get("/api/auth/google/connect/{tenant_id}")
 async def google_connect(tenant_id: str, request: Request):
     """Redirect user to Google OAuth consent screen for Gmail access."""
+    from starlette.responses import RedirectResponse, HTMLResponse
+    from urllib.parse import urlencode
+
     client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
     if not client_id:
         return HTMLResponse("<h3>GOOGLE_CLIENT_ID not configured</h3>", status_code=500)
 
-    # Build redirect URI — use the request origin for flexibility
+    # Build redirect URI
     base_url = os.environ.get("API_URL", "").rstrip("/")
     if not base_url:
         proto = request.headers.get("x-forwarded-proto", "https")
@@ -1246,7 +1249,6 @@ async def google_connect(tenant_id: str, request: Request):
         "prompt": "consent",
         "state": tenant_id,
     }
-    from urllib.parse import urlencode
     auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
     return RedirectResponse(auth_url)
 
@@ -1254,6 +1256,8 @@ async def google_connect(tenant_id: str, request: Request):
 @app.get("/api/auth/google/callback")
 async def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
     """Handle Google OAuth callback — exchange code for tokens and save."""
+    from starlette.responses import HTMLResponse
+
     if error or not code:
         return HTMLResponse(
             f"<h3>Gmail connection failed</h3><p>{_safe_oauth_error(error or 'No code')}</p>"
@@ -1279,6 +1283,7 @@ async def google_callback(request: Request, code: str = "", state: str = "", err
     redirect_uri = f"{base_url}/api/auth/google/callback"
 
     # Exchange code for tokens
+    import httpx
     async with httpx.AsyncClient() as client:
         resp = await client.post(GOOGLE_TOKEN_URL, data={
             "grant_type": "authorization_code",
