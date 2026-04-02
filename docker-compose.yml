@@ -5,10 +5,20 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    container_name: aria-backend
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ── Frontend (Next.js) ──────────────────────────────────────────────────
   frontend:
@@ -20,8 +30,38 @@ services:
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
         NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
+    container_name: aria-frontend
     ports:
       - "3000:3000"
     depends_on:
       - backend
     restart: unless-stopped
+
+  # ── Redis ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: aria-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  # ── Nginx (reverse proxy + SSL) ────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: aria-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - certbot_data:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  redis_data:
+  certbot_data:
+  certbot_www:
