@@ -59,6 +59,7 @@ def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | 
     session_cookie = os.environ.get("PAPERCLIP_SESSION_COOKIE", "")
     token = os.environ.get("PAPERCLIP_API_TOKEN", "")
     url = f"{PAPERCLIP_URL}{path}"
+    logger.info(f"urllib {method} {url} cookie_len={len(session_cookie)} token_len={len(token)}")
     body = _json.dumps(data).encode() if data else None
     req = urllib.request.Request(url, data=body, method=method)
     req.add_header("Content-Type", "application/json")
@@ -70,7 +71,7 @@ def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | 
         r = urllib.request.urlopen(req, timeout=15)
         return _json.loads(r.read().decode())
     except Exception as e:
-        logger.debug(f"urllib {method} {path} failed: {e}")
+        logger.warning(f"urllib {method} {path} failed: {type(e).__name__}: {e}")
         return None
 
 
