@@ -222,11 +222,12 @@ export default function InboxPage() {
     if (!tenantId || actionLoading) return;
     setActionLoading("linkedin");
     try {
-      // Extract text from social post content
+      // Extract LinkedIn-specific text from social post content
       const posts = parseSocialPosts(item.content);
       let text = "";
       if (posts.length > 0) {
-        const post = posts[0];
+        // Prefer the LinkedIn post; fall back to first post
+        const post = posts.find(p => p.platform?.toLowerCase() === "linkedin") || posts[0];
         text = post.text || "";
         const hashtags = post.hashtags || [];
         if (hashtags.length > 0) {
