@@ -50,34 +50,39 @@ async def _api(client: httpx.AsyncClient, method: str, path: str, **kwargs) -> h
 
 async def ensure_company(client: httpx.AsyncClient) -> str | None:
     """Create or retrieve the ARIA company in Paperclip. Returns company_id."""
-    # List existing companies to find ARIA
-    resp = await _api(client, "GET", "/api/companies")
-    if resp.status_code != 200:
-        logger.error(f"Failed to list Paperclip companies: {resp.status_code} {resp.text}")
-        return None
-
-    companies = resp.json()
-    # companies could be a list or have a .data wrapper
-    company_list = companies if isinstance(companies, list) else companies.get("data", companies.get("companies", []))
-
-    target_name = os.environ.get("PAPERCLIP_COMPANY_NAME", "ARIA")
-    for c in company_list:
-        if c.get("name") in (target_name, "ARIA", "Hoversight AI Agency"):
-            company_id = c["id"]
-            logger.info(f"Found existing company '{c.get('name')}': {company_id}")
+    # Try direct slug lookup first (avoids needing board-level access)
+    slug = os.environ.get("PAPERCLIP_COMPANY_SLUG", "HOV")
+    resp = await _api(client, "GET", f"/api/companies/{slug}")
+    if resp.status_code == 200:
+        data = resp.json()
+        company_id = data.get("id", data.get("companyId", ""))
+        if company_id:
+            logger.info(f"Found company by slug '{slug}': {company_id}")
             return company_id
+
+    # Fallback: list companies
+    resp = await _api(client, "GET", "/api/companies")
+    if resp.status_code == 200:
+        companies = resp.json()
+        company_list = companies if isinstance(companies, list) else companies.get("data", companies.get("companies", []))
+        target_name = os.environ.get("PAPERCLIP_COMPANY_NAME", "ARIA")
+        for c in company_list:
+            if c.get("name") in (target_name, "ARIA", "Hoversight AI Agency") or c.get("slug") == slug:
+                company_id = c["id"]
+                logger.info(f"Found company '{c.get('name')}': {company_id}")
+                return company_id
 
     # Create the company
     resp = await _api(client, "POST", "/api/companies", json={
-        "name": target_name,
+        "name": os.environ.get("PAPERCLIP_COMPANY_NAME", "ARIA"),
         "description": "AI marketing team for developer founders — 5 autonomous marketing agents",
     })
     if resp.status_code in (200, 201):
         company_id = resp.json().get("id")
-        logger.info(f"Created ARIA company in Paperclip: {company_id}")
+        logger.info(f"Created company in Paperclip: {company_id}")
         return company_id
 
-    logger.error(f"Failed to create ARIA company: {resp.status_code} {resp.text}")
+    logger.error(f"Failed to create/find company: {resp.status_code} {resp.text}")
     return None
 
 
