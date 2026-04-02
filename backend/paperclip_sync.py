@@ -222,7 +222,9 @@ async def initialize():
             return
 
         _company_id_cache = company_id
+        logger.info(f"Company ID cached: {_company_id_cache}")
         _agent_id_cache = await sync_agents(client, company_id)
+        logger.info(f"Agent IDs cached: {list(_agent_id_cache.keys())}")
         await sync_org_chart(client, company_id, _agent_id_cache)
 
         # Create and attach ARIA API skill to all agents
