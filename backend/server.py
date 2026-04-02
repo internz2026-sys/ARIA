@@ -113,7 +113,7 @@ async def _paperclip_poller_loop():
     import asyncio
     _log = logging.getLogger("aria.paperclip_poller")
     while True:
-        await asyncio.sleep(15)  # 15s for responsive Virtual Office updates
+        await asyncio.sleep(5)  # 5s for responsive updates
         try:
             from backend.paperclip_sync import is_connected
             if not is_connected():
