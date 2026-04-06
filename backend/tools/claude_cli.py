@@ -1,37 +1,21 @@
-"""Claude API client — calls Anthropic API directly.
+"""Claude CLI client — calls Claude via the local CLI subprocess.
 
 All ARIA agents use this as their LLM interface.
-Requires ANTHROPIC_API_KEY in environment.
+Uses the Claude CLI (authenticated via Max subscription) — no ANTHROPIC_API_KEY needed.
 Usage is persisted to Supabase so limits survive server restarts.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import time
 from datetime import datetime, timezone
-
-import anthropic
 
 logger = logging.getLogger("aria.claude")
 
 # ── Model constants ────────────────────────────────────────────────────────────
-MODEL_SONNET = "claude-sonnet-4-20250514"
-MODEL_HAIKU = "claude-haiku-4-5-20251001"
-
-# ── Anthropic client (initialized once) ─────────────────────────────────────
-_client: anthropic.AsyncAnthropic | None = None
-
-
-def _get_client() -> anthropic.AsyncAnthropic:
-    global _client
-    if _client is None:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY is not set")
-        _client = anthropic.AsyncAnthropic(api_key=api_key)
-    return _client
-
+MODEL_SONNET = "claude-sonnet-4-6"
+MODEL_HAIKU = "claude-haiku-4-5"
 
 # ── Supabase helper ─────────────────────────────────────────────────────────
 
@@ -44,17 +28,16 @@ def _get_supabase():
 
 # Configurable limits (per tenant, per hour)
 HOURLY_REQUEST_LIMIT = int(os.getenv("ARIA_HOURLY_REQUEST_LIMIT", "60"))
-HOURLY_TOKEN_LIMIT = int(os.getenv("ARIA_HOURLY_TOKEN_LIMIT", "200000"))
 
-# Per-agent hourly limits (requests, tokens) — keeps any single agent from hogging the budget
+# Per-agent hourly limits (requests) — keeps any single agent from hogging the budget
 AGENT_HOURLY_LIMITS: dict[str, dict] = {
-    "ceo": {"requests": 30, "tokens": 80000},
-    "content_writer": {"requests": 10, "tokens": 50000},
-    "email_marketer": {"requests": 15, "tokens": 40000},
-    "social_manager": {"requests": 10, "tokens": 30000},
-    "ad_strategist": {"requests": 10, "tokens": 30000},
+    "ceo": {"requests": 30},
+    "content_writer": {"requests": 10},
+    "email_marketer": {"requests": 15},
+    "social_manager": {"requests": 10},
+    "ad_strategist": {"requests": 10},
 }
-DEFAULT_AGENT_LIMIT = {"requests": 15, "tokens": 40000}
+DEFAULT_AGENT_LIMIT = {"requests": 15}
 
 # Local cache to avoid hitting Supabase on every single check
 _usage_cache: dict[str, dict] = {}
@@ -128,13 +111,6 @@ def _check_limits(tenant_id: str) -> None:
             "Please wait before sending more messages."
         )
 
-    total_tokens = usage["input_tokens"] + usage["output_tokens"]
-    if total_tokens >= HOURLY_TOKEN_LIMIT:
-        raise RuntimeError(
-            f"Token limit exceeded: {HOURLY_TOKEN_LIMIT} tokens/hour. "
-            "Please wait before sending more messages."
-        )
-
 
 def get_usage(tenant_id: str = "global") -> dict:
     """Return current usage stats for a tenant."""
@@ -143,7 +119,7 @@ def get_usage(tenant_id: str = "global") -> dict:
 
 # ── Per-agent usage tracking (in-memory, resets each hour) ─────────────────
 
-_agent_usage: dict[str, dict[str, dict]] = {}  # {tenant_id: {agent_id: {hour, requests, tokens}}}
+_agent_usage: dict[str, dict[str, dict]] = {}
 
 
 def _get_agent_usage(tenant_id: str, agent_id: str) -> dict:
@@ -152,7 +128,7 @@ def _get_agent_usage(tenant_id: str, agent_id: str) -> dict:
     entry = tenant_agents.get(agent_id)
     if entry and entry.get("hour") == hour:
         return entry
-    entry = {"hour": hour, "requests": 0, "input_tokens": 0, "output_tokens": 0}
+    entry = {"hour": hour, "requests": 0}
     tenant_agents[agent_id] = entry
     return entry
 
@@ -164,9 +140,6 @@ def _check_agent_limits(tenant_id: str, agent_id: str) -> None:
     usage = _get_agent_usage(tenant_id, agent_id)
     if usage["requests"] >= limits["requests"]:
         raise RuntimeError(f"Agent '{agent_id}' rate limit: {limits['requests']} requests/hour reached.")
-    total = usage["input_tokens"] + usage["output_tokens"]
-    if total >= limits["tokens"]:
-        raise RuntimeError(f"Agent '{agent_id}' token limit: {limits['tokens']} tokens/hour reached.")
 
 
 def get_agent_usage_summary(tenant_id: str) -> dict:
@@ -181,17 +154,14 @@ def get_agent_usage_summary(tenant_id: str) -> dict:
         summary[agent_id] = {
             "requests": entry["requests"],
             "request_limit": limits["requests"],
-            "input_tokens": entry["input_tokens"],
-            "output_tokens": entry["output_tokens"],
-            "total_tokens": entry["input_tokens"] + entry["output_tokens"],
-            "token_limit": limits["tokens"],
         }
     return summary
 
 
-# ── Main API call ───────────────────────────────────────────────────────────
+# ── Main CLI call ─────────────────────────────────────────────────────────
 
 DEFAULT_MODEL = os.getenv("ARIA_MODEL", MODEL_SONNET)
+CLI_TIMEOUT = int(os.getenv("ARIA_CLI_TIMEOUT", "120"))
 
 
 async def call_claude(
@@ -204,7 +174,7 @@ async def call_claude(
     messages: list[dict] | None = None,
     agent_id: str = "",
 ) -> str:
-    """Call Anthropic API with a system prompt and user message.
+    """Call Claude via the CLI subprocess.
 
     Args:
         system_prompt: Instructions for Claude's behavior
@@ -218,63 +188,77 @@ async def call_claude(
     _check_limits(tenant_id)
     _check_agent_limits(tenant_id, agent_id)
 
-    client = _get_client()
     use_model = model or DEFAULT_MODEL
 
-    # Build messages array — multi-turn if provided, else single-turn
-    msg_array = messages if messages else [{"role": "user", "content": user_message}]
+    # Build the prompt from messages or user_message
+    if messages:
+        prompt_parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "user":
+                prompt_parts.append(f"User: {content}")
+            elif role == "assistant":
+                prompt_parts.append(f"Assistant: {content}")
+        prompt = "\n\n".join(prompt_parts)
+    else:
+        prompt = user_message
 
-    # Prompt caching: wrap system prompt so repeated calls reuse cached tokens
-    system_block = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+    # Build claude CLI command
+    cmd = [
+        "claude",
+        "-p", prompt,
+        "--output-format", "text",
+        "--model", use_model,
+        "--max-turns", "1",
+        "--no-input",
+    ]
+
+    # Add system prompt via --append-system-prompt
+    if system_prompt:
+        cmd.extend(["--append-system-prompt", system_prompt])
+
+    logger.info("CLI call: model=%s, tenant=%s, agent=%s", use_model, tenant_id, agent_id)
 
     try:
-        response = await client.messages.create(
-            model=use_model,
-            max_tokens=max_tokens,
-            system=system_block,
-            messages=msg_array,
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-    except anthropic.RateLimitError:
-        logger.warning("Anthropic API rate limit hit")
-        raise RuntimeError("API rate limit reached. Please try again in a moment.")
-    except anthropic.APIError as e:
-        logger.error("Anthropic API error: %s", e)
-        raise RuntimeError(f"API error: {e.message}")
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=CLI_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        raise RuntimeError(f"Claude CLI timed out after {CLI_TIMEOUT}s")
+    except FileNotFoundError:
+        raise RuntimeError(
+            "Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
+        )
 
-    # Update local cache
+    if process.returncode != 0:
+        err = stderr.decode().strip()
+        logger.error("Claude CLI error (exit %d): %s", process.returncode, err)
+        raise RuntimeError(f"Claude CLI error: {err}")
+
+    result = stdout.decode().strip()
+
+    # Update usage tracking
     usage = _load_usage(tenant_id)
-    usage["input_tokens"] += response.usage.input_tokens
-    usage["output_tokens"] += response.usage.output_tokens
     usage["requests"] += 1
     _usage_cache[tenant_id] = usage
-
-    # Persist to Supabase
     _save_usage(tenant_id, usage)
 
-    # Track per-agent usage
     if agent_id:
         agent_usage = _get_agent_usage(tenant_id, agent_id)
         agent_usage["requests"] += 1
-        agent_usage["input_tokens"] += response.usage.input_tokens
-        agent_usage["output_tokens"] += response.usage.output_tokens
 
-    # Also track global totals
     if tenant_id != "global":
         global_usage = _load_usage("global")
-        global_usage["input_tokens"] += response.usage.input_tokens
-        global_usage["output_tokens"] += response.usage.output_tokens
         global_usage["requests"] += 1
         _usage_cache["global"] = global_usage
         _save_usage("global", global_usage)
 
-    result = response.content[0].text
-    cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
-    logger.info(
-        "API call: %d in (%d cached) + %d out tokens (model=%s, tenant=%s)",
-        response.usage.input_tokens,
-        cache_read,
-        response.usage.output_tokens,
-        use_model,
-        tenant_id,
-    )
+    logger.info("CLI call complete: %d chars returned (model=%s, tenant=%s)", len(result), use_model, tenant_id)
     return result
