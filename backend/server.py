@@ -359,6 +359,7 @@ VIRTUAL_OFFICE_AGENTS = [
     {"agent_id": "email_marketer", "name": "Email Marketer", "role": "Email Campaign Agent", "model": "sonnet-4-6", "department": "email-room"},
     {"agent_id": "social_manager", "name": "Social Manager", "role": "Social Media Agent", "model": "sonnet-4-6", "department": "social-hub"},
     {"agent_id": "ad_strategist", "name": "Ad Strategist", "role": "Paid Ads Advisor", "model": "sonnet-4-6", "department": "ads-room"},
+    {"agent_id": "media", "name": "Media Designer", "role": "Visual Content Creator", "model": "haiku-4-5", "department": "design-studio"},
 ]
 
 

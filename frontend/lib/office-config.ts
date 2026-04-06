@@ -7,7 +7,7 @@
 import { AGENT_DEFS, type AgentDef } from "./agent-config";
 
 export const TILE_SIZE = 32;
-export const OFFICE_WIDTH = 24;  // tiles
+export const OFFICE_WIDTH = 32;  // tiles
 export const OFFICE_HEIGHT = 16; // tiles
 export const OFFICE_PIXEL_WIDTH = OFFICE_WIDTH * TILE_SIZE;   // 768
 export const OFFICE_PIXEL_HEIGHT = OFFICE_HEIGHT * TILE_SIZE; // 512
@@ -53,6 +53,7 @@ export const ROOMS: Room[] = [
   { id: "email-room",     name: "Email Center",    x: 0,  y: 8, width: 8, height: 8, floorColor: "#FFF8ED", wallColor: "#E0C8A0", labelColor: "#BA7517" },
   { id: "social-hub",     name: "Social Hub",      x: 8,  y: 8, width: 8, height: 8, floorColor: "#FFEFED", wallColor: "#E0A8A0", labelColor: "#D85A30" },
   { id: "ads-room",       name: "Ads Room",        x: 16, y: 8, width: 8, height: 8, floorColor: "#F0EDFF", wallColor: "#B8A0E0", labelColor: "#7C3AED" },
+  { id: "design-studio", name: "Design Studio",   x: 24, y: 0, width: 8, height: 8, floorColor: "#FFF0F5", wallColor: "#E0A0B8", labelColor: "#E4407B" },
 ];
 
 export const MEETING_CENTER = { x: 12, y: 4 };
@@ -73,6 +74,8 @@ export const MEETING_CHAIRS: { x: number; y: number }[] = [
   // Side chairs
   { x: TABLE_X - 5,  y: TABLE_Y + 14 },
   { x: TABLE_X + 69, y: TABLE_Y + 14 },
+  // Extra chair for 6th agent
+  { x: TABLE_X + 32, y: TABLE_Y + 37 },
 ];
 
 // ---- Idle wander spots per department (pixel coords) -----------------------
@@ -150,6 +153,18 @@ export const IDLE_SPOTS: Record<string, { x: number; y: number }[]> = {
     // Rug center
     { x: 20 * TILE_SIZE, y: 12 * TILE_SIZE },
   ],
+  "design-studio": [
+    // Near easel
+    { x: 26 * TILE_SIZE, y: 2 * TILE_SIZE },
+    // Near color palette display
+    { x: 30 * TILE_SIZE, y: 2 * TILE_SIZE },
+    // Near plant
+    { x: 25 * TILE_SIZE, y: 6 * TILE_SIZE + 8 },
+    // Near bookshelf
+    { x: 30 * TILE_SIZE + 16, y: 6 * TILE_SIZE },
+    // Rug center
+    { x: 28 * TILE_SIZE, y: 4 * TILE_SIZE },
+  ],
 };
 
 // ---- Desk layout (office-specific data) -----------------------------------
@@ -160,6 +175,7 @@ const DESK_LAYOUT: Record<string, { department: string; deskX: number; deskY: nu
   email_marketer: { department: "email-room",     deskX: 3,  deskY: 12, hasCrown: false },
   social_manager: { department: "social-hub",     deskX: 12, deskY: 12, hasCrown: false },
   ad_strategist:  { department: "ads-room",       deskX: 20, deskY: 12, hasCrown: false },
+  media:          { department: "design-studio", deskX: 28, deskY: 4,  hasCrown: false },
 };
 
 // ---- Core agents (derived from agent-config + desk layout) ----------------

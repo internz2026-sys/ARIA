@@ -227,7 +227,7 @@ Return ONLY valid JSON with this exact structure:
     "dont_guidelines": []
   },
   "channels": [],
-  "recommended_agents": ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist"],
+  "recommended_agents": ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist", "media"],
   "gtm_profile": {
     "business_name": "",
     "offer": "",
@@ -253,6 +253,7 @@ For recommended_agents, always include "ceo" and "content_writer". Add others ba
 - "email_marketer" if they want email campaigns, newsletters, or launch sequences
 - "social_manager" if they're active on social media or want to grow social presence
 - "ad_strategist" if they have budget for paid ads or want to run Facebook campaigns
+- "media" if they need marketing images, social media visuals, or ad creatives
 
 For channel_strategy, prioritize based on audience:
 - Developer tools → content marketing + Twitter/X + Hacker News

@@ -2,11 +2,12 @@
 
 WORKFLOW_TEMPLATES = {
     "gtm_launch_workflow": {
-        "agents": ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist"],
-        "description": "Full GTM launch: strategy → content → email → social → ads",
+        "agents": ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist", "media"],
+        "description": "Full GTM launch: strategy → content → email → social → ads → visuals",
         "steps": [
             {"agent": "ceo", "action": "build_gtm_playbook"},
             {"agent": "content_writer", "action": "landing_page", "depends_on": "ceo"},
+            {"agent": "media", "action": "generate_image", "depends_on": "ceo"},
             {"agent": "email_marketer", "action": "launch_sequence", "depends_on": "content_writer"},
             {"agent": "social_manager", "action": "content_calendar", "depends_on": "ceo"},
             {"agent": "ad_strategist", "action": "campaign_plan", "depends_on": "content_writer"},
@@ -38,10 +39,11 @@ WORKFLOW_TEMPLATES = {
         ],
     },
     "ad_campaign_workflow": {
-        "agents": ["ad_strategist", "content_writer"],
-        "description": "Create ad campaign with landing page support",
+        "agents": ["ad_strategist", "content_writer", "media"],
+        "description": "Create ad campaign with landing page and visuals",
         "steps": [
             {"agent": "content_writer", "action": "landing_page"},
+            {"agent": "media", "action": "generate_image", "depends_on": "content_writer"},
             {"agent": "ad_strategist", "action": "campaign_plan", "depends_on": "content_writer"},
         ],
     },

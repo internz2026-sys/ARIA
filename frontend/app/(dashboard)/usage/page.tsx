@@ -9,6 +9,7 @@ const AGENT_LABELS: Record<string, { name: string; color: string }> = {
   email_marketer: { name: "Email Marketer", color: "#BA7517" },
   social_manager: { name: "Social Manager", color: "#D85A30" },
   ad_strategist: { name: "Ad Strategist", color: "#5F5E5A" },
+  media: { name: "Media Designer", color: "#E4407B" },
 };
 
 function UsageBar({ used, limit, color = "#534AB7", label }: { used: number; limit: number; color?: string; label?: string }) {

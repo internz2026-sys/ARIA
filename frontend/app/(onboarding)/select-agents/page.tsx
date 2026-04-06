@@ -11,6 +11,7 @@ const agents = [
   { slug: "email_marketer", name: "Email Marketer", role: "Email Campaigns", description: "Welcome sequences, newsletters, launch campaigns, re-engagement emails", color: "#BA7517", required: false },
   { slug: "social_manager", name: "Social Manager", role: "Social Media", description: "X/Twitter, LinkedIn, Facebook posts, content calendar, hashtag strategy", color: "#D85A30", required: false },
   { slug: "ad_strategist", name: "Ad Strategist", role: "Paid Ads", description: "Facebook ad copy, audience targeting, budget allocation, step-by-step guides", color: "#7C3AED", required: false },
+  { slug: "media", name: "Media Designer", role: "Visual Content", description: "Marketing images via AI, social media visuals, ad creatives, blog headers", color: "#E4407B", required: false },
 ];
 
 export default function SelectAgentsPage() {
