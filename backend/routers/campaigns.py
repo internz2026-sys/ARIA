@@ -1,6 +1,7 @@
 """Campaign API Router — campaign CRUD, report upload, AI analysis."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -21,6 +22,39 @@ def _extract_report_context(parsed: dict) -> tuple[dict, str | None, str | None]
     date_start = parsed["campaigns"][0].get("date_start") if parsed["campaigns"] else None
     date_end = parsed["campaigns"][0].get("date_end") if parsed["campaigns"] else None
     return metrics, date_start, date_end
+
+
+async def _auto_generate_ai_report(tenant_id: str, report_id: str, campaign_id: str):
+    """Background task: automatically generate an AI report after upload.
+
+    Runs after the upload response is returned so the user doesn't wait.
+    The report is saved to the DB and visible on the campaign detail page.
+    """
+    try:
+        report = campaign_service.get_report(tenant_id, report_id)
+        campaign = campaign_service.get_campaign(tenant_id, campaign_id)
+        if not report or not campaign:
+            logger.warning("Auto AI report skipped — report or campaign not found: %s", report_id)
+            return
+
+        campaign_service.update_report(tenant_id, report_id, {"ai_summary_status": "generating"})
+
+        from backend.tools.campaign_analyzer import analyze_report
+        ai_result = await analyze_report(tenant_id, campaign, report)
+
+        campaign_service.update_report(tenant_id, report_id, {
+            "ai_summary_status": "completed",
+            "ai_report_text": ai_result.get("report_text", ""),
+            "ai_recommendations": ai_result.get("recommendations", ""),
+        })
+        logger.info("Auto AI report generated for report %s (campaign %s)", report_id, campaign.get("campaign_name", ""))
+
+    except Exception as e:
+        logger.error("Auto AI report generation failed for report %s: %s", report_id, e)
+        try:
+            campaign_service.update_report(tenant_id, report_id, {"ai_summary_status": "failed"})
+        except Exception:
+            pass
 
 
 # ── Request models ──────────────────────────────────────────────────────────────
@@ -160,9 +194,14 @@ async def upload_report(
         report_end_date=date_end,
     )
 
+    # Auto-generate AI report in the background
+    report = report_result.get("report")
+    if report:
+        asyncio.create_task(_auto_generate_ai_report(tenant_id, report["id"], campaign_id))
+
     return {
         "status": "uploaded",
-        "report": report_result.get("report"),
+        "report": report,
         "parsed_summary": parsed["totals"],
     }
 
@@ -215,10 +254,15 @@ async def upload_and_create_campaign(
         report_end_date=date_end,
     )
 
+    # Auto-generate AI report in the background
+    report = report_result.get("report")
+    if report:
+        asyncio.create_task(_auto_generate_ai_report(tenant_id, report["id"], campaign["id"]))
+
     return {
         "status": "created",
         "campaign": campaign,
-        "report": report_result.get("report"),
+        "report": report,
         "parsed_summary": parsed["totals"],
     }
 

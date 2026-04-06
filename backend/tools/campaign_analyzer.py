@@ -77,25 +77,56 @@ async def analyze_report(tenant_id: str, campaign: dict, report: dict) -> dict:
             parts.append(f"\n### {cd['campaign_name']}\n{_format_metrics(cd['metrics'])}")
         per_campaign = "\n".join(parts)
 
-    system_prompt = f"""You are the Ad Strategist for {config.business_name}. You are analyzing a Facebook Ads campaign report that was manually uploaded by the user.
+    report_title = f"{campaign.get('campaign_name', 'Campaign')} Performance Report"
+
+    system_prompt = f"""You are the Ad Strategist for {config.business_name}. You are creating an official campaign performance report from a manually uploaded Facebook Ads Manager export.
 
 Business context:
 - Product: {config.product.name} — {config.product.description}
 - Positioning: {config.gtm_playbook.positioning}
 
-Your role is to create a clear, actionable campaign performance report. Write for someone who may be running ads for the first time. Be honest about performance — don't sugarcoat bad numbers, but be constructive.
+Your role is to create a clear, actionable, business-readable campaign report. Write for someone who may be running ads for the first time. Be honest about performance — don't sugarcoat bad numbers, but be constructive.
 
-IMPORTANT: This data comes from a manually uploaded Facebook Ads Manager export. Do NOT pretend this is live/real-time data. Refer to it as "the uploaded report" or "the imported data."
+IMPORTANT:
+- This data comes from a manually uploaded report, NOT live API data.
+- Write in human-readable business language — never dump raw JSON or spreadsheet rows.
+- This report will be saved permanently in the system and viewable later.
 
 Format your response as TWO clearly separated sections:
 
 ===REPORT===
-(Your full campaign report in clean markdown)
+# {report_title}
+
+(Follow this exact structure:)
+
+## Overview
+Campaign name, reporting period, objective, data source.
+
+## Performance Summary
+High-level assessment — is the campaign performing well, average, or poorly? One paragraph executive summary.
+
+## Key Metrics
+The most important numbers with brief context for each.
+
+## What Improved
+Any metrics or areas showing positive trends or strong performance.
+
+## What Declined
+Any metrics or areas showing negative trends, drops, or underperformance.
+
+## Risks / Concerns
+Red flags, budget issues, audience fatigue, declining returns, or anything that needs attention.
+
+## Recommendations
+Specific, actionable next steps. Numbered list.
+
+## Suggested Next Steps
+What to do in the next 7-14 days based on this data.
 
 ===RECOMMENDATIONS===
-(Your actionable recommendations as bullet points)"""
+(Repeat just the recommendations as a clean bullet-point list for quick reference)"""
 
-    user_message = f"""Analyze this Facebook Ads campaign report:
+    user_message = f"""Create a campaign performance report from this uploaded data:
 
 **Campaign:** {campaign.get('campaign_name', 'Unknown')}
 **Platform:** {campaign.get('platform', 'Facebook')}
@@ -109,15 +140,7 @@ Format your response as TWO clearly separated sections:
 ### Per-Campaign Breakdown
 {per_campaign}''' if per_campaign else ''}
 
-Generate a comprehensive campaign report with these sections:
-1. Overview — campaign name, period, objective, data source
-2. Performance Summary — high-level assessment (good/average/poor)
-3. Key Metrics — the important numbers with context
-4. Observations — what stands out, trends, notable patterns
-5. Risks / Issues — any red flags or concerns
-6. Recommendations — specific, actionable next steps
-
-End with clear, numbered recommendations."""
+Write the full report following the required structure. Make it thorough but readable."""
 
     result = await call_claude(
         system_prompt,

@@ -131,6 +131,28 @@ export default function CampaignDetailPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Auto-refresh while AI report is generating (polls every 3s)
+  useEffect(() => {
+    const latestReport = reports[0];
+    if (!latestReport) return;
+    if (latestReport.ai_summary_status !== "generating" && latestReport.ai_summary_status !== "pending") return;
+    const interval = setInterval(async () => {
+      try {
+        const reps = await campaignsApi.listReports(tenantId, id);
+        const updated = reps.reports || [];
+        setReports(updated);
+        // Also refresh campaign to get latest_report
+        const camp = await campaignsApi.get(tenantId, id);
+        setCampaign(camp);
+        // Stop polling if AI is done
+        if (updated[0]?.ai_summary_status === "completed" || updated[0]?.ai_summary_status === "failed") {
+          clearInterval(interval);
+        }
+      } catch {}
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [reports[0]?.ai_summary_status, tenantId, id]);
+
   const generateAiReport = async () => {
     const latestReport = reports[0];
     if (!latestReport) return;
