@@ -211,7 +211,6 @@ async def call_claude(
         "--output-format", "text",
         "--model", use_model,
         "--max-turns", "1",
-        "--no-input",
     ]
 
     # Add system prompt via --append-system-prompt
