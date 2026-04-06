@@ -144,9 +144,15 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
         agent_id = existing_by_slug.get(agent_name) or existing_by_name.get(title)
 
         if agent_id:
-            # Agent already exists — just cache the ID, don't overwrite Paperclip-managed config
+            # Agent already exists — update heartbeat schedule to match our cron config
             agent_ids[agent_name] = agent_id
-            logger.debug(f"Found existing agent {agent_name} ({title}) -> {agent_id}")
+            if cron:
+                await _api(client, "PATCH", f"/api/agents/{agent_id}", json={
+                    "heartbeatSchedule": cron,
+                })
+                logger.info(f"Updated agent {agent_name} ({title}) heartbeat to {cron}")
+            else:
+                logger.debug(f"Found existing agent {agent_name} ({title}) -> {agent_id}")
         else:
             # Agent does not exist — create it
             logger.info(f"Agent {agent_name} ({title}) not found in Paperclip, creating...")

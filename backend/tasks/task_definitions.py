@@ -48,9 +48,9 @@ WORKFLOW_TEMPLATES = {
 }
 
 CRON_SCHEDULES = {
-    "ceo": "0 8 * * 1",              # Monday 8am — weekly strategy review
-    "content_writer": "0 9 * * 1",    # Monday 9am — weekly blog post
-    "email_marketer": "0 10 * * 3",   # Wednesday 10am — newsletter prep
-    "social_manager": "0 9 * * 2",    # Tuesday 9am — weekly social calendar
-    "ad_strategist": "0 10 * * 4",    # Thursday 10am — ad performance review
+    "ceo": "0 8 * * *",              # Daily 8am — strategy review
+    "content_writer": "0 9 * * *",    # Daily 9am — content creation
+    "email_marketer": "0 10 * * *",   # Daily 10am — email campaigns
+    "social_manager": "0 9 * * *",    # Daily 9am — social media
+    "ad_strategist": "0 10 * * *",    # Daily 10am — ad performance review
 }
