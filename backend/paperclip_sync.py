@@ -262,6 +262,7 @@ def get_paperclip_agent_id(agent_name: str) -> str | None:
             "email_marketer": os.environ.get("PAPERCLIP_EMAIL_MARKETER_AGENT_ID", "da5109c3-2ab5-4a50-988e-896f078a712c"),
             "social_manager": os.environ.get("PAPERCLIP_SOCIAL_MANAGER_AGENT_ID", "37f25bf9-8dfa-4943-9cf8-f6eb1e5157f7"),
             "ad_strategist": os.environ.get("PAPERCLIP_AD_STRATEGIST_AGENT_ID", "8f827b80-b441-4065-bc50-fe3b470790af"),
+            "media": os.environ.get("PAPERCLIP_MEDIA_AGENT_ID", "25c7a6f4-34ff-4846-b149-502be12b836d"),
         }
         return _KNOWN_AGENT_IDS.get(agent_name)
     return None
@@ -271,7 +272,7 @@ def get_company_id() -> str | None:
     if _company_id_cache:
         return _company_id_cache
     # Fallback: use known company ID if agent keys are configured
-    any_key = any(os.environ.get(f"PAPERCLIP_{k}_KEY") for k in ["CEO", "CONTENT_WRITER", "EMAIL_MARKETER", "SOCIAL_MANAGER", "AD_STRATEGIST"])
+    any_key = any(os.environ.get(f"PAPERCLIP_{k}_KEY") for k in ["CEO", "CONTENT_WRITER", "EMAIL_MARKETER", "SOCIAL_MANAGER", "AD_STRATEGIST", "MEDIA"])
     if any_key:
         return os.environ.get("PAPERCLIP_COMPANY_ID", "a33b6679-9b72-44ed-9b73-92035f32d887")
     return None

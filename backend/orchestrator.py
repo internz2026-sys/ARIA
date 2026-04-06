@@ -54,6 +54,7 @@ AGENT_API_KEYS = {
     "email_marketer": os.environ.get("PAPERCLIP_EMAIL_MARKETER_KEY", ""),
     "social_manager": os.environ.get("PAPERCLIP_SOCIAL_MANAGER_KEY", ""),
     "ad_strategist": os.environ.get("PAPERCLIP_AD_STRATEGIST_KEY", ""),
+    "media": os.environ.get("PAPERCLIP_MEDIA_KEY", ""),
 }
 
 
