@@ -64,6 +64,16 @@ export const AGENT_DEFS: AgentDef[] = [
     model: "sonnet-4-6",
     schedule: "Mon/Fri, 11:00 AM",
   },
+  {
+    slug: "media",
+    name: "Media Designer",
+    role: "Visual Content Creator",
+    description:
+      "Marketing image generation via Google Gemini, social media visuals, ad creatives, blog headers.",
+    color: "#E4407B",
+    model: "haiku-4-5",
+    schedule: "Daily, 11:00 AM",
+  },
 ];
 
 // ---- Derived lookups (computed once, reused everywhere) -------------------

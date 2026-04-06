@@ -31,6 +31,11 @@ const AGENT_ICONS: Record<string, React.ReactNode> = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5M9 11.25v1.5M12 9v3.75m3-6v6" />
     </svg>
   ),
+  media: (
+    <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth={1.6} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
+    </svg>
+  ),
 };
 
 /* ───────── Merge shared definitions with page-specific icons ───────── */
@@ -84,7 +89,7 @@ export default function AgentsPage() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-semibold text-[#2C2C2A]">Marketing Agents</h1>
-        <p className="text-sm text-[#5F5E5A] mt-1">Your AI marketing team — 5 agents working together</p>
+        <p className="text-sm text-[#5F5E5A] mt-1">Your AI marketing team — 6 agents working together</p>
       </div>
 
       {/* Org Chart Header */}
