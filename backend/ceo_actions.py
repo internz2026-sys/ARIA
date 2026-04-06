@@ -483,6 +483,71 @@ ACTION_REGISTRY: dict[str, dict] = {
         "confirm": ConfirmLevel.REQUIRED,
         "risk": "high",
     },
+
+    # ── Campaigns ──
+    "read_campaigns": {
+        "entity": "campaign",
+        "operation": "read",
+        "description": "List ad campaigns, optionally filtered by status or platform",
+        "required_fields": [],
+        "optional_fields": ["status", "platform"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+    "read_campaign_detail": {
+        "entity": "campaign",
+        "operation": "read_detail",
+        "description": "Get detailed campaign info with latest report metrics and AI summary",
+        "required_fields": ["id"],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+    "create_campaign": {
+        "entity": "campaign",
+        "operation": "create",
+        "description": "Create a new ad campaign to track performance",
+        "required_fields": ["campaign_name"],
+        "optional_fields": ["platform", "objective", "budget", "notes", "tags"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "low",
+    },
+    "update_campaign": {
+        "entity": "campaign",
+        "operation": "update",
+        "description": "Update a campaign's details",
+        "required_fields": ["id"],
+        "optional_fields": ["campaign_name", "status", "objective", "budget", "notes"],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "medium",
+    },
+    "delete_campaign": {
+        "entity": "campaign",
+        "operation": "delete",
+        "description": "Permanently delete a campaign and all its reports",
+        "required_fields": ["id"],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.REQUIRED,
+        "risk": "high",
+    },
+    "read_campaign_reports": {
+        "entity": "campaign_report",
+        "operation": "read",
+        "description": "List reports for a campaign showing performance over time",
+        "required_fields": ["campaign_id"],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "none",
+    },
+    "analyze_campaign": {
+        "entity": "campaign_report",
+        "operation": "analyze",
+        "description": "Generate an AI analysis/report for the latest campaign report",
+        "required_fields": ["campaign_id"],
+        "optional_fields": [],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "low",
+    },
 }
 
 
@@ -942,6 +1007,48 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
             if task.get("approval_status") == "pending":
                 return {"error": "Task requires approval before execution"}
             return await sched_service.execute_task(task)
+
+    # ── Campaigns ──
+    elif entity == "campaign":
+        from backend.services import campaigns as camp_service
+        if operation == "read":
+            return camp_service.list_campaigns(
+                tenant_id, status=params.get("status", ""), platform=params.get("platform", ""),
+            )
+        elif operation == "read_detail":
+            result = camp_service.get_campaign_with_latest_report(tenant_id, params["id"])
+            if not result:
+                return {"error": "Campaign not found"}
+            return result
+        elif operation == "create":
+            data = {k: params.get(k) for k in [
+                "campaign_name", "platform", "objective", "budget", "notes", "tags",
+            ] if params.get(k) is not None}
+            return camp_service.create_campaign(tenant_id, data)
+        elif operation == "update":
+            updates = {k: v for k, v in params.items() if k != "id" and v is not None}
+            return camp_service.update_campaign(tenant_id, params["id"], updates)
+        elif operation == "delete":
+            return camp_service.delete_campaign(tenant_id, params["id"])
+
+    # ── Campaign Reports ──
+    elif entity == "campaign_report":
+        from backend.services import campaigns as camp_service
+        if operation == "read":
+            return camp_service.list_reports(tenant_id, campaign_id=params["campaign_id"])
+        elif operation == "analyze":
+            latest = camp_service.get_latest_report(tenant_id, params["campaign_id"])
+            if not latest:
+                return {"error": "No reports found for this campaign. Upload a Facebook Ads CSV first."}
+            campaign = camp_service.get_campaign(tenant_id, params["campaign_id"])
+            from backend.tools.campaign_analyzer import analyze_report
+            ai_result = await analyze_report(tenant_id, campaign, latest)
+            camp_service.update_report(tenant_id, latest["id"], {
+                "ai_summary_status": "completed",
+                "ai_report_text": ai_result.get("report_text", ""),
+                "ai_recommendations": ai_result.get("recommendations", ""),
+            })
+            return ai_result
 
     return {"status": "unknown_action"}
 

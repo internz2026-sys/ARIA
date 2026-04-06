@@ -139,9 +139,11 @@ app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
 # ── Register routers ──────────────────────────────────────────────────────
 from backend.routers.crm import router as crm_router
 from backend.routers.inbox import router as inbox_router
+from backend.routers.campaigns import router as campaigns_router
 
 app.include_router(crm_router)
 app.include_router(inbox_router)
+app.include_router(campaigns_router)
 
 app.add_middleware(
     CORSMiddleware,

@@ -192,6 +192,61 @@ export const usage = {
   getDashboard: (tenantId: string) => fetchAPI(`/api/usage/${tenantId}`),
 };
 
+export const campaigns = {
+  list: (tenantId: string, status = "", platform = "") => {
+    const p = new URLSearchParams();
+    if (status) p.set("status", status);
+    if (platform) p.set("platform", platform);
+    return fetchAPI(`/api/campaigns/${tenantId}?${p.toString()}`);
+  },
+  get: (tenantId: string, id: string) => fetchAPI(`/api/campaigns/${tenantId}/${id}`),
+  create: (tenantId: string, data: any) =>
+    fetchAPI(`/api/campaigns/${tenantId}`, { method: "POST", body: JSON.stringify(data) }),
+  update: (tenantId: string, id: string, data: any) =>
+    fetchAPI(`/api/campaigns/${tenantId}/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  delete: (tenantId: string, id: string) =>
+    fetchAPI(`/api/campaigns/${tenantId}/${id}`, { method: "DELETE" }),
+  listReports: (tenantId: string, campaignId: string) =>
+    fetchAPI(`/api/campaigns/${tenantId}/${campaignId}/reports`),
+  getReport: (tenantId: string, reportId: string) =>
+    fetchAPI(`/api/campaigns/${tenantId}/reports/${reportId}`),
+  generateAiReport: (tenantId: string, reportId: string) =>
+    fetchAPI(`/api/campaigns/${tenantId}/reports/${reportId}/generate-ai-report`, { method: "POST" }),
+  upload: async (tenantId: string, file: File, campaignId?: string) => {
+    const authHeaders = await getAuthHeaders();
+    const form = new FormData();
+    form.append("file", file);
+    if (campaignId) form.append("campaign_id", campaignId);
+    const res = await fetch(`${API_URL}/api/campaigns/${tenantId}/upload`, {
+      method: "POST",
+      headers: { ...authHeaders },
+      body: form,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Upload failed: ${res.status}`);
+    }
+    return res.json();
+  },
+  uploadAndCreate: async (tenantId: string, file: File, campaignName = "", platform = "facebook") => {
+    const authHeaders = await getAuthHeaders();
+    const form = new FormData();
+    form.append("file", file);
+    if (campaignName) form.append("campaign_name", campaignName);
+    form.append("platform", platform);
+    const res = await fetch(`${API_URL}/api/campaigns/${tenantId}/upload-and-create`, {
+      method: "POST",
+      headers: { ...authHeaders },
+      body: form,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `Upload failed: ${res.status}`);
+    }
+    return res.json();
+  },
+};
+
 export const notificationsApi = {
   counts: (tenantId: string) => fetchAPI(`/api/notifications/${tenantId}/counts`),
   list: (tenantId: string, unreadOnly = false, limit = 30) =>
