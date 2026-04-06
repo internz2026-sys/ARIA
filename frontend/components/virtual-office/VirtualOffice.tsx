@@ -9,6 +9,8 @@ import {
   AGENTS as DEFAULT_AGENTS,
   MEETING_CHAIRS,
   IDLE_SPOTS,
+  ALL_IDLE_SPOTS,
+  CROSS_ROOM_CHANCE,
   type OfficeAgent,
   type Room,
 } from "@/lib/office-config";
@@ -680,12 +682,25 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
         // Count down idle timer, then pick a new wander spot
         p.idleTimer--;
         if (p.idleTimer <= 0) {
-          const spots = IDLE_SPOTS[agent.department];
-          if (spots && spots.length > 0) {
-            const spot = spots[Math.floor(Math.random() * spots.length)];
-            p.targetX = spot.x;
-            p.targetY = spot.y;
-            p.wanderTarget = true;
+          // 20% chance to visit another room, 80% stay in own department
+          const crossRoom = Math.random() < CROSS_ROOM_CHANCE;
+          if (crossRoom && ALL_IDLE_SPOTS.length > 0) {
+            // Pick a spot from any other room
+            const otherSpots = ALL_IDLE_SPOTS.filter((s) => s.room !== agent.department);
+            if (otherSpots.length > 0) {
+              const spot = otherSpots[Math.floor(Math.random() * otherSpots.length)];
+              p.targetX = spot.x;
+              p.targetY = spot.y;
+              p.wanderTarget = true;
+            }
+          } else {
+            const spots = IDLE_SPOTS[agent.department];
+            if (spots && spots.length > 0) {
+              const spot = spots[Math.floor(Math.random() * spots.length)];
+              p.targetX = spot.x;
+              p.targetY = spot.y;
+              p.wanderTarget = true;
+            }
           }
           p.idleTimer = Math.floor(300 + Math.random() * 500);
         }

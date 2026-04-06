@@ -167,6 +167,14 @@ export const IDLE_SPOTS: Record<string, { x: number; y: number }[]> = {
   ],
 };
 
+// ---- All spots (flat array for cross-room wandering) ----------------------
+export const ALL_IDLE_SPOTS: { x: number; y: number; room: string }[] = Object.entries(IDLE_SPOTS).flatMap(
+  ([room, spots]) => spots.map((s) => ({ ...s, room }))
+);
+
+// Cross-room visit chance: 20% of wanders go to a random other room
+export const CROSS_ROOM_CHANCE = 0.2;
+
 // ---- Desk layout (office-specific data) -----------------------------------
 
 const DESK_LAYOUT: Record<string, { department: string; deskX: number; deskY: number; hasCrown: boolean }> = {
@@ -214,6 +222,9 @@ const NPC_STAFF: OfficeAgent[] = [
   // Ads Room
   { id: "npc_media_buyer",  name: "Quinn",   role: "Media Buyer",          color: "#7D3C98", department: "ads-room",       deskX: 18, deskY: 10, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
   { id: "npc_data",         name: "Drew",    role: "Data Analyst",         color: "#2E86C1", department: "ads-room",       deskX: 22, deskY: 14, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  // Design Studio
+  { id: "npc_illustrator",  name: "Jamie",   role: "Illustrator",          color: "#E91E63", department: "design-studio",  deskX: 26, deskY: 2, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
+  { id: "npc_ux_designer",  name: "Sage",    role: "UX Designer",          color: "#FF7043", department: "design-studio",  deskX: 30, deskY: 6, hasCrown: false, isNpc: true, status: "idle", currentTask: "", lastUpdated: "" },
 ];
 
 export const AGENTS: OfficeAgent[] = [...CORE_AGENTS, ...NPC_STAFF];
