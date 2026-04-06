@@ -11,10 +11,12 @@ services:
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
+      - QDRANT_URL=http://qdrant:6333
     volumes:
       - /root/.claude:/root/.claude
     depends_on:
       - redis
+      - qdrant
     networks:
       - default
       - paperclip
@@ -45,6 +47,16 @@ services:
     volumes:
       - redis_data:/data
 
+  # ── Qdrant (vector DB for semantic caching) ─────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: aria-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
   # ── Nginx (reverse proxy + SSL) ────────────────────────────────────────
   nginx:
     image: nginx:alpine
@@ -68,5 +80,6 @@ networks:
 
 volumes:
   redis_data:
+  qdrant_data:
   certbot_data:
   certbot_www:

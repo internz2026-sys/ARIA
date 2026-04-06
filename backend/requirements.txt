@@ -12,6 +12,8 @@ twilio>=9.3.0
 sentry-sdk[fastapi]>=2.14.0
 pinecone-client>=5.0.0
 tenacity>=9.0.0
+qdrant-client>=1.9.0
+sentence-transformers>=3.0.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 # Paperclip AI orchestration is a local Node.js server (localhost:3100)

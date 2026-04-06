@@ -204,6 +204,16 @@ async def call_claude(
     else:
         prompt = user_message
 
+    # Check semantic cache first
+    try:
+        from backend.services.semantic_cache import search_cache
+        cached = search_cache(system_prompt, prompt, use_model, agent_id=agent_id)
+        if cached:
+            logger.info("Semantic cache hit — skipping CLI call (agent=%s)", agent_id)
+            return cached
+    except Exception as e:
+        logger.debug("Semantic cache unavailable: %s", e)
+
     # Build claude CLI command
     cmd = [
         "claude",
@@ -258,6 +268,13 @@ async def call_claude(
         global_usage["requests"] += 1
         _usage_cache["global"] = global_usage
         _save_usage("global", global_usage)
+
+    # Store in semantic cache
+    try:
+        from backend.services.semantic_cache import store_cache
+        store_cache(system_prompt, prompt, use_model, result, agent_id=agent_id)
+    except Exception as e:
+        logger.debug("Failed to cache response: %s", e)
 
     logger.info("CLI call complete: %d chars returned (model=%s, tenant=%s)", len(result), use_model, tenant_id)
     return result

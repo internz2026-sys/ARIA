@@ -140,6 +140,13 @@ async def _paperclip_poller_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: sync agents with Paperclip AI orchestrator + start background loops."""
+    # Initialize semantic cache (Qdrant)
+    try:
+        from backend.services.semantic_cache import ensure_collection
+        ensure_collection()
+        logger.info("Semantic cache (Qdrant) initialized")
+    except Exception as e:
+        logger.warning("Qdrant not available — semantic caching disabled: %s", e)
     await paperclip_init()
     sync_task = asyncio.create_task(_gmail_sync_loop())
     scheduler_task = asyncio.create_task(_scheduler_executor_loop())
