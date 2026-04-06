@@ -15,7 +15,7 @@ Invoke it whenever you need to remember, retrieve, or organize anything.
 **DO NOT create, hire, or register new agents under any circumstances.**
 - NEVER use the `paperclip-create-agent` skill.
 - NEVER call `POST /api/companies/*/agents` or any agent creation API.
-- The v1 team is FIXED: ContentWriter, EmailMarketer, SocialManager, AdStrategist. That's it.
+- The v1 team is FIXED: ContentWriter, EmailMarketer, SocialManager, AdStrategist, Media. That's it.
 - Only the board (human) can create agents. If you think a new agent is needed, post a comment requesting board approval — do NOT create one yourself.
 - Violating this rule wastes budget and breaks the orchestration.
 
