@@ -238,10 +238,14 @@ export default function InboxPage() {
         text = item.content;
       }
 
+      if (!confirm("Publish this post to LinkedIn? This will be visible publicly and cannot be undone.")) {
+        setActionLoading(null);
+        return;
+      }
       const res = await authFetch(`${API_URL}/api/linkedin/${tenantId}/post`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, confirmed: true }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -311,7 +315,11 @@ export default function InboxPage() {
       const toNumber = fromMatch?.[0] || "";
       if (!toNumber) { alert("Cannot determine recipient number"); return; }
 
-      const res = await authFetch(`${API_URL}/api/whatsapp/${tenantId}/send`, {
+      if (!confirm(`Send WhatsApp message to ${toNumber}? This cannot be undone.`)) {
+        setWaReplying(false);
+        return;
+      }
+      const res = await authFetch(`${API_URL}/api/whatsapp/${tenantId}/send?confirmed=true`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to: toNumber, message: waReplyText }),

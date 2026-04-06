@@ -558,7 +558,15 @@ async def linkedin_set_target(tenant_id: str, body: LinkedInPostTargetRequest):
 
 @app.post("/api/linkedin/{tenant_id}/post")
 async def publish_linkedin_post(tenant_id: str, body: dict):
-    """Publish a post to LinkedIn from the tenant's connected account."""
+    """Publish a post to LinkedIn from the tenant's connected account.
+
+    Requires confirmed=true — human must explicitly approve before publishing.
+    """
+    if not body.get("confirmed"):
+        return {"status": "needs_confirmation", "action": "publish_linkedin",
+                "message": "Are you sure you want to publish this post to LinkedIn? This action is public and cannot be undone.",
+                "confirm_label": "Publish", "destructive": True}
+
     from backend.tools import linkedin_tool
 
     config = get_tenant_config(tenant_id)
@@ -602,8 +610,16 @@ class ThreadRequest(BaseModel):
 
 
 @app.post("/api/twitter/{tenant_id}/tweet")
-async def publish_tweet(tenant_id: str, body: TweetRequest):
-    """Post a single tweet from the tenant's connected X account."""
+async def publish_tweet(tenant_id: str, body: TweetRequest, confirmed: bool = False):
+    """Post a single tweet from the tenant's connected X account.
+
+    Requires confirmed=true — human must explicitly approve before posting.
+    """
+    if not confirmed:
+        return {"status": "needs_confirmation", "action": "publish_twitter",
+                "message": f"Publish this tweet to X? This will be visible publicly.\n\n\"{body.text[:100]}{'...' if len(body.text) > 100 else ''}\"",
+                "confirm_label": "Post", "destructive": True}
+
     from backend.tools import twitter_tool
     config = get_tenant_config(tenant_id)
     access_token = config.integrations.twitter_access_token
@@ -644,8 +660,16 @@ async def publish_tweet(tenant_id: str, body: TweetRequest):
 
 
 @app.post("/api/twitter/{tenant_id}/thread")
-async def publish_thread(tenant_id: str, body: ThreadRequest):
-    """Post a thread (multiple tweets) from the tenant's connected X account."""
+async def publish_thread(tenant_id: str, body: ThreadRequest, confirmed: bool = False):
+    """Post a thread (multiple tweets) from the tenant's connected X account.
+
+    Requires confirmed=true — human must explicitly approve before posting.
+    """
+    if not confirmed:
+        return {"status": "needs_confirmation", "action": "publish_twitter_thread",
+                "message": f"Publish a {len(body.tweets)}-tweet thread to X? This will be visible publicly.",
+                "confirm_label": "Post Thread", "destructive": True}
+
     from backend.tools import twitter_tool
     config = get_tenant_config(tenant_id)
     access_token = config.integrations.twitter_access_token
@@ -909,8 +933,16 @@ class WhatsAppSendRequest(BaseModel):
 
 
 @app.post("/api/whatsapp/{tenant_id}/send")
-async def whatsapp_send_message(tenant_id: str, body: WhatsAppSendRequest):
-    """Send a WhatsApp message from a tenant's connected number."""
+async def whatsapp_send_message(tenant_id: str, body: WhatsAppSendRequest, confirmed: bool = False):
+    """Send a WhatsApp message from a tenant's connected number.
+
+    Requires confirmed=true — human must explicitly approve before sending.
+    """
+    if not confirmed:
+        return {"status": "needs_confirmation", "action": "send_whatsapp",
+                "message": f"Send WhatsApp message to {body.to}? This cannot be undone.",
+                "confirm_label": "Send", "destructive": True}
+
     from backend.tools import whatsapp_tool
 
     config = get_tenant_config(tenant_id)
@@ -1618,8 +1650,16 @@ class GmailSendRequest(BaseModel):
 
 
 @app.post("/api/email/{tenant_id}/send")
-async def send_gmail_email(tenant_id: str, body: GmailSendRequest):
-    """Send an email via the user's authenticated Gmail account."""
+async def send_gmail_email(tenant_id: str, body: GmailSendRequest, confirmed: bool = False):
+    """Send an email via the user's authenticated Gmail account.
+
+    Requires confirmed=true — human must explicitly approve before sending.
+    """
+    if not confirmed:
+        return {"status": "needs_confirmation", "action": "send_email",
+                "message": f"Send email to {body.to}?\n\nSubject: {body.subject}",
+                "confirm_label": "Send", "destructive": True}
+
     from backend.tools import gmail_tool
 
     config = get_tenant_config(tenant_id)

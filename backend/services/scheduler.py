@@ -208,7 +208,12 @@ def mark_completed(task_id: str, status: str, result: dict) -> None:
 
 
 async def execute_task(task: dict) -> dict:
-    """Execute a single scheduled task. Returns execution result."""
+    """Execute a single scheduled task. Returns execution result.
+
+    Human-in-the-loop: external-facing tasks (send_email, publish_post)
+    require explicit approval before execution. Tasks with approval_status
+    "pending" or "none" for external actions are blocked.
+    """
     task_type = task.get("task_type", "")
     tenant_id = task.get("tenant_id", "")
     payload = task.get("payload", {})
@@ -217,6 +222,13 @@ async def execute_task(task: dict) -> dict:
     # Don't execute if approval is pending
     if task.get("approval_status") == "pending":
         return {"skipped": True, "reason": "Awaiting approval"}
+
+    # External-facing tasks MUST be explicitly approved — never auto-execute
+    external_task_types = {"send_email", "publish_post", "publish_campaign"}
+    if task_type in external_task_types and task.get("approval_status") not in ("approved", "none_required"):
+        # Mark as needing approval instead of auto-executing
+        mark_completed(task_id, "pending_approval", {"reason": "Requires human approval before sending"})
+        return {"skipped": True, "reason": "External action requires approval. Review in Calendar."}
 
     mark_running(task_id)
 
