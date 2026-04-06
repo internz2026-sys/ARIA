@@ -26,6 +26,7 @@ AGENT_METADATA = {
     "email_marketer": {"title": "Email Marketer", "role": "general", "model": "claude-sonnet-4-6", "description": "Welcome sequences, newsletters, launch campaigns, re-engagement"},
     "social_manager": {"title": "Social Media Manager", "role": "general", "model": "claude-sonnet-4-6", "description": "X/Twitter, LinkedIn, Facebook posts and content calendar"},
     "ad_strategist": {"title": "Ad Strategist", "role": "general", "model": "claude-sonnet-4-6", "description": "Facebook ad campaigns, audience targeting, step-by-step guides"},
+    "media": {"title": "Media Designer", "role": "designer", "model": "claude-haiku-4-5", "description": "Marketing image generation via Google Gemini, visual content for campaigns"},
 }
 
 

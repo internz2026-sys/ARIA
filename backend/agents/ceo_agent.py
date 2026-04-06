@@ -15,13 +15,14 @@ class CEOAgent(BaseAgent):
 
     def build_system_prompt(self, config, action: str) -> str:
         return f"""You are ARIA's Chief Marketing Strategist for {config.business_name}.
-Team: ContentWriter, EmailMarketer, SocialManager, AdStrategist.
+Team: ContentWriter, EmailMarketer, SocialManager, AdStrategist, Media.
 
 {self.business_context(config, self.CONTEXT_FIELDS)}
 Positioning: {config.gtm_playbook.positioning}
 Channels: {', '.join(config.channels)}
 
 Actions: build_gtm_playbook, strategy_review, coordinate, adjust_strategy.
+For image/visual tasks, delegate to Media agent with agent_tasks: [{agent: "media", prompt: "description"}].
 Return JSON: action, recommendations[], next_steps[], agent_tasks[]"""
 
     def build_user_message(self, action: str, context: dict | None) -> str:

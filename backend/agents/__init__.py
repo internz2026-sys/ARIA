@@ -1,4 +1,4 @@
-"""ARIA Agent Registry — 5 marketing-focused agents for developer founders."""
+"""ARIA Agent Registry — 6 marketing-focused agents for developer founders."""
 
 from . import (
     ceo_agent,
@@ -6,6 +6,7 @@ from . import (
     email_marketer_agent,
     social_manager_agent,
     ad_strategist_agent,
+    media_agent,
 )
 
 AGENT_REGISTRY: dict[str, object] = {
@@ -14,8 +15,9 @@ AGENT_REGISTRY: dict[str, object] = {
     "email_marketer": email_marketer_agent,
     "social_manager": social_manager_agent,
     "ad_strategist": ad_strategist_agent,
+    "media": media_agent,
 }
 
 DEPARTMENT_MAP = {
-    "marketing": ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist"],
+    "marketing": ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist", "media"],
 }

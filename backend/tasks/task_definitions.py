@@ -53,4 +53,5 @@ CRON_SCHEDULES = {
     "email_marketer": "0 10 * * *",   # Daily 10am — email campaigns
     "social_manager": "0 9 * * *",    # Daily 9am — social media
     "ad_strategist": "0 10 * * *",    # Daily 10am — ad performance review
+    "media": "0 11 * * *",              # Daily 11am — generate scheduled visuals
 }
