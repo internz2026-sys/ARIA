@@ -34,6 +34,7 @@ def _safe_oauth_error(message: str) -> str:
     </body></html>"""
 
 
+from backend.approval import requires_approval, validate_execution, ACTION_POLICIES
 from backend.config.loader import get_tenant_config, save_tenant_config
 from backend.services.supabase import get_db as _get_supabase
 from backend.onboarding_agent import OnboardingAgent
@@ -57,6 +58,21 @@ _allowed_origins = [
 
 # Socket.IO for real-time events
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+
+
+def _require_confirmation(action: str, confirmed: bool, message: str) -> dict | None:
+    """Centralized confirmation gate. Returns a needs_confirmation response if not confirmed,
+    or None if confirmed (caller should proceed). Uses the approval policy registry."""
+    if confirmed or not requires_approval(action):
+        return None
+    policy = ACTION_POLICIES.get(action, {})
+    return {
+        "status": "needs_confirmation",
+        "action": action,
+        "message": message,
+        "confirm_label": "Confirm",
+        "destructive": policy.get("risk", "high") in ("high", "critical"),
+    }
 
 
 async def _gmail_sync_loop():
@@ -562,10 +578,10 @@ async def publish_linkedin_post(tenant_id: str, body: dict):
 
     Requires confirmed=true — human must explicitly approve before publishing.
     """
-    if not body.get("confirmed"):
-        return {"status": "needs_confirmation", "action": "publish_linkedin",
-                "message": "Are you sure you want to publish this post to LinkedIn? This action is public and cannot be undone.",
-                "confirm_label": "Publish", "destructive": True}
+    gate = _require_confirmation("publish_linkedin", body.get("confirmed", False),
+                                "Are you sure you want to publish this post to LinkedIn? This action is public and cannot be undone.")
+    if gate:
+        return gate
 
     from backend.tools import linkedin_tool
 
@@ -615,10 +631,10 @@ async def publish_tweet(tenant_id: str, body: TweetRequest, confirmed: bool = Fa
 
     Requires confirmed=true — human must explicitly approve before posting.
     """
-    if not confirmed:
-        return {"status": "needs_confirmation", "action": "publish_twitter",
-                "message": f"Publish this tweet to X? This will be visible publicly.\n\n\"{body.text[:100]}{'...' if len(body.text) > 100 else ''}\"",
-                "confirm_label": "Post", "destructive": True}
+    gate = _require_confirmation("publish_twitter", confirmed,
+                                f"Publish this tweet to X? This will be visible publicly.\n\n\"{body.text[:100]}{'...' if len(body.text) > 100 else ''}\"")
+    if gate:
+        return gate
 
     from backend.tools import twitter_tool
     config = get_tenant_config(tenant_id)
@@ -665,10 +681,10 @@ async def publish_thread(tenant_id: str, body: ThreadRequest, confirmed: bool = 
 
     Requires confirmed=true — human must explicitly approve before posting.
     """
-    if not confirmed:
-        return {"status": "needs_confirmation", "action": "publish_twitter_thread",
-                "message": f"Publish a {len(body.tweets)}-tweet thread to X? This will be visible publicly.",
-                "confirm_label": "Post Thread", "destructive": True}
+    gate = _require_confirmation("publish_twitter", confirmed,
+                                f"Publish a {len(body.tweets)}-tweet thread to X? This will be visible publicly.")
+    if gate:
+        return gate
 
     from backend.tools import twitter_tool
     config = get_tenant_config(tenant_id)
@@ -938,10 +954,10 @@ async def whatsapp_send_message(tenant_id: str, body: WhatsAppSendRequest, confi
 
     Requires confirmed=true — human must explicitly approve before sending.
     """
-    if not confirmed:
-        return {"status": "needs_confirmation", "action": "send_whatsapp",
-                "message": f"Send WhatsApp message to {body.to}? This cannot be undone.",
-                "confirm_label": "Send", "destructive": True}
+    gate = _require_confirmation("send_whatsapp", confirmed,
+                                f"Send WhatsApp message to {body.to}? This cannot be undone.")
+    if gate:
+        return gate
 
     from backend.tools import whatsapp_tool
 
@@ -1655,10 +1671,10 @@ async def send_gmail_email(tenant_id: str, body: GmailSendRequest, confirmed: bo
 
     Requires confirmed=true — human must explicitly approve before sending.
     """
-    if not confirmed:
-        return {"status": "needs_confirmation", "action": "send_email",
-                "message": f"Send email to {body.to}?\n\nSubject: {body.subject}",
-                "confirm_label": "Send", "destructive": True}
+    gate = _require_confirmation("send_email", confirmed,
+                                f"Send email to {body.to}?\n\nSubject: {body.subject}")
+    if gate:
+        return gate
 
     from backend.tools import gmail_tool
 

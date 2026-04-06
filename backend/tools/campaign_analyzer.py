@@ -5,7 +5,6 @@ from parsed metric data.
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from backend.config.loader import get_tenant_config

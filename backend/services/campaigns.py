@@ -151,20 +151,13 @@ def delete_report(tenant_id: str, report_id: str) -> dict:
 # ─── Campaign Matching ──────────────────────────────────────────────────────────
 
 def find_matching_campaigns(tenant_id: str, campaign_name: str) -> list[dict]:
-    """Find campaigns that match a name from an uploaded report."""
+    """Find campaigns that match a name from an uploaded report (single query)."""
     sb = get_db()
-    # Exact match first
-    exact = sb.table("campaigns").select("id,campaign_name,platform,status").eq(
+    # Partial ilike covers both exact and fuzzy matches in one query
+    result = sb.table("campaigns").select("id,campaign_name,platform,status").eq(
         "tenant_id", tenant_id
-    ).ilike("campaign_name", campaign_name).execute()
-    if exact.data:
-        return exact.data
-
-    # Fuzzy match — search for partial name
-    partial = sb.table("campaigns").select("id,campaign_name,platform,status").eq(
-        "tenant_id", tenant_id
-    ).ilike("campaign_name", f"%{campaign_name[:30]}%").execute()
-    return partial.data or []
+    ).ilike("campaign_name", f"%{campaign_name[:30]}%").limit(10).execute()
+    return result.data or []
 
 
 def get_latest_report(tenant_id: str, campaign_id: str) -> dict:

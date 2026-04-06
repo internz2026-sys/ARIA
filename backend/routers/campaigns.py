@@ -15,6 +15,14 @@ logger = logging.getLogger("aria.api.campaigns")
 router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
 
 
+def _extract_report_context(parsed: dict) -> tuple[dict, str | None, str | None]:
+    """Extract metrics, date_start, date_end from parsed CSV data. Shared by upload endpoints."""
+    metrics = parsed["totals"] if len(parsed["campaigns"]) > 1 else (parsed["campaigns"][0]["metrics"] if parsed["campaigns"] else {})
+    date_start = parsed["campaigns"][0].get("date_start") if parsed["campaigns"] else None
+    date_end = parsed["campaigns"][0].get("date_end") if parsed["campaigns"] else None
+    return metrics, date_start, date_end
+
+
 # ── Request models ──────────────────────────────────────────────────────────────
 
 class CreateCampaignBody(BaseModel):
@@ -141,13 +149,7 @@ async def upload_report(
         }
 
     # Campaign ID provided — create the report
-    # Use the first campaign's data (or totals if multiple)
-    metrics = parsed["totals"] if len(parsed["campaigns"]) > 1 else (parsed["campaigns"][0]["metrics"] if parsed["campaigns"] else {})
-    date_start = None
-    date_end = None
-    if parsed["campaigns"]:
-        date_start = parsed["campaigns"][0].get("date_start")
-        date_end = parsed["campaigns"][0].get("date_end")
+    metrics, date_start, date_end = _extract_report_context(parsed)
 
     report_result = campaign_service.create_report(
         tenant_id=tenant_id,
@@ -188,11 +190,7 @@ async def upload_and_create_campaign(
     if not campaign_name:
         campaign_name = file.filename.replace(".csv", "")
 
-    date_start = None
-    date_end = None
-    if parsed["campaigns"]:
-        date_start = parsed["campaigns"][0].get("date_start")
-        date_end = parsed["campaigns"][0].get("date_end")
+    metrics, date_start, date_end = _extract_report_context(parsed)
 
     # Create campaign
     camp_result = campaign_service.create_campaign(tenant_id, {
@@ -208,7 +206,6 @@ async def upload_and_create_campaign(
         raise HTTPException(500, "Failed to create campaign")
 
     # Create report
-    metrics = parsed["totals"] if len(parsed["campaigns"]) > 1 else (parsed["campaigns"][0]["metrics"] if parsed["campaigns"] else {})
     report_result = campaign_service.create_report(
         tenant_id=tenant_id,
         campaign_id=campaign["id"],
