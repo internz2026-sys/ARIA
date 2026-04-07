@@ -38,24 +38,118 @@ function MetricCard({ label, value, prefix }: { label: string; value: number | n
 
 /* ─── Markdown Renderer (simple) ─── */
 
-function Markdown({ text }: { text: string }) {
-  if (!text) return <p className="text-sm text-[#9E9C95] italic">No AI analysis yet.</p>;
-  // Very basic: split by lines, handle headers and bullets
-  const lines = text.split("\n");
+/** Render inline markdown: **bold**, *italic*, `code` */
+function renderInline(text: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  const regex = /(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`(.+?)`)/g;
+  let lastIndex = 0;
+  let match;
+  let key = 0;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+    if (match[2]) parts.push(<strong key={key++} className="font-semibold">{match[2]}</strong>);
+    else if (match[4]) parts.push(<em key={key++}>{match[4]}</em>);
+    else if (match[6]) parts.push(<code key={key++} className="bg-[#F0EFEC] px-1 py-0.5 rounded text-xs font-mono">{match[6]}</code>);
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  return parts;
+}
+
+/** Parse a markdown table block (array of lines) into a <table> */
+function renderTable(lines: string[], startKey: number): React.ReactNode {
+  // lines[0] = header, lines[1] = separator, lines[2..] = data rows
+  const parseRow = (line: string) =>
+    line.split("|").map((c) => c.trim()).filter((c) => c.length > 0);
+
+  const headers = parseRow(lines[0]);
+  const rows = lines.slice(2).map(parseRow);
+
   return (
-    <div className="prose prose-sm max-w-none text-[#2C2C2A]">
-      {lines.map((line, i) => {
-        if (line.startsWith("# ")) return <h2 key={i} className="text-base font-bold mt-4 mb-2">{line.slice(2)}</h2>;
-        if (line.startsWith("## ")) return <h3 key={i} className="text-sm font-semibold mt-3 mb-1">{line.slice(3)}</h3>;
-        if (line.startsWith("### ")) return <h4 key={i} className="text-sm font-semibold mt-2 mb-1 text-[#534AB7]">{line.slice(4)}</h4>;
-        if (line.startsWith("- ") || line.startsWith("* ")) return <li key={i} className="text-sm ml-4 list-disc">{line.slice(2)}</li>;
-        if (/^\d+\.\s/.test(line)) return <li key={i} className="text-sm ml-4 list-decimal">{line.replace(/^\d+\.\s/, "")}</li>;
-        if (line.startsWith("**") && line.endsWith("**")) return <p key={i} className="text-sm font-semibold mt-2">{line.slice(2, -2)}</p>;
-        if (!line.trim()) return <br key={i} />;
-        return <p key={i} className="text-sm">{line}</p>;
-      })}
+    <div key={startKey} className="overflow-x-auto my-3">
+      <table className="w-full text-sm border-collapse">
+        <thead>
+          <tr className="border-b-2 border-[#E0DED8]">
+            {headers.map((h, i) => (
+              <th key={i} className="text-left py-2 px-3 font-semibold text-[#2C2C2A] bg-[#F8F8F6]">
+                {renderInline(h)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => (
+            <tr key={ri} className={`border-b border-[#E0DED8] ${ri % 2 === 0 ? "" : "bg-[#FAFAF8]"}`}>
+              {row.map((cell, ci) => (
+                <td key={ci} className="py-2 px-3 text-[#2C2C2A]">
+                  {renderInline(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
+}
+
+function Markdown({ text }: { text: string }) {
+  if (!text) return <p className="text-sm text-[#9E9C95] italic">No AI analysis yet.</p>;
+
+  const lines = text.split("\n");
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Table detection: line with | and next line is separator (|---|)
+    if (line.includes("|") && i + 1 < lines.length && /^\|?[\s-:|]+\|/.test(lines[i + 1])) {
+      const tableLines: string[] = [line, lines[i + 1]];
+      i += 2;
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      elements.push(renderTable(tableLines, i));
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^---+$/.test(line.trim())) {
+      elements.push(<hr key={i} className="my-4 border-[#E0DED8]" />);
+      i++;
+      continue;
+    }
+
+    // Headers
+    if (line.startsWith("# ")) { elements.push(<h2 key={i} className="text-lg font-bold mt-5 mb-2 text-[#2C2C2A]">{renderInline(line.slice(2))}</h2>); i++; continue; }
+    if (line.startsWith("## ")) { elements.push(<h3 key={i} className="text-base font-semibold mt-4 mb-2 text-[#2C2C2A]">{renderInline(line.slice(3))}</h3>); i++; continue; }
+    if (line.startsWith("### ")) { elements.push(<h4 key={i} className="text-sm font-semibold mt-3 mb-1 text-[#534AB7]">{renderInline(line.slice(4))}</h4>); i++; continue; }
+
+    // Bullet list
+    if (line.startsWith("- ") || line.startsWith("* ")) {
+      elements.push(<li key={i} className="text-sm ml-5 list-disc leading-relaxed">{renderInline(line.slice(2))}</li>);
+      i++;
+      continue;
+    }
+
+    // Numbered list
+    if (/^\d+\.\s/.test(line)) {
+      elements.push(<li key={i} className="text-sm ml-5 list-decimal leading-relaxed">{renderInline(line.replace(/^\d+\.\s/, ""))}</li>);
+      i++;
+      continue;
+    }
+
+    // Empty line
+    if (!line.trim()) { elements.push(<div key={i} className="h-2" />); i++; continue; }
+
+    // Regular paragraph with inline formatting
+    elements.push(<p key={i} className="text-sm leading-relaxed">{renderInline(line)}</p>);
+    i++;
+  }
+
+  return <div className="max-w-none text-[#2C2C2A] space-y-1">{elements}</div>;
 }
 
 /* ─── Upload Button ─── */
