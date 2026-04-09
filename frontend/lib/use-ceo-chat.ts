@@ -50,19 +50,49 @@ interface CeoChatState {
 }
 
 // ---- Shared session key ---------------------------------------------------
+// NOTE: key is intentionally suffixed `_v2` so any user with a stale session
+// from before idle-timeout was added gets a one-shot fresh start on next load.
+// Bump the suffix again if we ever need to force-reset all chat sessions.
 
-const SESSION_KEY = "aria_ceo_chat_active";
+const SESSION_KEY = "aria_ceo_chat_session_v2";
+const SESSION_TS_KEY = "aria_ceo_chat_session_ts_v2";
+const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 function getTenantId(): string {
   return (typeof window !== "undefined" && localStorage.getItem("aria_tenant_id")) || "";
 }
 
-function getOrCreateSessionId(): string {
-  const existing = typeof window !== "undefined" ? localStorage.getItem(SESSION_KEY) : null;
-  if (existing) return existing;
+function makeSessionId(): string {
   const tid = getTenantId() || "anon";
-  const sid = `chat_${tid}_${Date.now()}`;
-  if (typeof window !== "undefined") localStorage.setItem(SESSION_KEY, sid);
+  return `chat_${tid}_${Date.now()}`;
+}
+
+function touchSessionTimestamp() {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(SESSION_TS_KEY, String(Date.now()));
+}
+
+function getOrCreateSessionId(): string {
+  if (typeof window === "undefined") return makeSessionId();
+
+  // Clean up the old key from previous versions so it can't bleed back in.
+  localStorage.removeItem("aria_ceo_chat_active");
+
+  const existing = localStorage.getItem(SESSION_KEY);
+  const lastUsedRaw = localStorage.getItem(SESSION_TS_KEY);
+  const lastUsed = lastUsedRaw ? parseInt(lastUsedRaw, 10) : 0;
+  const isStale = !lastUsed || Date.now() - lastUsed > SESSION_IDLE_TIMEOUT_MS;
+
+  if (existing && !isStale) {
+    return existing;
+  }
+
+  // Either no session yet, or the previous one has been idle too long —
+  // rotate to a fresh session so stale chat history can't influence the
+  // model into hallucinating subjects from earlier conversations.
+  const sid = makeSessionId();
+  localStorage.setItem(SESSION_KEY, sid);
+  touchSessionTimestamp();
   return sid;
 }
 
@@ -115,6 +145,7 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
 
       setMessages((p) => [...p, { role: "user", content: trimmed }]);
       setSending(true);
+      touchSessionTimestamp();
 
       try {
         const authHeaders = await getAuthHeaders();
@@ -187,13 +218,14 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
 
   const switchSession = useCallback((sid: string) => {
     localStorage.setItem(SESSION_KEY, sid);
+    touchSessionTimestamp();
     setSessionId(sid);
   }, []);
 
   const startNewChat = useCallback(() => {
-    const tid = getTenantId() || "anon";
-    const sid = `chat_${tid}_${Date.now()}`;
+    const sid = makeSessionId();
     localStorage.setItem(SESSION_KEY, sid);
+    touchSessionTimestamp();
     setSessionId(sid);
     setMessages([]);
   }, []);
