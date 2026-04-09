@@ -3450,6 +3450,72 @@ class CEOChatMessage(BaseModel):
     tenant_id: str = ""
 
 
+def _summarize_ceo_assistant_message(content: str) -> str:
+    """Compress a CEO assistant message into a one-line summary for history.
+
+    The model is autoregressive and will copy its own prior outputs verbatim
+    if it sees them in the context — that's the root cause of the
+    'CEO returns a full GTM strategy review on every message' bug, and the
+    'CEO uses last message's subject for a new request' bug. By replacing
+    each prior CEO turn with a short tag instead of the raw content, the
+    model knows the conversation flow exists but has nothing concrete to
+    plagiarise.
+
+    Args:
+        content: the full CEO response text from a previous turn
+
+    Returns:
+        A bracketed one-line summary like '[CEO previously delegated to media]'
+        or '[CEO: Hi! How can I help you today?]'
+    """
+    import re
+
+    if not content:
+        return "[CEO previously responded]"
+
+    # Highest-signal patterns first: delegations and actions
+    if "```delegate" in content:
+        match = re.search(r'"agent"\s*:\s*"([\w_]+)"', content)
+        agent = match.group(1) if match else "an agent"
+        return f"[CEO previously delegated to {agent}]"
+    if "```action" in content:
+        match = re.search(r'"action"\s*:\s*"([\w_]+)"', content)
+        action = match.group(1) if match else "an action"
+        return f"[CEO previously executed action: {action}]"
+
+    # Plain prose: strip markdown and take just the first non-empty line
+    cleaned = content.strip()
+    cleaned = re.sub(r"```[\s\S]*?```", "", cleaned)        # fenced code blocks
+    cleaned = re.sub(r"^#{1,6}\s+", "", cleaned, flags=re.MULTILINE)  # ATX headers
+    cleaned = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)  # bold/italic
+    cleaned = re.sub(r"^\s*[-*]\s+", "", cleaned, flags=re.MULTILINE)  # bullets
+    cleaned = re.sub(r"^\s*\d+\.\s+", "", cleaned, flags=re.MULTILINE)  # numbered
+
+    first_line = ""
+    for line in cleaned.split("\n"):
+        line = line.strip()
+        if line and line not in ("---", "***"):
+            first_line = line
+            break
+
+    if not first_line:
+        return "[CEO previously responded]"
+    if len(first_line) > 80:
+        first_line = first_line[:77] + "..."
+    return f"[CEO: {first_line}]"
+
+
+def _format_history_message(m: dict) -> str:
+    """Render one prior message for the history block.
+
+    User messages stay verbatim so the model knows what was actually asked.
+    CEO assistant messages get summarised to break verbatim-copying priming.
+    """
+    if m.get("role") == "user":
+        return f"User: {m.get('content', '')}"
+    return _summarize_ceo_assistant_message(m.get("content", ""))
+
+
 @app.post("/api/ceo/chat")
 async def ceo_chat(body: CEOChatMessage):
     """Send a message to the CEO agent. The CEO reads its own .md file and all sub-agent .md files,
@@ -3636,12 +3702,16 @@ IMPORTANT — Token efficiency rules:
 
 Keep responses concise and actionable. You are their Chief Marketing Strategist."""
 
-    # Build conversation for Claude — separate prior history from the current
-    # message so the model can't "continue" stale tasks/delegations from
-    # earlier in the session. The most recent message is the user's CURRENT
-    # input; everything else is read-only context.
-    _RECENT_WINDOW = 6  # keep last 6 prior messages in full
-    _MAX_SUMMARY_MSGS = 20  # max older messages to summarize
+    # Build conversation for Claude — prior turns are summarised, NOT included
+    # verbatim. The model is autoregressive: when it sees its own prior outputs
+    # it will copy them verbatim, which causes 'CEO returns the same GTM
+    # strategy review on every message' and 'CEO uses the previous turn's
+    # subject for a new unrelated request'. By replacing each prior CEO turn
+    # with a short tag like '[CEO previously delegated to media]', the model
+    # still knows there was a back-and-forth (so follow-ups like "yes do that"
+    # work) but has nothing concrete to plagiarise.
+    _RECENT_WINDOW = 6  # keep last 6 prior messages
+    _MAX_SUMMARY_MSGS = 20  # max older messages to include
 
     current_msg = session[-1]  # the user message we're responding to right now
     history = session[:-1]  # everything before the current message
@@ -3653,39 +3723,28 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             f"User: {current_msg['content']}"
         )
     else:
-        if len(history) <= _RECENT_WINDOW:
-            history_text = "\n".join(
-                f"{'User' if m['role'] == 'user' else 'CEO'}: {m['content']}"
-                for m in history
-            )
-            history_block = f"PRIOR CONVERSATION (read-only context — DO NOT continue any tasks or delegations from these messages):\n{history_text}"
-        else:
-            older = history[:-_RECENT_WINDOW][-_MAX_SUMMARY_MSGS:]
-            recent = history[-_RECENT_WINDOW:]
+        recent = history[-_RECENT_WINDOW:]
+        older = history[:-_RECENT_WINDOW][-_MAX_SUMMARY_MSGS:]
 
-            summary_lines = []
-            for m in older:
-                role = "User" if m["role"] == "user" else "CEO"
-                text = m["content"][:100].replace("\n", " ")
-                if len(m["content"]) > 100:
-                    text += "..."
-                summary_lines.append(f"- {role}: {text}")
+        recent_text = "\n".join(_format_history_message(m) for m in recent)
+        history_block_parts = []
+        if older:
+            older_text = "\n".join(_format_history_message(m) for m in older)
+            history_block_parts.append("EARLIER IN THIS CHAT (summary):\n" + older_text)
+        if recent_text:
+            history_block_parts.append("RECENT TURNS (CEO responses summarised — DO NOT copy them):\n" + recent_text)
 
-            summary = "EARLIER IN THIS CHAT (summary):\n" + "\n".join(summary_lines)
-            recent_text = "\n".join(
-                f"{'User' if m['role'] == 'user' else 'CEO'}: {m['content']}"
-                for m in recent
-            )
-            history_block = (
-                f"PRIOR CONVERSATION (read-only context — DO NOT continue any tasks or delegations from these messages):\n"
-                f"{summary}\n\n{recent_text}"
-            )
+        history_block = (
+            "PRIOR CONVERSATION (read-only context — DO NOT continue any tasks or delegations from these messages):\n"
+            + "\n\n".join(history_block_parts)
+        )
 
         conversation = (
             f"{history_block}\n\n"
             "================================================================\n"
             "CURRENT MESSAGE FROM USER — respond to THIS message ONLY. "
             "Do NOT carry over delegations, tasks, or subjects from the prior conversation above. "
+            "Do NOT repeat or rehash content from prior CEO turns — those summaries are reference only. "
             "If this current message is a greeting or general question, respond conversationally with NO delegation block.\n"
             f"User: {current_msg['content']}"
         )
