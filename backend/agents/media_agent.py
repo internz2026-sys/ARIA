@@ -1,13 +1,19 @@
-"""Media Agent — generates marketing images using Google Gemini.
+"""Media Agent — generates marketing images.
 
-The CEO agent creates the image prompt; this agent sends it to Gemini
-for generation and stores the result in the content library.
+Pipeline: CEO drafts a request → Claude (Haiku) refines it into an image
+prompt → the prompt is sent to an image-generation provider → resulting
+PNG is stored in Supabase and logged to the content library.
+
+Provider selection (in order):
+1. Gemini, if GEMINI_API_KEY is set (paid, requires billing).
+2. Pollinations AI — free, no auth required. Default fallback.
 """
 from __future__ import annotations
 
 import base64
 import logging
 import os
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 
@@ -21,6 +27,9 @@ logger = logging.getLogger("aria.agents.media")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.0-flash-exp"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+POLLINATIONS_URL = "https://image.pollinations.ai/prompt"
+POLLINATIONS_MODEL = os.getenv("POLLINATIONS_MODEL", "flux")
 
 _agent = None
 
@@ -74,15 +83,29 @@ Do NOT include any explanation — just the image prompt."""
         refined_prompt = refined_prompt.strip()
         logger.info("[media] Refined prompt: %s", refined_prompt[:100])
 
-        # Step 2: Generate image via Gemini
-        image_data = await _generate_with_gemini(refined_prompt)
+        # Step 2: Generate image — try Gemini first if a key is set, otherwise
+        # fall back to Pollinations AI (free, no auth).
+        image_data = None
+        provider_used = None
+
+        if os.getenv("GEMINI_API_KEY"):
+            image_data = await _generate_with_gemini(refined_prompt)
+            if image_data:
+                provider_used = "gemini"
+            else:
+                logger.warning("[media] Gemini failed, falling back to Pollinations")
+
+        if not image_data:
+            image_data = await _generate_with_pollinations(refined_prompt)
+            if image_data:
+                provider_used = "pollinations"
 
         if not image_data:
             return {
                 "agent": self.AGENT_NAME,
                 "tenant_id": tenant_id,
                 "status": "failed",
-                "result": "Image generation failed — check GEMINI_API_KEY",
+                "result": "Image generation failed — both Gemini and Pollinations were unreachable",
                 "prompt_used": refined_prompt,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
@@ -91,7 +114,7 @@ Do NOT include any explanation — just the image prompt."""
         image_url = await _store_image(tenant_id, image_data)
 
         # Step 4: Log to content library
-        await _log_to_content_library(tenant_id, refined_prompt, image_url, ctx)
+        await _log_to_content_library(tenant_id, refined_prompt, image_url, ctx, provider_used)
 
         return {
             "agent": self.AGENT_NAME,
@@ -101,6 +124,7 @@ Do NOT include any explanation — just the image prompt."""
                 "image_url": image_url,
                 "prompt_used": refined_prompt,
                 "original_request": raw_prompt,
+                "provider": provider_used,
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -157,6 +181,41 @@ async def _generate_with_gemini(prompt: str) -> bytes | None:
         return None
 
 
+async def _generate_with_pollinations(prompt: str) -> bytes | None:
+    """Call Pollinations AI to generate an image. Free, no auth required.
+
+    Endpoint: GET https://image.pollinations.ai/prompt/{url-encoded prompt}
+    Returns raw PNG bytes directly in the response body.
+    """
+    encoded = urllib.parse.quote(prompt, safe="")
+    url = (
+        f"{POLLINATIONS_URL}/{encoded}"
+        f"?width=1024&height=1024&model={POLLINATIONS_MODEL}&nologo=true"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            resp = await client.get(url)
+
+            if resp.status_code != 200:
+                logger.error(
+                    "Pollinations API error %d: %s", resp.status_code, resp.text[:200]
+                )
+                return None
+
+            content = resp.content
+            if not content or len(content) < 1000:
+                logger.warning("Pollinations returned suspiciously small response (%d bytes)", len(content))
+                return None
+
+            logger.info("[media] Pollinations returned %d bytes", len(content))
+            return content
+
+    except Exception as e:
+        logger.error("Pollinations API call failed: %s", e)
+        return None
+
+
 async def _store_image(tenant_id: str, image_data: bytes) -> str:
     """Store image in Supabase storage and return public URL."""
     try:
@@ -183,7 +242,13 @@ async def _store_image(tenant_id: str, image_data: bytes) -> str:
         return f"data:image/png;base64,{b64[:50]}..."
 
 
-async def _log_to_content_library(tenant_id: str, prompt: str, image_url: str, context: dict):
+async def _log_to_content_library(
+    tenant_id: str,
+    prompt: str,
+    image_url: str,
+    context: dict,
+    provider: str | None = None,
+):
     """Log the generated image to the content library."""
     try:
         from backend.services.supabase import get_db
@@ -196,7 +261,7 @@ async def _log_to_content_library(tenant_id: str, prompt: str, image_url: str, c
             "body": prompt,
             "metadata": {
                 "image_url": image_url,
-                "source": "gemini",
+                "source": provider or "pollinations",
                 "context": context,
             },
             "status": "completed",
