@@ -156,9 +156,19 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
             # Agent already exists — re-PATCH adapter, webhookUrl, and heartbeat
             # so any agents previously created with the wrong adapter
             # (claude_local) or wrong webhookUrl (127.0.0.1) get auto-fixed.
+            #
+            # Paperclip's actual field is `adapterType` (NOT `adapter`) and the
+            # webhook URL lives inside `adapterConfig`. Sending the wrong field
+            # name results in a silent 200 OK with no state change. We send
+            # both shapes so the right one wins regardless of Paperclip version.
             agent_ids[agent_name] = agent_id
             patch_payload = {
+                "adapterType": "http",
                 "adapter": "http",
+                "adapterConfig": {
+                    "webhookUrl": webhook_url,
+                    "url": webhook_url,
+                },
                 "webhookUrl": webhook_url,
             }
             if cron:
@@ -230,7 +240,12 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
                 "description": meta["description"],
                 "role": meta.get("role", "general"),
                 "department": dept,
+                "adapterType": "http",
                 "adapter": "http",
+                "adapterConfig": {
+                    "webhookUrl": webhook_url,
+                    "url": webhook_url,
+                },
                 "model": meta["model"],
                 "heartbeatSchedule": cron,
                 "webhookUrl": webhook_url,

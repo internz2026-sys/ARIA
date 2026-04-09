@@ -193,6 +193,7 @@ _PUBLIC_PREFIXES = (
     "/api/webhooks/",       # External webhooks (Stripe, SendGrid)
     "/api/inbox/",          # Inbox item creation (used by Paperclip agents)
     "/api/tenant/by-email/", # Tenant lookup during login (returns only tenant_id)
+    "/api/paperclip/heartbeat/",  # Paperclip HTTP-adapter webhook callbacks
     "/docs",                # Swagger UI
     "/openapi.json",
 )
@@ -2660,7 +2661,24 @@ async def paperclip_heartbeat(agent_name: str, request: Request):
 
     When Paperclip triggers a heartbeat, it POSTs here. ARIA executes the
     agent logic and returns the result to Paperclip.
+
+    This route is exempt from JWT auth (it lives in _PUBLIC_PREFIXES) so
+    Paperclip's HTTP adapter can call it without a user session. To stop
+    randoms on the internet from triggering agent runs and burning Anthropic
+    credits, we optionally verify a shared secret if PAPERCLIP_WEBHOOK_SECRET
+    is set in the env. If unset, we fall back to allowing requests through —
+    this matches the previous behavior for local dev.
     """
+    expected_secret = os.environ.get("PAPERCLIP_WEBHOOK_SECRET", "")
+    if expected_secret:
+        provided = (
+            request.headers.get("X-Paperclip-Webhook-Secret")
+            or request.headers.get("X-Webhook-Secret")
+            or ""
+        )
+        if provided != expected_secret:
+            raise HTTPException(status_code=401, detail="Invalid or missing webhook secret")
+
     payload = await request.json()
     tenant_id = payload.get("metadata", {}).get("tenant_id")
     context = payload.get("metadata", {}).get("context", {})
