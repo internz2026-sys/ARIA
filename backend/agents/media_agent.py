@@ -5,8 +5,9 @@ prompt → the prompt is sent to an image-generation provider → resulting
 PNG is stored in Supabase and logged to the content library.
 
 Provider selection (in order):
-1. Gemini, if GEMINI_API_KEY is set (paid, requires billing).
-2. Pollinations AI — free, no auth required. Default fallback.
+1. Pollinations AI — free, no auth required. Primary provider.
+2. Gemini — only used as a fallback if Pollinations is unreachable
+   AND GEMINI_API_KEY is set. Requires paid billing for image gen.
 """
 from __future__ import annotations
 
@@ -83,22 +84,20 @@ Do NOT include any explanation — just the image prompt."""
         refined_prompt = refined_prompt.strip()
         logger.info("[media] Refined prompt: %s", refined_prompt[:100])
 
-        # Step 2: Generate image — try Gemini first if a key is set, otherwise
-        # fall back to Pollinations AI (free, no auth).
+        # Step 2: Generate image — Pollinations AI is the primary provider
+        # (free, no auth). Gemini is only used as a fallback if Pollinations
+        # is unreachable AND a Gemini key is available.
         image_data = None
         provider_used = None
 
-        if os.getenv("GEMINI_API_KEY"):
+        image_data = await _generate_with_pollinations(refined_prompt)
+        if image_data:
+            provider_used = "pollinations"
+        elif os.getenv("GEMINI_API_KEY"):
+            logger.warning("[media] Pollinations failed, falling back to Gemini")
             image_data = await _generate_with_gemini(refined_prompt)
             if image_data:
                 provider_used = "gemini"
-            else:
-                logger.warning("[media] Gemini failed, falling back to Pollinations")
-
-        if not image_data:
-            image_data = await _generate_with_pollinations(refined_prompt)
-            if image_data:
-                provider_used = "pollinations"
 
         if not image_data:
             return {
