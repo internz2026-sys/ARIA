@@ -2679,13 +2679,66 @@ async def paperclip_heartbeat(agent_name: str, request: Request):
         if provided != expected_secret:
             raise HTTPException(status_code=401, detail="Invalid or missing webhook secret")
 
-    payload = await request.json()
-    tenant_id = payload.get("metadata", {}).get("tenant_id")
-    context = payload.get("metadata", {}).get("context", {})
-    run_id = request.headers.get("X-Paperclip-Run-Id", "")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    # Log the raw incoming payload at WARNING so we can see exactly what
+    # Paperclip's HTTP adapter sends. The shape differs depending on whether
+    # ARIA is invoking via /heartbeat/invoke (sends metadata.tenant_id) or
+    # Paperclip's own scheduler is firing the HTTP adapter (sends actorId,
+    # wakeSource, issueId, etc. with no tenant_id).
+    import json as _json_dbg
+    logger.warning(
+        f"[paperclip-webhook-in] agent={agent_name} payload={_json_dbg.dumps(payload)[:600]}"
+    )
+
+    metadata = payload.get("metadata") or {}
+    context = metadata.get("context") or payload.get("context") or {}
+    run_id = (
+        request.headers.get("X-Paperclip-Run-Id")
+        or payload.get("runId")
+        or payload.get("run_id")
+        or ""
+    )
+
+    # tenant_id resolution chain:
+    #   1. ARIA-set metadata.tenant_id (when ARIA triggered the heartbeat)
+    #   2. Issue title prefix `[tenant_id] ...` (ARIA prefixes its issues this way)
+    #   3. Fall back to the first active tenant — single-user installs only
+    #      have one anyway, and multi-tenant setups should always provide
+    #      explicit tenant_id via metadata
+    tenant_id = metadata.get("tenant_id") or payload.get("tenant_id")
 
     if not tenant_id:
-        raise HTTPException(status_code=400, detail="tenant_id required in metadata")
+        # Try to parse from issue title `[tenant_id] task description`
+        issue = payload.get("issue") or payload.get("currentIssue") or {}
+        issue_title = issue.get("title") or payload.get("issueTitle") or ""
+        if issue_title.startswith("[") and "]" in issue_title:
+            parsed = issue_title[1 : issue_title.index("]")].strip()
+            if parsed:
+                tenant_id = parsed
+                logger.warning(f"[paperclip-webhook] resolved tenant_id={tenant_id} from issue title")
+
+    if not tenant_id:
+        # Last resort: first active tenant. Works for single-user installs.
+        try:
+            from backend.config.loader import get_active_tenants
+            actives = get_active_tenants()
+            if actives:
+                tenant_id = str(actives[0].tenant_id)
+                logger.warning(
+                    f"[paperclip-webhook] no tenant_id in payload, defaulting to first active tenant {tenant_id}"
+                )
+        except Exception as e:
+            logger.error(f"[paperclip-webhook] failed to look up active tenants: {e}")
+
+    if not tenant_id:
+        raise HTTPException(
+            status_code=400,
+            detail="tenant_id could not be resolved from metadata, issue title, or active tenants",
+        )
 
     from backend.agents import AGENT_REGISTRY
     agent_module = AGENT_REGISTRY.get(agent_name)
@@ -2699,8 +2752,10 @@ async def paperclip_heartbeat(agent_name: str, request: Request):
         )
         result["paperclip_run_id"] = run_id
         await sio.emit("agent_event", result, room=tenant_id)
+        logger.warning(f"[paperclip-webhook-out] {agent_name} OK for tenant {tenant_id}")
         return result
     except Exception as e:
+        logger.error(f"[paperclip-webhook-out] {agent_name} FAILED for tenant {tenant_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
