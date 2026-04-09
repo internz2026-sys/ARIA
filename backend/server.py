@@ -163,10 +163,12 @@ app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
 from backend.routers.crm import router as crm_router
 from backend.routers.inbox import router as inbox_router
 from backend.routers.campaigns import router as campaigns_router
+from backend.routers.paperclip import router as paperclip_router
 
 app.include_router(crm_router)
 app.include_router(inbox_router)
 app.include_router(campaigns_router)
+app.include_router(paperclip_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2655,108 +2657,8 @@ async def paperclip_status():
     }
 
 
-@app.post("/api/paperclip/heartbeat/{agent_name}")
-async def paperclip_heartbeat(agent_name: str, request: Request):
-    """Callback endpoint for Paperclip heartbeat invocations.
-
-    When Paperclip triggers a heartbeat, it POSTs here. ARIA executes the
-    agent logic and returns the result to Paperclip.
-
-    This route is exempt from JWT auth (it lives in _PUBLIC_PREFIXES) so
-    Paperclip's HTTP adapter can call it without a user session. To stop
-    randoms on the internet from triggering agent runs and burning Anthropic
-    credits, we optionally verify a shared secret if PAPERCLIP_WEBHOOK_SECRET
-    is set in the env. If unset, we fall back to allowing requests through —
-    this matches the previous behavior for local dev.
-    """
-    expected_secret = os.environ.get("PAPERCLIP_WEBHOOK_SECRET", "")
-    if expected_secret:
-        provided = (
-            request.headers.get("X-Paperclip-Webhook-Secret")
-            or request.headers.get("X-Webhook-Secret")
-            or ""
-        )
-        if provided != expected_secret:
-            raise HTTPException(status_code=401, detail="Invalid or missing webhook secret")
-
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-
-    # Log the raw incoming payload at WARNING so we can see exactly what
-    # Paperclip's HTTP adapter sends. The shape differs depending on whether
-    # ARIA is invoking via /heartbeat/invoke (sends metadata.tenant_id) or
-    # Paperclip's own scheduler is firing the HTTP adapter (sends actorId,
-    # wakeSource, issueId, etc. with no tenant_id).
-    import json as _json_dbg
-    logger.warning(
-        f"[paperclip-webhook-in] agent={agent_name} payload={_json_dbg.dumps(payload)[:600]}"
-    )
-
-    metadata = payload.get("metadata") or {}
-    context = metadata.get("context") or payload.get("context") or {}
-    run_id = (
-        request.headers.get("X-Paperclip-Run-Id")
-        or payload.get("runId")
-        or payload.get("run_id")
-        or ""
-    )
-
-    # tenant_id resolution chain:
-    #   1. ARIA-set metadata.tenant_id (when ARIA triggered the heartbeat)
-    #   2. Issue title prefix `[tenant_id] ...` (ARIA prefixes its issues this way)
-    #   3. Fall back to the first active tenant — single-user installs only
-    #      have one anyway, and multi-tenant setups should always provide
-    #      explicit tenant_id via metadata
-    tenant_id = metadata.get("tenant_id") or payload.get("tenant_id")
-
-    if not tenant_id:
-        # Try to parse from issue title `[tenant_id] task description`
-        issue = payload.get("issue") or payload.get("currentIssue") or {}
-        issue_title = issue.get("title") or payload.get("issueTitle") or ""
-        if issue_title.startswith("[") and "]" in issue_title:
-            parsed = issue_title[1 : issue_title.index("]")].strip()
-            if parsed:
-                tenant_id = parsed
-                logger.warning(f"[paperclip-webhook] resolved tenant_id={tenant_id} from issue title")
-
-    if not tenant_id:
-        # Last resort: first active tenant. Works for single-user installs.
-        try:
-            from backend.config.loader import get_active_tenants
-            actives = get_active_tenants()
-            if actives:
-                tenant_id = str(actives[0].tenant_id)
-                logger.warning(
-                    f"[paperclip-webhook] no tenant_id in payload, defaulting to first active tenant {tenant_id}"
-                )
-        except Exception as e:
-            logger.error(f"[paperclip-webhook] failed to look up active tenants: {e}")
-
-    if not tenant_id:
-        raise HTTPException(
-            status_code=400,
-            detail="tenant_id could not be resolved from metadata, issue title, or active tenants",
-        )
-
-    from backend.agents import AGENT_REGISTRY
-    agent_module = AGENT_REGISTRY.get(agent_name)
-    if not agent_module:
-        raise HTTPException(status_code=404, detail=f"Unknown agent: {agent_name}")
-
-    try:
-        result = await agent_module.run(
-            tenant_id,
-            **({"context": context} if context and "context" in agent_module.run.__code__.co_varnames else {}),
-        )
-        result["paperclip_run_id"] = run_id
-        await sio.emit("agent_event", result, room=tenant_id)
-        logger.warning(f"[paperclip-webhook-out] {agent_name} OK for tenant {tenant_id}")
-        return result
-    except Exception as e:
-        logger.error(f"[paperclip-webhook-out] {agent_name} FAILED for tenant {tenant_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Note: /api/paperclip/heartbeat/{agent_name} now lives in
+# backend/routers/paperclip.py and is registered via app.include_router above.
 
 
 # ─── CEO Task Triage ───
