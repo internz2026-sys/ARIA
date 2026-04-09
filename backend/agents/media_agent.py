@@ -100,11 +100,21 @@ Do NOT include any explanation — just the image prompt."""
                 provider_used = "gemini"
 
         if not image_data:
+            # Make the failure visible in the user's inbox so they know
+            # generation was attempted but failed (instead of silent void).
+            await _save_to_inbox(
+                tenant_id=tenant_id,
+                prompt=refined_prompt,
+                original_request=raw_prompt,
+                image_url=None,
+                provider=None,
+                error="Both Pollinations and Gemini failed (Pollinations upstream returned an HTML 502; Gemini either has no API key or also failed).",
+            )
             return {
                 "agent": self.AGENT_NAME,
                 "tenant_id": tenant_id,
                 "status": "failed",
-                "result": "Image generation failed — both Gemini and Pollinations were unreachable",
+                "result": "Image generation failed — both Pollinations and Gemini were unreachable",
                 "prompt_used": refined_prompt,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
@@ -114,6 +124,16 @@ Do NOT include any explanation — just the image prompt."""
 
         # Step 4: Log to content library
         await _log_to_content_library(tenant_id, refined_prompt, image_url, ctx, provider_used)
+
+        # Step 5: Create an inbox item so the image actually shows up in
+        # the user's Inbox page (the content library is separate).
+        await _save_to_inbox(
+            tenant_id=tenant_id,
+            prompt=refined_prompt,
+            original_request=raw_prompt,
+            image_url=image_url,
+            provider=provider_used,
+        )
 
         return {
             "agent": self.AGENT_NAME,
@@ -197,14 +217,30 @@ async def _generate_with_pollinations(prompt: str) -> bytes | None:
             resp = await client.get(url)
 
             if resp.status_code != 200:
-                logger.error(
-                    "Pollinations API error %d: %s", resp.status_code, resp.text[:200]
-                )
+                # Detect Pollinations' upstream HTML error pages so the log
+                # shows a clear "upstream is down" instead of a confusing
+                # "Failed to parse URL from <html>...".
+                body_preview = resp.text[:200]
+                if "<html" in body_preview.lower() or "502 bad gateway" in body_preview.lower():
+                    logger.error(
+                        "Pollinations upstream returned HTML error page (status %d) — image service is down",
+                        resp.status_code,
+                    )
+                else:
+                    logger.error(
+                        "Pollinations API error %d: %s", resp.status_code, body_preview
+                    )
                 return None
 
             content = resp.content
             if not content or len(content) < 1000:
                 logger.warning("Pollinations returned suspiciously small response (%d bytes)", len(content))
+                return None
+
+            # Reject HTML payloads that came back with a 200 status (sometimes
+            # Pollinations returns 200 with an HTML error page).
+            if content[:100].lower().startswith(b"<!doctype") or content[:100].lower().startswith(b"<html"):
+                logger.error("Pollinations returned an HTML page instead of an image — upstream issue")
                 return None
 
             logger.info("[media] Pollinations returned %d bytes", len(content))
@@ -269,6 +305,60 @@ async def _log_to_content_library(
 
     except Exception as e:
         logger.warning("Failed to log to content library: %s", e)
+
+
+async def _save_to_inbox(
+    tenant_id: str,
+    prompt: str,
+    original_request: str,
+    image_url: str | None,
+    provider: str | None = None,
+    error: str | None = None,
+):
+    """Create an inbox_items row for the generated image (or failed attempt).
+
+    The Inbox page reads from inbox_items, NOT content_library — so without
+    this row the user has no way to see the image in the UI even if storage
+    upload succeeded. Failure rows are also written so the user gets clear
+    feedback when generation fails (rather than a silent void).
+    """
+    try:
+        from backend.services.supabase import get_db
+        sb = get_db()
+
+        if image_url and not error:
+            # Success path — render markdown that displays the image inline.
+            title = original_request[:100] if original_request else prompt[:100]
+            content = (
+                f"![Generated image]({image_url})\n\n"
+                f"**Prompt used:** {prompt}\n\n"
+                f"**Provider:** {provider or 'pollinations'}"
+            )
+            inbox_status = "ready"
+        else:
+            # Failure path — make the error visible.
+            title = f"Image generation failed: {(original_request or prompt)[:80]}"
+            content = (
+                f"**Image generation failed**\n\n"
+                f"{error or 'Unknown error'}\n\n"
+                f"**Prompt was:** {prompt}\n\n"
+                f"**Original request:** {original_request}"
+            )
+            inbox_status = "needs_review"
+
+        sb.table("inbox_items").insert({
+            "tenant_id": tenant_id,
+            "agent": "media",
+            "type": "image",
+            "title": title,
+            "content": content,
+            "status": inbox_status,
+            "priority": "medium",
+        }).execute()
+        logger.info("[media] Saved inbox item: %s", title[:60])
+
+    except Exception as e:
+        logger.error("Failed to save image to inbox: %s", e)
 
 
 def _get():
