@@ -195,8 +195,14 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
                     or v.get("adapter_type")
                     or (v.get("config") or {}).get("adapter")
                 )
+                # Paperclip stores the webhook inside adapterConfig, not at
+                # the top level. Check both the new nested location and the
+                # old top-level shape.
+                adapter_config = v.get("adapterConfig") or {}
                 actual_webhook = (
-                    v.get("webhookUrl")
+                    adapter_config.get("webhookUrl")
+                    or adapter_config.get("url")
+                    or v.get("webhookUrl")
                     or v.get("webhook_url")
                     or (v.get("config") or {}).get("webhookUrl")
                 )
