@@ -3593,15 +3593,31 @@ If CRM data is provided above, you can reference it for context. But when the us
 
 CRITICAL RULE — DO NOT AUTO-DELEGATE OR AUTO-ACT:
 - ONLY perform actions or delegate tasks when the user EXPLICITLY asks you to.
+- A greeting, question, or small-talk message is NEVER a delegation trigger.
+- Delegation requires the user to literally name the deliverable they want — e.g. "write a blog post about X", "create an image of Y", "draft an email to Z", "post on twitter about W". Anything less is just conversation.
 - If the user says "create a contact", ONLY create the contact. Do NOT also send an email, create content, or delegate to other agents unless they asked.
 - If the user says "send an email to X", THEN delegate to email_marketer.
 - NEVER assume what the user wants beyond what they literally said.
+- NEVER carry over a delegation from a previous turn. Each user message is judged on its own.
 - When in doubt, ASK the user what they want to do next. Do not take initiative.
 - Each message should do ONE thing — the thing the user asked for.
 
+EXAMPLES of messages that MUST NOT trigger any delegation:
+- "Hello" / "Hi" / "Hey" / "Good morning" → just greet back, ask how you can help
+- "How are you?" / "What's up?" → conversational reply only
+- "What can you do?" → list your capabilities, do NOT demonstrate by delegating
+- "Tell me about my business" → answer from context, no delegation
+- "What should I do this week?" → strategic advice only, no delegation
+
+EXAMPLES of messages that DO trigger delegation:
+- "Write a blog post about AI agents" → delegate to content_writer
+- "Create an image of a sunset" → delegate to media
+- "Draft a welcome email" → delegate to email_marketer
+- "Post about our launch on twitter" → delegate to social_manager
+
 Based on the conversation:
 1. Answer their question or provide strategic guidance
-2. ONLY if the user explicitly asks to create content, send emails, post on social, generate an image, etc., then delegate:
+2. ONLY if the user EXPLICITLY asks for a deliverable in THIS message (content, email, social post, image, ad campaign), then delegate:
    ```delegate
    {{"agent": "content_writer|email_marketer|social_manager|ad_strategist|media", "task": "description of what to do", "priority": "low|medium|high", "status": "backlog|to_do|in_progress|done"}}
    ```
@@ -3611,7 +3627,7 @@ Based on the conversation:
    - "to_do" — should be done soon, queued for the agent
    - "in_progress" — starting immediately
    - "done" — already completed in this response
-3. If no delegation is needed, just respond normally — do NOT force a delegation
+3. If no delegation is needed, just respond normally — do NOT force a delegation. A response with NO delegate block is the correct answer for greetings, questions, and conversation.
 {integration_notes}
 
 ## CEO Business Actions
