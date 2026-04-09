@@ -18,6 +18,12 @@ logger = logging.getLogger("aria.paperclip")
 
 PAPERCLIP_URL = os.environ.get("PAPERCLIP_API_URL", "http://127.0.0.1:3100")
 
+# URL Paperclip uses to call back into ARIA's heartbeat handler. Must be
+# reachable from inside Paperclip's container — so we use the docker
+# network DNS name (aria-backend) rather than 127.0.0.1, which would point
+# Paperclip at itself. Override via env if you're running outside Docker.
+ARIA_INTERNAL_URL = os.environ.get("ARIA_INTERNAL_URL", "http://aria-backend:8000")
+
 # Maps each agent to its description and Claude model for Paperclip metadata
 # role must match Paperclip enum: ceo|cto|cmo|cfo|engineer|designer|pm|qa|devops|researcher|general
 AGENT_METADATA = {
@@ -144,16 +150,21 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
         # Match by slug first, then by exact title name
         agent_id = existing_by_slug.get(agent_name) or existing_by_name.get(title)
 
+        webhook_url = f"{ARIA_INTERNAL_URL}/api/paperclip/heartbeat/{agent_name}"
+
         if agent_id:
-            # Agent already exists — update heartbeat schedule to match our cron config
+            # Agent already exists — re-PATCH adapter, webhookUrl, and heartbeat
+            # so any agents previously created with the wrong adapter
+            # (claude_local) or wrong webhookUrl (127.0.0.1) get auto-fixed.
             agent_ids[agent_name] = agent_id
+            patch_payload = {
+                "adapter": "http",
+                "webhookUrl": webhook_url,
+            }
             if cron:
-                await _api(client, "PATCH", f"/api/agents/{agent_id}", json={
-                    "heartbeatSchedule": cron,
-                })
-                logger.info(f"Updated agent {agent_name} ({title}) heartbeat to {cron}")
-            else:
-                logger.debug(f"Found existing agent {agent_name} ({title}) -> {agent_id}")
+                patch_payload["heartbeatSchedule"] = cron
+            await _api(client, "PATCH", f"/api/agents/{agent_id}", json=patch_payload)
+            logger.info(f"Updated agent {agent_name} ({title}): adapter=http webhook={webhook_url}")
         else:
             # Agent does not exist — create it
             logger.info(f"Agent {agent_name} ({title}) not found in Paperclip, creating...")
@@ -166,7 +177,7 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
                 "adapter": "http",
                 "model": meta["model"],
                 "heartbeatSchedule": cron,
-                "webhookUrl": f"http://127.0.0.1:8000/api/paperclip/heartbeat/{agent_name}",
+                "webhookUrl": webhook_url,
             })
             if resp.status_code in (200, 201):
                 agent_id = resp.json().get("id")

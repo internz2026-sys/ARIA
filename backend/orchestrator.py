@@ -88,9 +88,8 @@ async def dispatch_agent(tenant_id: str, agent_name: str, context: dict | None =
     """Dispatch a single agent — routes through Paperclip if connected, else runs locally."""
     config = get_tenant_config(tenant_id)
 
-    # The media agent is a utility available to every tenant (it calls Gemini
-    # directly, no Paperclip subscription required), so it bypasses the
-    # per-tenant active_agents allowlist.
+    # The media agent is a utility available to every tenant — it doesn't
+    # need to be in the per-tenant active_agents list to be usable.
     if agent_name != "media" and agent_name not in config.active_agents:
         logger.warning(f"Agent {agent_name} not active for tenant {tenant_id}")
         return {"status": "skipped", "reason": "agent_not_active"}
@@ -100,12 +99,12 @@ async def dispatch_agent(tenant_id: str, agent_name: str, context: dict | None =
         logger.error(f"Agent {agent_name} not found in registry")
         return {"status": "error", "reason": "agent_not_found"}
 
-    # ── Media agent always runs locally — it calls the Gemini API directly,
-    # which Paperclip's Claude CLI adapter cannot do. ──
-    if agent_name == "media":
-        return await _dispatch_local(tenant_id, agent_name, agent_module, context)
-
     # ── Route through Paperclip ──
+    # Every agent (including media) goes through Paperclip when it's
+    # connected. Paperclip creates the issue + fires a heartbeat that POSTs
+    # to ARIA's /api/paperclip/heartbeat/{agent} endpoint, where ARIA runs
+    # the actual Python agent code (so media_agent can call Pollinations,
+    # content_writer can call Claude, etc.) and returns the result.
     if paperclip_connected():
         paperclip_id = get_paperclip_agent_id(agent_name)
         if paperclip_id:
