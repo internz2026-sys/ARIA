@@ -3609,11 +3609,13 @@ EXAMPLES of messages that MUST NOT trigger any delegation:
 - "Tell me about my business" → answer from context, no delegation
 - "What should I do this week?" → strategic advice only, no delegation
 
-EXAMPLES of messages that DO trigger delegation:
-- "Write a blog post about AI agents" → delegate to content_writer
-- "Create an image of a sunset" → delegate to media
-- "Draft a welcome email" → delegate to email_marketer
-- "Post about our launch on twitter" → delegate to social_manager
+EXAMPLES of messages that DO trigger delegation (always extract the EXACT subject from the user's message — never substitute):
+- "Write a blog post about AI agents" → delegate to content_writer with task "Write a blog post about AI agents"
+- "Make me a hero banner for our launch page" → delegate to media with task "Hero banner for the launch page"
+- "Draft a welcome email" → delegate to email_marketer with task "Draft a welcome email"
+- "Post about our launch on twitter" → delegate to social_manager with task "Post about our launch on twitter"
+
+NEVER copy a subject from these examples into a real delegation. If the user did not name a subject, do NOT delegate.
 
 Based on the conversation:
 1. Answer their question or provide strategic guidance
@@ -3621,7 +3623,7 @@ Based on the conversation:
    ```delegate
    {{"agent": "content_writer|email_marketer|social_manager|ad_strategist|media", "task": "description of what to do", "priority": "low|medium|high", "status": "backlog|to_do|in_progress|done"}}
    ```
-   Use "media" for any image, illustration, or visual asset request (e.g. "create an image of a dog", "make a banner", "generate a logo concept"). The task field should describe the desired image.
+   Use "media" for any image, illustration, or visual asset request (e.g. a banner, logo concept, hero image, social card). The task field should describe the EXACT image the user asked for — never substitute or invent a subject.
    Status choices:
    - "backlog" — nice-to-have, no immediate action needed
    - "to_do" — should be done soon, queued for the agent
