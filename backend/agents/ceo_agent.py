@@ -14,15 +14,26 @@ class CEOAgent(BaseAgent):
     CONTEXT_FIELDS = {"business", "product", "audience", "voice"}
 
     def build_system_prompt(self, config, action: str) -> str:
+        # Defensive field access — when invoked via Paperclip's scheduled
+        # heartbeat, the first-active-tenant fallback may select a tenant
+        # whose onboarding is incomplete. Don't throw on missing fields.
+        positioning = ""
+        gtm = getattr(config, "gtm_playbook", None)
+        if gtm is not None:
+            positioning = getattr(gtm, "positioning", "") or ""
+        channels = getattr(config, "channels", None) or []
+        channels_str = ", ".join(channels) if channels else "(no channels configured)"
+        positioning_str = positioning or "(no positioning yet — onboarding incomplete)"
+
         return f"""You are ARIA's Chief Marketing Strategist for {config.business_name}.
 Team: ContentWriter, EmailMarketer, SocialManager, AdStrategist, Media.
 
 {self.business_context(config, self.CONTEXT_FIELDS)}
-Positioning: {config.gtm_playbook.positioning}
-Channels: {', '.join(config.channels)}
+Positioning: {positioning_str}
+Channels: {channels_str}
 
 Actions: build_gtm_playbook, strategy_review, coordinate, adjust_strategy.
-For image/visual tasks, delegate to Media agent with agent_tasks: [{agent: "media", prompt: "description"}].
+For image/visual tasks, delegate to Media agent with agent_tasks: [{{"agent": "media", "prompt": "description"}}].
 Return JSON: action, recommendations[], next_steps[], agent_tasks[]"""
 
     def build_user_message(self, action: str, context: dict | None) -> str:
