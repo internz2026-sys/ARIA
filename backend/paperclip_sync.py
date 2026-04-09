@@ -167,30 +167,60 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
             patch_status = patch_resp.status_code if patch_resp else "no-response"
             patch_body = (patch_resp.text[:300] if patch_resp else "")
             if patch_resp and patch_resp.status_code in (200, 204):
-                logger.info(f"PATCHed agent {agent_name} ({title}): adapter=http webhook={webhook_url}")
+                logger.warning(f"[paperclip-patch] OK {agent_name} ({title}): adapter=http webhook={webhook_url} body={patch_body[:200]}")
             else:
-                logger.error(f"FAILED to PATCH agent {agent_name} ({title}) — status={patch_status} body={patch_body}")
+                logger.error(f"[paperclip-patch] FAILED {agent_name} ({title}) — status={patch_status} body={patch_body}")
 
-            # Verify the PATCH actually took effect by re-fetching the agent
+            # Verify the PATCH actually took effect by re-fetching the agent.
+            # Paperclip's response shape varies — dump the full payload at
+            # WARNING level so it shows up in container logs even when INFO
+            # is filtered.
             verify_resp = await _api(client, "GET", f"/api/agents/{agent_id}")
             if verify_resp and verify_resp.status_code == 200:
                 v = verify_resp.json()
-                actual_adapter = v.get("adapter")
-                actual_webhook = v.get("webhookUrl")
-                actual_status = v.get("status")
-                logger.info(f"Verified {agent_name}: adapter={actual_adapter} webhook={actual_webhook} status={actual_status}")
-                if actual_adapter != "http":
+                # Try multiple possible field names for the adapter
+                actual_adapter = (
+                    v.get("adapter")
+                    or v.get("adapterType")
+                    or v.get("adapter_type")
+                    or (v.get("config") or {}).get("adapter")
+                )
+                actual_webhook = (
+                    v.get("webhookUrl")
+                    or v.get("webhook_url")
+                    or (v.get("config") or {}).get("webhookUrl")
+                )
+                actual_status = v.get("status") or v.get("state")
+                # Log every top-level key so we can see what Paperclip
+                # actually returns and find the right field name.
+                top_keys = sorted(v.keys()) if isinstance(v, dict) else []
+                logger.warning(
+                    f"[paperclip-verify] {agent_name}: keys={top_keys} "
+                    f"adapter={actual_adapter} webhook={actual_webhook} status={actual_status}"
+                )
+                # Dump the full body once per agent for debugging — truncated
+                import json as _json_dbg
+                logger.warning(
+                    f"[paperclip-verify-body] {agent_name}: "
+                    f"{_json_dbg.dumps(v)[:800]}"
+                )
+                if actual_adapter and actual_adapter != "http":
                     logger.error(f"AGENT {agent_name} STILL HAS adapter={actual_adapter} after PATCH — Paperclip may have rejected the field")
 
                 # Auto-resume the agent if it's paused — paused agents won't
                 # process heartbeats, so any stale 'paused' state from a prior
                 # failed run would block all dispatches.
-                if actual_status == "paused":
+                if actual_status in ("paused", "PAUSED"):
                     resume_resp = await _api(client, "POST", f"/api/agents/{agent_id}/resume")
                     if resume_resp and resume_resp.status_code in (200, 204):
-                        logger.info(f"Auto-resumed paused agent {agent_name}")
+                        logger.warning(f"[paperclip-resume] Auto-resumed paused agent {agent_name}")
                     else:
-                        logger.warning(f"Failed to resume paused agent {agent_name}: {resume_resp.status_code if resume_resp else 'no-response'}")
+                        logger.warning(f"[paperclip-resume] Failed to resume paused agent {agent_name}: {resume_resp.status_code if resume_resp else 'no-response'}")
+            else:
+                logger.error(
+                    f"[paperclip-verify] {agent_name}: GET failed status="
+                    f"{verify_resp.status_code if verify_resp else 'no-response'}"
+                )
         else:
             # Agent does not exist — create it
             logger.info(f"Agent {agent_name} ({title}) not found in Paperclip, creating...")

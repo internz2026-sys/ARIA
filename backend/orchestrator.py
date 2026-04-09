@@ -158,21 +158,48 @@ async def _dispatch_via_paperclip(
     identifier = issue.get("identifier", issue_id)
     logger.info(f"Paperclip issue created for {agent_name}: {identifier}")
 
-    # Trigger heartbeat using the agent's own API key
-    agent_key = AGENT_API_KEYS.get(agent_name, "")
-    resp = await _paperclip_api("POST", f"/api/agents/{paperclip_id}/heartbeat/invoke", agent_key=agent_key, json={
+    # Trigger heartbeat — try the agent's own API key first, then fall back
+    # to the master session cookie / token if Paperclip rejects with 401/403.
+    # The per-agent key is the cleanest path but only works if the user
+    # actually pasted a valid agent key into .env.
+    heartbeat_payload = {
         "metadata": {
             "tenant_id": tenant_id,
             "agent_name": agent_name,
             "issue_id": issue_id,
             "triggered_at": datetime.now(timezone.utc).isoformat(),
         },
-    })
+    }
+    agent_key = AGENT_API_KEYS.get(agent_name, "")
+    resp = await _paperclip_api(
+        "POST",
+        f"/api/agents/{paperclip_id}/heartbeat/invoke",
+        agent_key=agent_key,
+        json=heartbeat_payload,
+    )
+    if resp is not None and resp.status_code in (401, 403):
+        logger.warning(
+            f"Heartbeat for {agent_name} rejected with {resp.status_code} using agent key — "
+            f"retrying with master session/token"
+        )
+        # Retry with no agent key — _paperclip_api will fall through to
+        # PAPERCLIP_API_TOKEN or PAPERCLIP_SESSION_COOKIE.
+        resp = await _paperclip_api(
+            "POST",
+            f"/api/agents/{paperclip_id}/heartbeat/invoke",
+            agent_key="",
+            json=heartbeat_payload,
+        )
+
     if resp and resp.status_code in (200, 201, 202):
-        logger.info(f"Heartbeat triggered for {agent_name} (issue {identifier})")
+        logger.warning(f"[paperclip-heartbeat] OK {agent_name} (issue {identifier})")
     else:
         status = resp.status_code if resp else "no response"
-        logger.warning(f"Heartbeat trigger failed for {agent_name} ({status}) — agent will pick up issue on next timer")
+        body = resp.text[:300] if resp else ""
+        logger.error(
+            f"[paperclip-heartbeat] FAILED {agent_name} ({status}) body={body} — "
+            f"agent will pick up issue on next scheduled timer instead"
+        )
 
     await log_agent_action(tenant_id, agent_name, "paperclip_dispatch", {
         "status": "dispatched",
