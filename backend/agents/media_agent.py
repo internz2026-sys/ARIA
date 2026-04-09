@@ -122,6 +122,31 @@ Do NOT include any explanation — just the image prompt."""
         # Step 3: Store in Supabase storage
         image_url = await _store_image(tenant_id, image_data)
 
+        if not image_url:
+            # Storage upload failed — most likely because the 'content'
+            # bucket doesn't exist in Supabase. Surface this as a failure
+            # so the user knows to create the bucket.
+            await _save_to_inbox(
+                tenant_id=tenant_id,
+                prompt=refined_prompt,
+                original_request=raw_prompt,
+                image_url=None,
+                provider=provider_used,
+                error=(
+                    "Image was generated successfully but Supabase storage upload failed. "
+                    "Most likely cause: the 'content' storage bucket does not exist. "
+                    "Create it in Supabase Dashboard -> Storage -> New bucket (name: content, public: ON)."
+                ),
+            )
+            return {
+                "agent": self.AGENT_NAME,
+                "tenant_id": tenant_id,
+                "status": "failed",
+                "result": "Image generated but Supabase storage upload failed (bucket missing?)",
+                "prompt_used": refined_prompt,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
         # Step 4: Log to content library
         await _log_to_content_library(tenant_id, refined_prompt, image_url, ctx, provider_used)
 
@@ -251,8 +276,13 @@ async def _generate_with_pollinations(prompt: str) -> bytes | None:
         return None
 
 
-async def _store_image(tenant_id: str, image_data: bytes) -> str:
-    """Store image in Supabase storage and return public URL."""
+async def _store_image(tenant_id: str, image_data: bytes) -> str | None:
+    """Store image in Supabase storage and return public URL.
+
+    Returns None if upload fails — callers must handle the None case.
+    The previous fallback returned a truncated base64 fragment, which
+    looked like a valid data URL but was actually broken markdown.
+    """
     try:
         from backend.services.supabase import get_db
         sb = get_db()
@@ -271,10 +301,16 @@ async def _store_image(tenant_id: str, image_data: bytes) -> str:
         return url
 
     except Exception as e:
-        logger.warning("Failed to store image in Supabase: %s", e)
-        # Fallback: return base64 data URL
-        b64 = base64.b64encode(image_data).decode()
-        return f"data:image/png;base64,{b64[:50]}..."
+        msg = str(e).lower()
+        if "bucket" in msg and ("not found" in msg or "does not exist" in msg):
+            logger.error(
+                "Supabase storage bucket 'content' does not exist. "
+                "Create it in Supabase Dashboard -> Storage -> New bucket "
+                "(name: content, public: ON)."
+            )
+        else:
+            logger.error("Failed to store image in Supabase: %s", e)
+        return None
 
 
 async def _log_to_content_library(
