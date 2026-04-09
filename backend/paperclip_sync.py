@@ -214,24 +214,48 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
                     f"[paperclip-verify] {agent_name}: keys={top_keys} "
                     f"adapter={actual_adapter} webhook={actual_webhook} status={actual_status}"
                 )
-                # Dump the full body once per agent for debugging — truncated
+                # Dump the full body once per agent for debugging — bumped
+                # to 2000 chars so we can see runtimeConfig, pauseReason,
+                # and other state fields that come after adapterConfig.
                 import json as _json_dbg
                 logger.warning(
                     f"[paperclip-verify-body] {agent_name}: "
-                    f"{_json_dbg.dumps(v)[:800]}"
+                    f"{_json_dbg.dumps(v)[:2000]}"
                 )
                 if actual_adapter and actual_adapter != "http":
                     logger.error(f"AGENT {agent_name} STILL HAS adapter={actual_adapter} after PATCH — Paperclip may have rejected the field")
 
-                # Auto-resume the agent if it's paused — paused agents won't
-                # process heartbeats, so any stale 'paused' state from a prior
-                # failed run would block all dispatches.
-                if actual_status in ("paused", "PAUSED"):
+                # Recover the agent if it's in any non-runnable state. Paperclip
+                # marks an agent as 'error' after a failed adapter invocation
+                # (e.g. our earlier 400/401 returns), and 'paused' if a user
+                # explicitly paused it. In either case the heartbeat will not
+                # fire until we recover. Try /resume first (covers both states
+                # in most Paperclip versions); if that fails for an errored
+                # agent, fall back to a pause+resume cycle which always clears
+                # error state.
+                if actual_status in ("paused", "PAUSED", "error", "ERROR", "errored", "failed"):
                     resume_resp = await _api(client, "POST", f"/api/agents/{agent_id}/resume")
                     if resume_resp and resume_resp.status_code in (200, 204):
-                        logger.warning(f"[paperclip-resume] Auto-resumed paused agent {agent_name}")
+                        logger.warning(
+                            f"[paperclip-resume] Recovered {actual_status} agent {agent_name} via /resume"
+                        )
                     else:
-                        logger.warning(f"[paperclip-resume] Failed to resume paused agent {agent_name}: {resume_resp.status_code if resume_resp else 'no-response'}")
+                        # Pause+resume cycle as a fallback to clear stuck error state
+                        logger.warning(
+                            f"[paperclip-resume] /resume failed ({resume_resp.status_code if resume_resp else 'no-response'}) "
+                            f"for {agent_name}, trying pause+resume cycle"
+                        )
+                        await _api(client, "POST", f"/api/agents/{agent_id}/pause")
+                        cycle_resp = await _api(client, "POST", f"/api/agents/{agent_id}/resume")
+                        if cycle_resp and cycle_resp.status_code in (200, 204):
+                            logger.warning(
+                                f"[paperclip-resume] Recovered {agent_name} via pause+resume cycle"
+                            )
+                        else:
+                            logger.error(
+                                f"[paperclip-resume] Could not recover {agent_name} from {actual_status}: "
+                                f"{cycle_resp.status_code if cycle_resp else 'no-response'}"
+                            )
             else:
                 logger.error(
                     f"[paperclip-verify] {agent_name}: GET failed status="
