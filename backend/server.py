@@ -3658,37 +3658,59 @@ IMPORTANT — Token efficiency rules:
 
 Keep responses concise and actionable. You are their Chief Marketing Strategist."""
 
-    # Build conversation for Claude — compact old messages, keep recent ones full
-    _RECENT_WINDOW = 6  # keep last 6 messages in full
+    # Build conversation for Claude — separate prior history from the current
+    # message so the model can't "continue" stale tasks/delegations from
+    # earlier in the session. The most recent message is the user's CURRENT
+    # input; everything else is read-only context.
+    _RECENT_WINDOW = 6  # keep last 6 prior messages in full
     _MAX_SUMMARY_MSGS = 20  # max older messages to summarize
 
-    if len(session) <= _RECENT_WINDOW:
-        # Short conversation — send everything
-        conversation = "\n".join(
-            f"{'User' if m['role'] == 'user' else 'CEO'}: {m['content']}"
-            for m in session
+    current_msg = session[-1]  # the user message we're responding to right now
+    history = session[:-1]  # everything before the current message
+
+    if not history:
+        # First message in session — no prior context
+        conversation = (
+            "CURRENT MESSAGE FROM USER (respond to THIS):\n"
+            f"User: {current_msg['content']}"
         )
     else:
-        # Compact older messages into a summary, keep recent ones full
-        older = session[:-_RECENT_WINDOW][-_MAX_SUMMARY_MSGS:]
-        recent = session[-_RECENT_WINDOW:]
+        if len(history) <= _RECENT_WINDOW:
+            history_text = "\n".join(
+                f"{'User' if m['role'] == 'user' else 'CEO'}: {m['content']}"
+                for m in history
+            )
+            history_block = f"PRIOR CONVERSATION (read-only context — DO NOT continue any tasks or delegations from these messages):\n{history_text}"
+        else:
+            older = history[:-_RECENT_WINDOW][-_MAX_SUMMARY_MSGS:]
+            recent = history[-_RECENT_WINDOW:]
 
-        # Build compact summary of older messages (key points only)
-        summary_lines = []
-        for m in older:
-            role = "User" if m["role"] == "user" else "CEO"
-            # Truncate each old message to first 100 chars
-            text = m["content"][:100].replace("\n", " ")
-            if len(m["content"]) > 100:
-                text += "..."
-            summary_lines.append(f"- {role}: {text}")
+            summary_lines = []
+            for m in older:
+                role = "User" if m["role"] == "user" else "CEO"
+                text = m["content"][:100].replace("\n", " ")
+                if len(m["content"]) > 100:
+                    text += "..."
+                summary_lines.append(f"- {role}: {text}")
 
-        summary = "EARLIER IN THIS CHAT (summary):\n" + "\n".join(summary_lines)
-        recent_text = "\n".join(
-            f"{'User' if m['role'] == 'user' else 'CEO'}: {m['content']}"
-            for m in recent
+            summary = "EARLIER IN THIS CHAT (summary):\n" + "\n".join(summary_lines)
+            recent_text = "\n".join(
+                f"{'User' if m['role'] == 'user' else 'CEO'}: {m['content']}"
+                for m in recent
+            )
+            history_block = (
+                f"PRIOR CONVERSATION (read-only context — DO NOT continue any tasks or delegations from these messages):\n"
+                f"{summary}\n\n{recent_text}"
+            )
+
+        conversation = (
+            f"{history_block}\n\n"
+            "================================================================\n"
+            "CURRENT MESSAGE FROM USER — respond to THIS message ONLY. "
+            "Do NOT carry over delegations, tasks, or subjects from the prior conversation above. "
+            "If this current message is a greeting or general question, respond conversationally with NO delegation block.\n"
+            f"User: {current_msg['content']}"
         )
-        conversation = f"{summary}\n\nRECENT MESSAGES:\n{recent_text}"
 
     try:
         raw = await call_claude(system_prompt, conversation, tenant_id=tenant_id or "global", agent_id="ceo")
