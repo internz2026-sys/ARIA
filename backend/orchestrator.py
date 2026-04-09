@@ -54,7 +54,11 @@ AGENT_API_KEYS = {
     "email_marketer": os.environ.get("PAPERCLIP_EMAIL_MARKETER_KEY", ""),
     "social_manager": os.environ.get("PAPERCLIP_SOCIAL_MANAGER_KEY", ""),
     "ad_strategist": os.environ.get("PAPERCLIP_AD_STRATEGIST_KEY", ""),
-    "media": os.environ.get("PAPERCLIP_MEDIA_KEY", ""),
+    "media": (
+        os.environ.get("PAPERCLIP_MEDIA_DESIGNER_KEY")
+        or os.environ.get("PAPERCLIP_MEDIA_DESINGER_KEY")  # tolerate misspelling
+        or os.environ.get("PAPERCLIP_MEDIA_KEY", "")
+    ),
 }
 
 
@@ -92,6 +96,11 @@ async def dispatch_agent(tenant_id: str, agent_name: str, context: dict | None =
     if not agent_module:
         logger.error(f"Agent {agent_name} not found in registry")
         return {"status": "error", "reason": "agent_not_found"}
+
+    # ── Media agent always runs locally — it calls the Gemini API directly,
+    # which Paperclip's Claude CLI adapter cannot do. ──
+    if agent_name == "media":
+        return await _dispatch_local(tenant_id, agent_name, agent_module, context)
 
     # ── Route through Paperclip ──
     if paperclip_connected():
