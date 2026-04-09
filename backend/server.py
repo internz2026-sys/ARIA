@@ -3601,10 +3601,11 @@ CRITICAL RULE — DO NOT AUTO-DELEGATE OR AUTO-ACT:
 
 Based on the conversation:
 1. Answer their question or provide strategic guidance
-2. ONLY if the user explicitly asks to create content, send emails, post on social, etc., then delegate:
+2. ONLY if the user explicitly asks to create content, send emails, post on social, generate an image, etc., then delegate:
    ```delegate
-   {{"agent": "content_writer|email_marketer|social_manager|ad_strategist", "task": "description of what to do", "priority": "low|medium|high", "status": "backlog|to_do|in_progress|done"}}
+   {{"agent": "content_writer|email_marketer|social_manager|ad_strategist|media", "task": "description of what to do", "priority": "low|medium|high", "status": "backlog|to_do|in_progress|done"}}
    ```
+   Use "media" for any image, illustration, or visual asset request (e.g. "create an image of a dog", "make a banner", "generate a logo concept"). The task field should describe the desired image.
    Status choices:
    - "backlog" — nice-to-have, no immediate action needed
    - "to_do" — should be done soon, queued for the agent
@@ -3695,7 +3696,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         for block in blocks:
             try:
                 d = _json.loads(block.strip())
-                if d.get("agent") in ("content_writer", "email_marketer", "social_manager", "ad_strategist"):
+                if d.get("agent") in ("content_writer", "email_marketer", "social_manager", "ad_strategist", "media"):
                     delegations.append(d)
             except _json.JSONDecodeError:
                 pass
