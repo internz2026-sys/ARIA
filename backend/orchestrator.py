@@ -88,7 +88,10 @@ async def dispatch_agent(tenant_id: str, agent_name: str, context: dict | None =
     """Dispatch a single agent — routes through Paperclip if connected, else runs locally."""
     config = get_tenant_config(tenant_id)
 
-    if agent_name not in config.active_agents:
+    # The media agent is a utility available to every tenant (it calls Gemini
+    # directly, no Paperclip subscription required), so it bypasses the
+    # per-tenant active_agents allowlist.
+    if agent_name != "media" and agent_name not in config.active_agents:
         logger.warning(f"Agent {agent_name} not active for tenant {tenant_id}")
         return {"status": "skipped", "reason": "agent_not_active"}
 
