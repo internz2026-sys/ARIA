@@ -3619,7 +3619,7 @@ NEVER copy a subject from these examples into a real delegation. If the user did
 
 Based on the conversation:
 1. Answer their question or provide strategic guidance
-2. ONLY if the user EXPLICITLY asks for a deliverable in THIS message (content, email, social post, image, ad campaign), then delegate:
+2. ONLY if the user EXPLICITLY asks for a deliverable in THIS message (content, email, social post, image, ad campaign), then delegate. A delegation is ONLY valid when you include the LITERAL fenced code block below — saying "I'll delegate this" in plain prose is NOT a delegation and the system will silently drop it. You MUST emit the block:
    ```delegate
    {{"agent": "content_writer|email_marketer|social_manager|ad_strategist|media", "task": "description of what to do", "priority": "low|medium|high", "status": "backlog|to_do|in_progress|done"}}
    ```
@@ -3629,6 +3629,9 @@ Based on the conversation:
    - "to_do" — should be done soon, queued for the agent
    - "in_progress" — starting immediately
    - "done" — already completed in this response
+
+   RULE: If you write "delegating", "I'll have X create", "let me get X to", or any similar phrase that promises agent action, you MUST also include the ```delegate``` code block. Do not promise an action without the block — the user will see your message but no agent will run.
+
 3. If no delegation is needed, just respond normally — do NOT force a delegation. A response with NO delegate block is the correct answer for greetings, questions, and conversation.
 {integration_notes}
 
@@ -3738,9 +3741,21 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 d = _json.loads(block.strip())
                 if d.get("agent") in ("content_writer", "email_marketer", "social_manager", "ad_strategist", "media"):
                     delegations.append(d)
-            except _json.JSONDecodeError:
-                pass
+            except _json.JSONDecodeError as je:
+                logger = logging.getLogger("aria.ceo_chat")
+                logger.warning(f"Failed to parse delegate block: {je}. Block was: {block[:200]}")
         clean_response = re.sub(r"```delegate\s*\n.*?\n```", "", raw, flags=re.DOTALL).strip()
+
+    # Defensive: if the model promised delegation in prose but forgot the block,
+    # log loudly so we can see when the prompt isn't being followed.
+    if not delegations:
+        prose_promises = ("delegating", "i'll delegate", "i will delegate", "let me delegate",
+                          "i'll have", "i will have", "having our", "media designer to create",
+                          "media designer to generate")
+        raw_lower = raw.lower()
+        if any(phrase in raw_lower for phrase in prose_promises):
+            logger = logging.getLogger("aria.ceo_chat")
+            logger.warning(f"CEO promised delegation in prose but emitted no ```delegate block. Raw response: {raw[:500]}")
 
     # Parse CEO action blocks
     ceo_actions = []

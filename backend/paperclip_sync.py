@@ -163,8 +163,34 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
             }
             if cron:
                 patch_payload["heartbeatSchedule"] = cron
-            await _api(client, "PATCH", f"/api/agents/{agent_id}", json=patch_payload)
-            logger.info(f"Updated agent {agent_name} ({title}): adapter=http webhook={webhook_url}")
+            patch_resp = await _api(client, "PATCH", f"/api/agents/{agent_id}", json=patch_payload)
+            patch_status = patch_resp.status_code if patch_resp else "no-response"
+            patch_body = (patch_resp.text[:300] if patch_resp else "")
+            if patch_resp and patch_resp.status_code in (200, 204):
+                logger.info(f"PATCHed agent {agent_name} ({title}): adapter=http webhook={webhook_url}")
+            else:
+                logger.error(f"FAILED to PATCH agent {agent_name} ({title}) — status={patch_status} body={patch_body}")
+
+            # Verify the PATCH actually took effect by re-fetching the agent
+            verify_resp = await _api(client, "GET", f"/api/agents/{agent_id}")
+            if verify_resp and verify_resp.status_code == 200:
+                v = verify_resp.json()
+                actual_adapter = v.get("adapter")
+                actual_webhook = v.get("webhookUrl")
+                actual_status = v.get("status")
+                logger.info(f"Verified {agent_name}: adapter={actual_adapter} webhook={actual_webhook} status={actual_status}")
+                if actual_adapter != "http":
+                    logger.error(f"AGENT {agent_name} STILL HAS adapter={actual_adapter} after PATCH — Paperclip may have rejected the field")
+
+                # Auto-resume the agent if it's paused — paused agents won't
+                # process heartbeats, so any stale 'paused' state from a prior
+                # failed run would block all dispatches.
+                if actual_status == "paused":
+                    resume_resp = await _api(client, "POST", f"/api/agents/{agent_id}/resume")
+                    if resume_resp and resume_resp.status_code in (200, 204):
+                        logger.info(f"Auto-resumed paused agent {agent_name}")
+                    else:
+                        logger.warning(f"Failed to resume paused agent {agent_name}: {resume_resp.status_code if resume_resp else 'no-response'}")
         else:
             # Agent does not exist — create it
             logger.info(f"Agent {agent_name} ({title}) not found in Paperclip, creating...")
