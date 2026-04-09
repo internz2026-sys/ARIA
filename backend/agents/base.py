@@ -11,16 +11,47 @@ Optional overrides for token optimization:
   MODEL          — which Claude model to use (default: Sonnet)
   MAX_TOKENS     — max response tokens (default: 4000)
   CONTEXT_FIELDS — set of business_context fields to include (default: all)
+
+Skills:
+  Each agent's docs/agents/skills/{AGENT_NAME}_skills.md file is automatically
+  appended to the system prompt as a reference appendix at run time. This is
+  the primary way to give an agent domain knowledge (subject-line formulas,
+  prompt templates, channel-specific rules, etc.) without touching Python.
+  Edit the .md file and the change takes effect on the next run — no restart
+  needed.
 """
 from __future__ import annotations
 
 import logging
+import pathlib
 from datetime import datetime, timezone
 
 from backend.config.loader import get_tenant_config
 from backend.tools.claude_cli import MODEL_SONNET, MODEL_HAIKU
 
 logger = logging.getLogger("aria.agents")
+
+# docs/agents/skills/ relative to repo root
+_SKILLS_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "docs" / "agents" / "skills"
+
+
+def _load_agent_skill(agent_name: str) -> str:
+    """Read the agent's skill MD file from disk on every call.
+
+    No cache — files are small (<10KB) and re-reading per invocation lets
+    users edit a skill MD and see the change on the next agent run without
+    restarting the backend. Returns an empty string if no skill file exists
+    for this agent (so callers can safely concatenate the result).
+    """
+    if not agent_name:
+        return ""
+    path = _SKILLS_DIR / f"{agent_name}_skills.md"
+    try:
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning("Failed to load skill MD for %s: %s", agent_name, e)
+    return ""
 
 # All available business context fields
 _ALL_CONTEXT_FIELDS = {
@@ -102,6 +133,20 @@ class BaseAgent:
 
         system_prompt = self.build_system_prompt(config, context_value)
         user_message = self.build_user_message(context_value, context)
+
+        # Append the agent's skill MD as a reference appendix. This is what
+        # gives each agent its domain knowledge (subject-line formulas, image
+        # prompt templates, deliverability rules, etc.) without baking it
+        # into Python. Edit docs/agents/skills/{agent_name}_skills.md to
+        # change behavior — takes effect on the next run.
+        skill_md = _load_agent_skill(self.AGENT_NAME)
+        if skill_md:
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                f"--- {self.AGENT_NAME.upper()} SKILLS REFERENCE (consult these before responding) ---\n"
+                f"{skill_md}"
+            )
+            logger.info("[%s] Loaded skill MD (%d chars)", self.AGENT_NAME, len(skill_md))
 
         from backend.tools.claude_cli import call_claude  # lazy to avoid circular __init__
 
