@@ -302,31 +302,17 @@ async def run_agent_via_paperclip_sync(
     message: str,
     *,
     poll_timeout_sec: int = 60,
-    poll_interval_sec: float = 2.0,
 ) -> str:
-    """Create a Paperclip issue, trigger the agent, poll for the response.
+    """Create a Paperclip issue, post the user message as a comment, poll for the reply.
 
     Unlike dispatch_agent (which is fire-and-forget), this function blocks
     until the agent finishes or the timeout is reached. Used by the CEO
-    chat handler so the same CEO that runs Paperclip Timer cycles also
+    chat handler so the same CEO that handles Paperclip Timer runs also
     answers chat messages — single source of truth for CEO behavior.
 
-    Args:
-        tenant_id: tenant the message belongs to
-        agent_name: ARIA agent slug (typically "ceo")
-        message: the user's chat message
-        poll_timeout_sec: max seconds to wait for the agent's reply
-        poll_interval_sec: how often to poll the issue for completion
-
-    Returns:
-        The agent's response text (the longest comment on the issue).
-
-    Raises:
-        RuntimeError: if Paperclip is unreachable, the issue can't be
-                      created, the heartbeat is rejected, or the agent
-                      doesn't finish before poll_timeout_sec elapses.
-                      Callers should catch this and fall back to local
-                      dispatch via call_claude.
+    Raises RuntimeError on any failure (Paperclip down, issue create failed,
+    no reply within timeout). Callers should catch and fall back to local
+    call_claude.
     """
     paperclip_id = get_paperclip_agent_id(agent_name)
     if not paperclip_id:
@@ -336,59 +322,93 @@ async def run_agent_via_paperclip_sync(
     if not company_id:
         raise RuntimeError("No Paperclip company_id configured")
 
-    # Create the issue with the user's message in the title (Paperclip
-    # doesn't store issue bodies in a way the agent reads, so we encode
-    # tenant_id + message into the title prefix that the agent's spawned
-    # CLI will see in its instructions context).
+    issue_id, identifier = _create_chat_issue(company_id, paperclip_id, tenant_id, agent_name, message)
+    _post_chat_comment(issue_id, tenant_id, agent_name, message)
+    return await _poll_for_agent_reply(issue_id, identifier, agent_name, message, poll_timeout_sec)
+
+
+def _create_chat_issue(
+    company_id: str,
+    paperclip_id: str,
+    tenant_id: str,
+    agent_name: str,
+    message: str,
+) -> tuple[str, str]:
+    """Create a Paperclip issue assigned to the agent. Returns (issue_id, identifier)."""
     title = f"[{tenant_id}] {message[:170]}"
     issue = _urllib_request("POST", f"/api/companies/{company_id}/issues", data={
         "title": title,
         "assigneeAgentId": paperclip_id,
-        "priority": "high",  # chat is real-time, prioritize
+        "priority": "high",  # chat is real-time
     })
     if not issue or not issue.get("id"):
         raise RuntimeError(f"Failed to create Paperclip issue for {agent_name}")
-
     issue_id = issue["id"]
     identifier = issue.get("identifier", issue_id)
     logger.warning(f"[paperclip-sync] created issue {identifier} for {agent_name}")
+    return issue_id, identifier
 
-    # Post the full message body as a comment so the agent has the
-    # complete context, not just the truncated title.
-    #
-    # Posting a comment on an issue assigned to an agent with
-    # wakeOnDemand=true (the default for claude_local agents) is enough
-    # to trigger an Automation run — Paperclip auto-wakes the agent on
-    # `issue.comment` events. Do NOT also POST /heartbeat/invoke; that
-    # would create a SECOND On-demand run racing the Automation one,
-    # and Paperclip's maxConcurrentRuns=1 would cancel one of them
-    # ('Cancelled by control plane'). One comment = one run.
-    #
-    # Prepend the tenant_id explicitly so the agent's aria-backend-api
-    # skill knows where to POST results. The skill MD says
-    # `curl POST /api/inbox/{tenant_id}/items` — the agent needs to
-    # substitute {tenant_id} from somewhere, and this comment is the
-    # only place it shows up in the agent's prompt context.
-    comment_body = (
+
+def _post_chat_comment(issue_id: str, tenant_id: str, agent_name: str, message: str) -> None:
+    """Post the user's message as a comment, with tenant_id + curl instructions.
+
+    Posting a comment on an issue assigned to an agent with wakeOnDemand=true
+    (the claude_local default) is enough to trigger an Automation run on the
+    `issue.comment` event. Do NOT also POST /heartbeat/invoke — that creates
+    a second On-demand run that races the Automation one, and Paperclip's
+    maxConcurrentRuns=1 cancels one of them ('Cancelled by control plane').
+
+    The agent's spawned CLI sees this comment in its prompt context. We
+    prepend the tenant_id explicitly so the aria-backend-api skill knows
+    where to POST results — the skill MD says `curl /api/inbox/{tenant_id}/items`
+    and the agent needs to substitute {tenant_id} from somewhere.
+    """
+    body = _build_chat_comment_body(tenant_id, agent_name, message)
+    _urllib_request(
+        "POST",
+        f"/api/issues/{issue_id}/comments",
+        data={"body": body, "content": body},
+    )
+
+
+def _build_chat_comment_body(tenant_id: str, agent_name: str, message: str) -> str:
+    """Render the comment body the agent will read. Pure function for testing."""
+    return (
         f"TENANT_ID: {tenant_id}\n\n"
         f"USER MESSAGE:\n{message}\n\n"
         f"---\n"
         f"After you respond, save your output to ARIA's inbox by calling:\n"
         f"  curl -X POST http://172.17.0.1:8000/api/inbox/{tenant_id}/items \\\n"
         f"    -H 'Content-Type: application/json' \\\n"
-        f"    -d '{{\"title\": \"...\", \"content\": \"...\", \"type\": \"...\", \"agent\": \"{agent_name}\", \"priority\": \"medium\", \"status\": \"needs_review\"}}'\n"
-    )
-    _urllib_request(
-        "POST",
-        f"/api/issues/{issue_id}/comments",
-        data={"body": comment_body, "content": comment_body},
+        f"    -d '{{\"title\": \"...\", \"content\": \"...\", \"type\": \"...\", "
+        f"\"agent\": \"{agent_name}\", \"priority\": \"medium\", \"status\": \"needs_review\"}}'\n"
     )
 
-    # Poll the issue until it's done or we time out. Paperclip marks
-    # finished issues as done/in_review/completed and writes the agent's
-    # output as a comment.
+
+# Adaptive polling intervals: poll fast for the first few seconds (in case
+# the agent is fast), then back off so we don't hammer Paperclip on slow
+# runs. Times in seconds; the last value is reused once the list runs out.
+_POLL_INTERVALS = (1.0, 1.0, 1.5, 2.0, 2.0, 3.0, 4.0)
+
+
+async def _poll_for_agent_reply(
+    issue_id: str,
+    identifier: str,
+    agent_name: str,
+    user_message: str,
+    poll_timeout_sec: int,
+) -> str:
+    """Poll the issue's comments until the agent posts a reply or we time out.
+
+    We only fetch /api/issues/{id}/comments — the issue status doesn't add
+    information beyond what the comments tell us, and dropping the second
+    GET halves the polling traffic. The agent's reply is the longest
+    comment that isn't the user's original message.
+    """
+    from backend.services.paperclip_chat import normalize_comments, pick_agent_output
+
     start = asyncio.get_event_loop().time()
-    last_comment_count = 0
+    interval_idx = 0
     while True:
         elapsed = asyncio.get_event_loop().time() - start
         if elapsed >= poll_timeout_sec:
@@ -397,39 +417,18 @@ async def run_agent_via_paperclip_sync(
                 f"(issue {identifier})"
             )
 
-        await asyncio.sleep(poll_interval_sec)
+        delay = _POLL_INTERVALS[min(interval_idx, len(_POLL_INTERVALS) - 1)]
+        await asyncio.sleep(delay)
+        interval_idx += 1
 
-        issue_now = _urllib_request("GET", f"/api/issues/{issue_id}")
-        if not issue_now:
-            continue
-        status = (issue_now.get("status") or "").lower()
-
-        # Pull comments to detect both completion and new agent output
-        comments = _urllib_request("GET", f"/api/issues/{issue_id}/comments")
-        comment_list = []
-        if comments:
-            comment_list = comments if isinstance(comments, list) else comments.get(
-                "data", comments.get("comments", [])
+        comments = normalize_comments(_urllib_request("GET", f"/api/issues/{issue_id}/comments"))
+        reply = pick_agent_output(comments, exclude_text=user_message)
+        if reply:
+            logger.warning(
+                f"[paperclip-sync] {agent_name} responded for issue {identifier} "
+                f"({len(reply)} chars after {elapsed:.1f}s)"
             )
-
-        if status in ("done", "in_review", "completed") or len(comment_list) > last_comment_count + 1:
-            # +1 because we posted the original user message as comment 0
-            best = ""
-            for c in comment_list:
-                body = c.get("body") or c.get("content") or ""
-                # Skip the user's original message (longest non-user comment wins)
-                if body == message:
-                    continue
-                if len(body) > len(best):
-                    best = body
-            if best:
-                logger.warning(
-                    f"[paperclip-sync] {agent_name} responded for issue {identifier} "
-                    f"({len(best)} chars after {elapsed:.1f}s)"
-                )
-                return best
-
-        last_comment_count = len(comment_list)
+            return reply
 
 
 async def _dispatch_local(tenant_id: str, agent_name: str, agent_module, context: dict | None) -> dict:

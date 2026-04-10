@@ -1,29 +1,30 @@
-"""Paperclip Issue Poller — watches for completed agent issues and imports results to ARIA inbox.
+"""Paperclip Office Sync — pushes Paperclip agent run status to the Virtual Office.
 
-Since Paperclip agents run in a sandboxed Claude CLI environment and cannot
-make HTTP calls to ARIA's API directly, this poller bridges the gap:
+This module used to also import completed Paperclip issues into ARIA's
+inbox (via poll_completed_issues), but that path was redundant: agents
+on the claude_local adapter already POST their results back to
+/api/inbox/{tenant_id}/items via the aria-backend-api skill (Path A).
+Two write paths kept fighting each other and producing duplicates, so
+the inbox importer was removed and only the office-sync poller remains.
 
-1. Polls Paperclip for issues completed by agents
-2. Reads the agent's output from issue comments
-3. Creates inbox items in ARIA from those comments
-4. Marks the issue as processed to avoid duplicates
-5. Syncs agent run status to Virtual Office (running/idle)
+What's still here:
+- sync_agent_statuses(sio): every 5 seconds, GET Paperclip's
+  /api/companies/{id}/agents, map each agent's status to an ARIA
+  Virtual Office state ("idle"|"working"), and emit Socket.IO
+  agent_status_change events to every tenant room. This is what
+  powers the walking sprites in /office when a Paperclip run is
+  active.
 """
 from __future__ import annotations
 
 import logging
-import os
-import re
 import time
 from datetime import datetime, timezone
 
-from backend.orchestrator import _urllib_request, get_company_id, get_paperclip_agent_id
+from backend.orchestrator import _urllib_request, get_company_id
 from backend.services.supabase import get_db
 
 logger = logging.getLogger("aria.paperclip_poller")
-
-# In-memory set to skip known issues without hitting the DB every cycle
-_processed_issues: set[str] = set()
 
 # ─── Tenant ID cache (refreshed every 60s instead of every poll) ─────────────
 _tenant_ids_cache: list[str] = []
@@ -46,242 +47,17 @@ def _get_cached_tenant_ids() -> list[str]:
     return _tenant_ids_cache
 
 
-def _extract_tenant_id(issue: dict) -> str | None:
-    """Extract tenant_id from issue title (format: [tenant_id] task description)."""
-    title = issue.get("title", "")
-
-    # Primary: extract from title prefix [uuid]
-    match = re.match(r"\[([a-f0-9-]{36})\]", title)
-    if match:
-        return match.group(1)
-
-    # Fallback: check body
-    body = issue.get("body") or issue.get("description") or ""
-    match = re.search(r"Tenant ID[:\s]*`?([a-f0-9-]{36})`?", body, re.IGNORECASE)
-    if match:
-        return match.group(1)
-
-    # Fallback: any UUID in title or body
-    for text in [title, body]:
-        match = re.search(r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})", text)
-        if match:
-            return match.group(1)
-
-    return None
-
-
-def _extract_agent_name(issue: dict) -> str:
-    """Extract agent name from issue body or assignee."""
-    body = issue.get("body") or ""
-    match = re.search(r"Agent[:\s]*(content_writer|email_marketer|social_manager|ad_strategist|ceo)", body, re.IGNORECASE)
-    if match:
-        return match.group(1).lower()
-    return "content_writer"
-
-
-def _determine_content_type(agent_name: str, title: str) -> str:
-    """Determine inbox item type based on agent and title."""
-    title_lower = title.lower()
-    if agent_name == "email_marketer" or "email" in title_lower:
-        return "email"
-    if agent_name == "social_manager" or "post" in title_lower or "tweet" in title_lower:
-        return "social_post"
-    if agent_name == "ad_strategist" or "ad" in title_lower or "campaign" in title_lower:
-        return "ad_campaign"
-    return "blog"
-
-
-def _get_issue_output(issue: dict, original_message: str = "") -> str | None:
-    """Get the agent's output from issue comments.
-
-    Skips comments authored by the user (the chat handler posts the
-    user's original message as comment 0 so the agent has full context
-    beyond the truncated title — we don't want to import that back
-    into the inbox as if it were the agent's reply).
-    """
-    issue_id = issue["id"]
-
-    comments = _urllib_request("GET", f"/api/issues/{issue_id}/comments")
-    if not comments:
-        return None
-
-    comment_list = comments if isinstance(comments, list) else comments.get("data", comments.get("comments", []))
-
-    # Find the longest comment that ISN'T the user's original message.
-    # Match by content so we don't depend on Paperclip's author metadata.
-    best_comment = ""
-    for c in comment_list:
-        body = c.get("body") or c.get("content") or ""
-        if not body:
-            continue
-        if original_message and body.strip() == original_message.strip():
-            continue  # this is the user's own message, skip it
-        if len(body) > len(best_comment):
-            best_comment = body
-
-    return best_comment if best_comment else None
-
-
-def _load_processed_ids_from_db():
-    """On first run, seed the in-memory set from inbox items that have a paperclip_issue_id."""
-    global _processed_issues
-    if _processed_issues:
-        return  # already seeded
-    try:
-        sb = get_db()
-        # Load all known paperclip issue IDs in one query
-        result = sb.table("inbox_items").select("paperclip_issue_id").neq("paperclip_issue_id", None).execute()
-        _processed_issues = {row["paperclip_issue_id"] for row in (result.data or []) if row.get("paperclip_issue_id")}
-        logger.info(f"Seeded {len(_processed_issues)} processed Paperclip issue IDs from DB")
-    except Exception as e:
-        # Column might not exist yet — that's fine, we'll fall back to ilike
-        logger.debug(f"Could not seed processed IDs (column may not exist): {e}")
-
-
-_FINISHED_STATUSES = {
-    "done", "in_review", "completed", "closed", "resolved",
-    "Done", "In Review", "Completed", "Closed", "Resolved",
-    "DONE", "IN_REVIEW", "COMPLETED", "CLOSED", "RESOLVED",
-}
-
-
-async def poll_completed_issues():
-    """Check Paperclip for completed agent issues and import results to ARIA inbox."""
-    company_id = get_company_id()
-    if not company_id:
-        return
-
-    # Seed in-memory cache from DB on first run (survives restarts)
-    _load_processed_ids_from_db()
-
-    # Get all issues that are done or in_review
-    issues = _urllib_request("GET", f"/api/companies/{company_id}/issues")
-    if not issues:
-        return
-
-    issue_list = issues if isinstance(issues, list) else issues.get("data", issues.get("issues", []))
-
-    # Diagnostic: count what we see vs what we'd skip, so silent skips
-    # show up in the logs instead of looking like 'poller does nothing'.
-    total = len(issue_list)
-    finished_count = 0
-    new_count = 0
-    imported_count = 0
-    skipped_no_tenant = 0
-    skipped_no_output = 0
-
-    sb = get_db()
-
-    for issue in issue_list:
-        issue_id = issue.get("id", "")
-        status = issue.get("status", "")
-        raw_title = issue.get("title", "")
-        # Strip tenant_id prefix from title: [uuid] actual title
-        title = re.sub(r"^\[[a-f0-9-]{36}\]\s*", "", raw_title)
-
-        if status in _FINISHED_STATUSES:
-            finished_count += 1
-
-        # Skip already processed or non-completed issues
-        if issue_id in _processed_issues:
-            continue
-        if status not in _FINISHED_STATUSES:
-            continue
-
-        new_count += 1
-
-        # Extract context from the issue
-        tenant_id = _extract_tenant_id(issue)
-        if not tenant_id:
-            logger.warning(
-                f"[poller] no tenant_id found in issue {issue.get('identifier', issue_id)} "
-                f"(title={raw_title[:80]!r}) — marking processed and skipping"
-            )
-            _processed_issues.add(issue_id)
-            skipped_no_tenant += 1
-            continue
-
-        agent_name = _extract_agent_name(issue)
-        content_type = _determine_content_type(agent_name, title)
-
-        # Get the agent's output from comments. Pass the issue body so
-        # _get_issue_output skips comments that match the user's original
-        # message (the CEO chat sync route posts the user message as a
-        # comment for full context — we don't want to import that back).
-        original_message = issue.get("body") or ""
-        output = _get_issue_output(issue, original_message=original_message)
-        if not output:
-            # No comments — use the issue body as content
-            output = issue.get("body") or title
-            if not output or len(output) < 50:
-                logger.warning(
-                    f"[poller] issue {issue.get('identifier', issue_id)} has no usable output "
-                    f"(status={status}, body_len={len(issue.get('body') or '')}, "
-                    f"title={title[:60]!r}) — marking processed and skipping"
-                )
-                _processed_issues.add(issue_id)
-                skipped_no_output += 1
-                continue
-
-        # Check if we already created an inbox item for this Paperclip issue
-        # Use exact paperclip_issue_id match (fast, indexed) instead of ilike on title
-        try:
-            existing = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).eq("paperclip_issue_id", issue_id).limit(1).execute()
-        except Exception:
-            # Fallback if paperclip_issue_id column doesn't exist yet
-            existing = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).ilike("title", f"%{title[:50]}%").limit(1).execute()
-        if existing.data:
-            _processed_issues.add(issue_id)
-            continue
-
-        # Create inbox item
-        try:
-            inbox_status = "needs_review"
-            if content_type == "email":
-                inbox_status = "draft_pending_approval"
-
-            row = {
-                "tenant_id": tenant_id,
-                "title": title[:200],
-                "content": output,
-                "type": content_type,
-                "agent": agent_name,
-                "priority": issue.get("priority", "medium"),
-                "status": inbox_status,
-                "paperclip_issue_id": issue_id,
-            }
-
-            result = sb.table("inbox_items").insert(row).execute()
-            if result.data:
-                logger.info(f"Imported Paperclip issue {issue.get('identifier', issue_id)} to inbox: {title[:60]}")
-
-                # Create notification
-                try:
-                    sb.table("notifications").insert({
-                        "tenant_id": tenant_id,
-                        "title": f"New from {agent_name}: {title[:60]}",
-                        "body": output[:200],
-                        "category": "inbox",
-                        "href": "/inbox",
-                    }).execute()
-                except Exception:
-                    pass
-
-            _processed_issues.add(issue_id)
-
-        except Exception as e:
-            logger.error(f"Failed to import Paperclip issue {issue_id}: {e}")
-
-
 # ─── Agent Status Sync — Virtual Office ─────────────────────────────────────
 
-# Map Paperclip agent names to ARIA agent IDs
+# Map Paperclip agent display names to ARIA agent IDs
 _PAPERCLIP_TO_ARIA = {
     "CEO": "ceo",
     "Content Writer": "content_writer",
     "Email Marketer": "email_marketer",
     "Social Manager": "social_manager",
     "Ad Strategist": "ad_strategist",
+    "Media Designer": "media",
+    "Media": "media",
 }
 
 # Track previous status to only emit on change
@@ -327,7 +103,7 @@ async def sync_agent_statuses(sio):
 
         current_task = ""
         if aria_status == "working":
-            current_task = f"Running via Paperclip"
+            current_task = "Running via Paperclip"
 
         payload = {
             "agent_id": aria_id,

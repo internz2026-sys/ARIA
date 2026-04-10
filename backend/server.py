@@ -123,18 +123,24 @@ async def _scheduler_executor_loop():
 
 
 async def _paperclip_poller_loop():
-    """Background loop: poll Paperclip for completed issues + sync agent statuses."""
-    from backend.paperclip_poller import poll_completed_issues, sync_agent_statuses
+    """Background loop: sync Paperclip agent run status to the Virtual Office.
+
+    This used to also import completed Paperclip issues into ARIA's inbox,
+    but that path was redundant — agents on the claude_local adapter POST
+    their results directly via the aria-backend-api skill (Path A). Two
+    write paths kept fighting and producing duplicates, so the inbox
+    importer was deleted in favor of the skill flow.
+    """
+    from backend.paperclip_poller import sync_agent_statuses
     _log = logging.getLogger("aria.paperclip_poller")
     while True:
-        await asyncio.sleep(5)  # 5s for responsive updates
+        await asyncio.sleep(5)  # 5s for responsive Virtual Office updates
         try:
             if not paperclip_connected():
                 continue
-            await poll_completed_issues()
             await sync_agent_statuses(sio)
         except Exception as e:
-            _log.warning("Paperclip poller failed: %s", e)
+            _log.warning("Paperclip office sync failed: %s", e)
 
 
 @asynccontextmanager
