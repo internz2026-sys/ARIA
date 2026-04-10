@@ -26,8 +26,8 @@ ARIA deploys 5 agents in a marketing team hierarchy:
 ARIA/
 ├── backend/                    # FastAPI server + all agent logic
 │   ├── server.py               # Main FastAPI app (port 8000)
-│   ├── orchestrator.py         # CEO brain — dispatches all agents
-│   ├── paperclip_sync.py       # Syncs agents with Paperclip AI on startup
+│   ├── orchestrator.py         # CEO brain — dispatches all agents + Paperclip lookup helpers
+│   ├── paperclip_office_sync.py # 5s loop: scrape completed Paperclip issues -> inbox; sync agent statuses to Virtual Office
 │   ├── onboarding_agent.py     # Conversational GTM strategy builder
 │   ├── agents/                 # 5 agent modules
 │   │   ├── __init__.py         # AGENT_REGISTRY + DEPARTMENT_MAP
@@ -300,12 +300,63 @@ curl http://localhost:8000/api/paperclip/status
 
 ## Paperclip AI Integration
 
-ARIA uses Paperclip AI (`localhost:3100`) as its orchestration layer. On startup, `backend/paperclip_sync.py` automatically:
-1. Finds or creates the "ARIA" company in Paperclip
-2. Registers all 5 agents with their slugs, roles, and cron schedules
-3. Sets up the org chart hierarchy (CEO → ContentWriter, EmailMarketer, SocialManager, AdStrategist)
+ARIA uses Paperclip AI (`localhost:3100`) as its orchestration layer. Agents live in Paperclip; ARIA dispatches work to them and pulls the results back.
 
-The CEO agent in Paperclip uses `CLAUDE.md` and `HEARTBEAT.md` as its context.
+### Adapter — must stay `claude_local`
+
+All 6 agents (CEO, Content Writer, Email Marketer, Social Manager, Ad Strategist, Media Designer) MUST be configured with the `claude_local` adapter in Paperclip's UI (Configuration → Adapter type). The HTTP adapter was an experiment that bypassed the skill MD system and is gone — never re-enable it. `claude_local` spawns the real `claude` CLI binary as a subprocess; it is NOT sandboxed in the network sense (curl works fine).
+
+### Required: `--dangerously-skip-permissions` in Extra args
+
+The "Skip permissions" toggle in Paperclip's Configuration tab is **broken on our version** — it shows ON but doesn't actually inject the flag. Without the flag, every Bash/Write/curl tool call from inside the agent's CLI gets stuck on a permission prompt with no human to approve it, and the run hangs for 9-10 minutes before SIGTERM-ing with exit code 143.
+
+**Fix:** in Paperclip → each agent → Configuration → **Extra args (comma-separated)** field, set:
+
+```
+--dangerously-skip-permissions
+```
+
+After saving, the agent's `Command` line in subsequent runs should read:
+```
+claude ... --dangerously-skip-permissions
+```
+
+If you spin up a new agent in Paperclip, this is the first thing to do.
+
+### How agent output reaches ARIA's inbox (two paths, both work)
+
+**Path A — `aria-backend-api` skill (primary):** The skill MD is attached to every agent in Paperclip's Skills tab. When the agent finishes its work, the skill instructs it to `curl POST http://172.17.0.1:8000/api/inbox/{tenant_id}/items` directly from inside the spawned CLI. The agent extracts `tenant_id` from the issue title prefix `[uuid] ...`. `/api/inbox/` is in `_PUBLIC_PREFIXES` so no auth header is needed. **Use the docker host IP `172.17.0.1`, not the public IP** — public IP routes through nginx which adds its own auth checks and breaks Path A.
+
+**Path B — `paperclip_office_sync.poll_completed_issues` (safety net):** A 5s background loop in ARIA's lifespan polls Paperclip for finished issues and scrapes the agent's reply from the comments. Catches every failure mode of Path A (agent forgot to curl, curl returned a 5xx, JSON malformed, model ran out of context). Both paths dedupe via the `paperclip_issue_id` column, so they coexist without producing duplicate inbox items.
+
+### Skill MD content rules
+
+The `aria-backend-api` skill MD lives **inside Paperclip's instance** (Skills → aria-backend-api → Edit), not in this repo. Two rules for what goes in it:
+
+1. **Do NOT include any other auth-protected ARIA endpoint** (`/api/dashboard/...`, `/api/crm/...`, etc.) The agent doesn't have JWT credentials and will fail on the first auth-protected call, then give up before reaching the inbox write. The only HTTP call the skill should reference is the `POST /api/inbox/{tenant_id}/items` write.
+2. **Use `http://172.17.0.1:8000`, not the public IP.** Docker host IP from inside Paperclip's container goes straight to FastAPI on port 8000 and bypasses nginx.
+
+### CEO chat → Paperclip → inbox flow
+
+1. User types in CEO chat widget → `POST /api/ceo/chat`
+2. Chat handler tries Paperclip first via `orchestrator.run_agent_via_paperclip_sync` (creates an issue assigned to CEO, posts the user message as a comment, polls for the reply with adaptive intervals 1s→4s, 60s timeout)
+3. Posting a comment on the issue auto-wakes the CEO via Paperclip's `wakeOnDemand` mechanism. **Do NOT also call `/heartbeat/invoke`** — that creates a second On-demand run racing the Automation one, and `maxConcurrentRuns: 1` cancels one of them.
+4. CEO reads the comment, may delegate to a sub-agent by creating its own Paperclip issue + comment
+5. Sub-agent runs, writes its output as a comment on the issue
+6. The comment fires Path A (skill curl) AND/OR is scraped by Path B (poller) on the next 5s tick → inbox row appears
+7. Chat handler returns the CEO's reply text to the frontend
+8. **Local fallback:** if Paperclip is unreachable or times out, the chat handler falls back to `call_claude` directly so chat keeps working when Paperclip is down
+
+### Background loops in `server.py:lifespan`
+- `_gmail_sync_loop` — every 2 min, Gmail inbound reply sync
+- `_scheduler_executor_loop` — runs scheduled tasks
+- `_paperclip_office_sync_loop` — every 5s, calls `poll_completed_issues()` (Path B inbox importer) then `sync_agent_statuses(sio)` (Virtual Office walking sprites)
+
+### Where things live
+- `backend/orchestrator.py` — `dispatch_agent`, `run_agent_via_paperclip_sync`, plus the Paperclip lookup helpers (`_urllib_request`, `get_company_id`, `get_paperclip_agent_id`, `paperclip_connected`)
+- `backend/paperclip_office_sync.py` — `poll_completed_issues` (Path B) + `sync_agent_statuses` (Virtual Office)
+- `backend/services/paperclip_chat.py` — `pick_agent_output`, `normalize_comments` (shared comment-parsing helpers used by both the chat sync route and the poller; filters out ARIA's own framing wrappers like `[tenant_id=...`)
+- `docs/agents/ceo.md` — CEO agent identity (role, sub-agents, delegation rules, CRUD action set, refusal rules). The Paperclip CEO reads this via `--append-system-prompt-file`.
 
 ---
 
@@ -317,5 +368,11 @@ The CEO agent in Paperclip uses `CLAUDE.md` and `HEARTBEAT.md` as its context.
 | `NEXT_PUBLIC_API_URL` wrong | Must be `http://localhost:8000` (backend), not `3000` (frontend) |
 | Paperclip not connecting | Run `npx paperclipai onboard --yes` first, then restart backend |
 | Agent not dispatching | Check agent is in tenant's `active_agents` list |
+| **Agent runs hang for 9-10 min then exit 143** | Missing `--dangerously-skip-permissions` in Extra args. The "Skip permissions" toggle is broken; set the flag in Extra args manually for every agent. |
+| **Inbox row never appears** | Agent's first call was probably `/api/dashboard/...` which 401's. Update the `aria-backend-api` skill MD in Paperclip to remove all curls except the inbox write. Path B (poller) will catch it as a fallback within 5s. |
+| **`fetch failed (adapter_failed)` on Timer runs** | Agent is on the HTTP adapter. Flip Adapter type back to `Claude (local)` in Paperclip Configuration. |
+| **`Paperclip cannot manage skills for this adapter yet`** | Same as above — agent is on HTTP. Flip back to claude_local. |
+| **One chat creates two Paperclip runs (one cancelled)** | The chat dispatcher is calling both `/heartbeat/invoke` and posting a comment. Only post the comment — the comment alone wakes the agent via `wakeOnDemand`. Already fixed in `orchestrator.run_agent_via_paperclip_sync`. |
+| **CEO chat returns the framing block as its reply** | `pick_agent_output` is supposed to filter out comments starting with `[tenant_id=`. Verify the filter is intact in `services/paperclip_chat.py`. |
 | Next.js route conflict | Route group pages can't resolve to the same URL path — rename the folder |
 | `asChild` prop warning | Button component must import `Slot` from `@radix-ui/react-slot` |

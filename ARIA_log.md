@@ -960,3 +960,54 @@ When CEO chat delegated a task, the task appeared on the board but the inbox ite
 - `frontend/app/(marketing)/terms/page.tsx` — Terms of service covering acceptable use, AI content ownership, approval system, subscriptions, liability
 - Both pages redesigned with dark hero header, card-based sections with lucide icons
 - URLs: `/privacy` and `/terms` — used for Google OAuth verification and X Developer Portal
+
+---
+
+## 2026-04-10 — Paperclip integration: full debugging arc + working architecture
+
+This was a long single-day debugging session that touched almost every part of the Paperclip integration. Recording here so the trail is preserved.
+
+### Symptoms at session start
+- CEO Timer runs ending with `fetch failed (adapter_failed)`
+- Skills tab grayed out with "Paperclip cannot manage skills for this adapter yet"
+- Chat messages either echoed framing back as the agent's reply, or never produced an inbox item
+- One chat creating two Paperclip runs (one always cancelled by control plane)
+- Agent runs hanging for 9-10 minutes then exiting with code 143
+
+### Root causes (each took multiple commits to find)
+
+**1. HTTP adapter experiment was leaking state.** Earlier in the week we'd flipped agents to Paperclip's `http` adapter to try a webhook receiver in ARIA (`backend/routers/paperclip.py`). It bypassed Paperclip's skill system entirely (Skills tab grayed out, no `aria-backend-api` skill access) and required ARIA to expose `/api/paperclip/heartbeat/{agent_name}`. We reverted to claude_local, but the live agents in Paperclip stayed on `http` and `paperclip_sync.py` wasn't flipping them back. Manual fix in Paperclip's UI per agent: Configuration → Adapter type → Claude (local).
+
+**2. The "Skip permissions" toggle in Paperclip's Configuration tab is BROKEN on our version.** It shows green/ON but doesn't inject `--dangerously-skip-permissions` into the spawned `claude` command. Without the flag, every Bash/Write/curl tool call inside the agent's CLI hits a permission prompt with no human to approve, so the run hangs for the full 10-minute timeout and SIGTERMs (exit code 143). Smoking-gun transcript: an agent run literally said "The sandbox keeps blocking me. Let me try a completely different approach" and looped on Write tool calls all returning `Claude requested permissions to write to ..., but you haven't granted it yet`.
+
+   **Fix:** in Paperclip → each agent → Configuration → **Extra args (comma-separated)** field, set `--dangerously-skip-permissions`. The Command field stays as just `claude` (it's a binary path, not a command line). After saving, the agent's Command in subsequent runs reads `claude --print - --output-format stream-json --verbose --model claude-opus-4-6 --append-system-prompt-file ... --dangerously-skip-permissions`. Done for all 6 agents.
+
+**3. Skill MD told the agent to fetch dashboard config first.** The `aria-backend-api` skill MD attached to every agent had a `## Get Business Context First` section that did `curl http://72.61.126.188:8000/api/dashboard/{tenant_id}/config`. That endpoint requires JWT auth, the agent has no JWT, the call returns 401, the agent gives up and never reaches the inbox write. Updated the skill MD in Paperclip's Skills UI to: (a) remove all references to auth-protected endpoints, (b) keep only the `POST /api/inbox/{tenant_id}/items` write, (c) use `http://172.17.0.1:8000` (docker host IP) instead of the public IP so requests bypass nginx and go straight to FastAPI where `/api/inbox/` is in `_PUBLIC_PREFIXES`.
+
+**4. CEO chat sync route was creating double runs.** `run_agent_via_paperclip_sync` was both posting a comment AND calling `/heartbeat/invoke`. Both wake the agent — the comment via `wakeOnDemand: true` (Automation run) and the heartbeat directly (On-demand run). `maxConcurrentRuns: 1` then races them and cancels one. Fix: removed the manual `/heartbeat/invoke` call. Posting the comment alone is enough.
+
+**5. Chat handler was echoing the framing back as the agent's reply.** `_build_chat_comment_body` was packing curl examples and instructions into the same comment as the user message. The Paperclip CEO interpreted that as "content to reformat" and posted the framing wrapper back as its reply. Two-part fix: (a) trimmed `_build_chat_comment_body` to a minimal `[tenant_id=<uuid>]\n\n<message>` shape, (b) added a defensive prefix-filter in `pick_agent_output()` that skips any comment starting with `[tenant_id=`, `TENANT_ID:`, or `USER MESSAGE:`.
+
+**6. Almost deleted the poller for the wrong reason.** Mid-session we deleted `poll_completed_issues()` (commit `4c7b94d`) thinking the agent's skill curl (Path A) was the active write path and the poller (Path B) was redundant duplication. The user's "yes, 3 days ago and before I added the media agent" the inbox flow worked — and that was deep in the poller era. Restored `poll_completed_issues` from git history into `paperclip_office_sync.py` (commit `530cba0`) along with all its helpers. Both paths now coexist: Path A is primary, Path B is the safety net. Dedupe is via the `paperclip_issue_id` column.
+
+### Architecture refactor (kept after the debugging dust settled)
+
+- **Deleted** `backend/paperclip_sync.py` (320 lines) and `backend/paperclip_skill.py`. Their startup automation kept fighting manual Paperclip configuration. The 4 useful exports (`PAPERCLIP_URL`, `_urllib_request`, `get_company_id`, `get_paperclip_agent_id`, `paperclip_connected`) are now inlined into `backend/orchestrator.py`. ARIA no longer touches Paperclip's API at startup.
+- **Renamed** `backend/paperclip_poller.py` → `backend/paperclip_office_sync.py` to reflect that it does both inbox import (`poll_completed_issues`) and Virtual Office sync (`sync_agent_statuses`) in the same 5s background loop.
+- **New** `backend/services/paperclip_chat.py` with `pick_agent_output()` and `normalize_comments()` — pure functions shared by both the chat sync route and the poller. Includes the framing-prefix filter (`[tenant_id=`, `TENANT_ID:`, `USER MESSAGE:`) so ARIA's own chat wrapper never gets re-imported as the agent's reply.
+- **MediaAgent refactor** — uses `services/inbox.create_item()` and the new `services/content_library.create_entry()` shared services instead of bespoke `_save_to_inbox` / `_log_to_content_library` helpers. Failure paths consolidated via a `_fail()` method.
+- **CEO chat history summarization** — `_summarize_ceo_assistant_message()` replaces verbatim prior CEO turns with one-line tags like `[CEO previously delegated to media]` so the model can't plagiarize its own prior outputs in the next turn.
+- **CEO agent f-string crash fix** — `{agent: "media", ...}` inside an f-string was throwing NameError on every `build_system_prompt` call. Escaped to `{{"agent": "media", ...}}`.
+- **Semantic cache key bug** — `_prompt_key()` was truncating the system prompt to 200 chars before embedding. Every CEO chat call shared the same 200-char prefix so unrelated user messages collided on the cache and returned identical replies. Now hashes the FULL system prompt with MD5.
+- **CEO chat session rotation** — frontend localStorage key bumped to `_v2` and got a 30-min idle timeout, so old test sessions don't bleed historical context into new conversations.
+- **GitHub auto-deploy webhook** — re-enabled by replacing the placeholder `REPLACE_WITH_A_LONG_RANDOM_STRING` in `/etc/webhook.conf` with a real HMAC secret + adding the same secret to GitHub's webhook config. The deploy.sh on the VPS was also rewritten (the original ran every command twice).
+
+### Known good architecture (as of end of session)
+
+- **Adapter:** all 6 agents on `claude_local` in Paperclip's UI
+- **Permissions:** `--dangerously-skip-permissions` set in each agent's Extra args field (NOT the broken Skip permissions toggle)
+- **Skills:** `aria-backend-api` checked under each agent's Skills tab; the skill MD references ONLY the `/api/inbox/` write endpoint, no other ARIA endpoints; uses `172.17.0.1:8000` not the public IP
+- **Inbox path A (primary):** agent's spawned CLI runs `curl POST http://172.17.0.1:8000/api/inbox/{tenant}/items` — `/api/inbox/` is in `_PUBLIC_PREFIXES` so no JWT required
+- **Inbox path B (safety net):** `paperclip_office_sync.poll_completed_issues` runs every 5s, scrapes finished issue comments, dedupes via `paperclip_issue_id` column
+- **CEO chat:** posts user message as comment on a fresh CEO issue, polls comments every 1-4s (adaptive backoff), 60s timeout, falls back to local `call_claude` if Paperclip is unreachable
+- **Verification end-to-end:** "create a social media post based on my GTM" → Paperclip CEO run completes in ~90s → Social Manager subagent → inbox row appears with title "Twitter/X Post: Build in Public — Developer Founder GTM" + Publish to X/LinkedIn buttons wired up.
