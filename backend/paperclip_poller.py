@@ -91,8 +91,14 @@ def _determine_content_type(agent_name: str, title: str) -> str:
     return "blog"
 
 
-def _get_issue_output(issue: dict) -> str | None:
-    """Get the agent's output from issue comments."""
+def _get_issue_output(issue: dict, original_message: str = "") -> str | None:
+    """Get the agent's output from issue comments.
+
+    Skips comments authored by the user (the chat handler posts the
+    user's original message as comment 0 so the agent has full context
+    beyond the truncated title — we don't want to import that back
+    into the inbox as if it were the agent's reply).
+    """
     issue_id = issue["id"]
 
     comments = _urllib_request("GET", f"/api/issues/{issue_id}/comments")
@@ -101,10 +107,15 @@ def _get_issue_output(issue: dict) -> str | None:
 
     comment_list = comments if isinstance(comments, list) else comments.get("data", comments.get("comments", []))
 
-    # Find the longest comment (likely the agent's output)
+    # Find the longest comment that ISN'T the user's original message.
+    # Match by content so we don't depend on Paperclip's author metadata.
     best_comment = ""
     for c in comment_list:
         body = c.get("body") or c.get("content") or ""
+        if not body:
+            continue
+        if original_message and body.strip() == original_message.strip():
+            continue  # this is the user's own message, skip it
         if len(body) > len(best_comment):
             best_comment = body
 
@@ -127,6 +138,13 @@ def _load_processed_ids_from_db():
         logger.debug(f"Could not seed processed IDs (column may not exist): {e}")
 
 
+_FINISHED_STATUSES = {
+    "done", "in_review", "completed", "closed", "resolved",
+    "Done", "In Review", "Completed", "Closed", "Resolved",
+    "DONE", "IN_REVIEW", "COMPLETED", "CLOSED", "RESOLVED",
+}
+
+
 async def poll_completed_issues():
     """Check Paperclip for completed agent issues and import results to ARIA inbox."""
     company_id = get_company_id()
@@ -143,6 +161,15 @@ async def poll_completed_issues():
 
     issue_list = issues if isinstance(issues, list) else issues.get("data", issues.get("issues", []))
 
+    # Diagnostic: count what we see vs what we'd skip, so silent skips
+    # show up in the logs instead of looking like 'poller does nothing'.
+    total = len(issue_list)
+    finished_count = 0
+    new_count = 0
+    imported_count = 0
+    skipped_no_tenant = 0
+    skipped_no_output = 0
+
     sb = get_db()
 
     for issue in issue_list:
@@ -152,28 +179,48 @@ async def poll_completed_issues():
         # Strip tenant_id prefix from title: [uuid] actual title
         title = re.sub(r"^\[[a-f0-9-]{36}\]\s*", "", raw_title)
 
+        if status in _FINISHED_STATUSES:
+            finished_count += 1
+
         # Skip already processed or non-completed issues
         if issue_id in _processed_issues:
             continue
-        if status not in ("done", "in_review", "completed"):
+        if status not in _FINISHED_STATUSES:
             continue
+
+        new_count += 1
 
         # Extract context from the issue
         tenant_id = _extract_tenant_id(issue)
         if not tenant_id:
+            logger.warning(
+                f"[poller] no tenant_id found in issue {issue.get('identifier', issue_id)} "
+                f"(title={raw_title[:80]!r}) — marking processed and skipping"
+            )
             _processed_issues.add(issue_id)
+            skipped_no_tenant += 1
             continue
 
         agent_name = _extract_agent_name(issue)
         content_type = _determine_content_type(agent_name, title)
 
-        # Get the agent's output from comments
-        output = _get_issue_output(issue)
+        # Get the agent's output from comments. Pass the issue body so
+        # _get_issue_output skips comments that match the user's original
+        # message (the CEO chat sync route posts the user message as a
+        # comment for full context — we don't want to import that back).
+        original_message = issue.get("body") or ""
+        output = _get_issue_output(issue, original_message=original_message)
         if not output:
             # No comments — use the issue body as content
             output = issue.get("body") or title
             if not output or len(output) < 50:
+                logger.warning(
+                    f"[poller] issue {issue.get('identifier', issue_id)} has no usable output "
+                    f"(status={status}, body_len={len(issue.get('body') or '')}, "
+                    f"title={title[:60]!r}) — marking processed and skipping"
+                )
                 _processed_issues.add(issue_id)
+                skipped_no_output += 1
                 continue
 
         # Check if we already created an inbox item for this Paperclip issue

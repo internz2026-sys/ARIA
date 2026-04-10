@@ -355,38 +355,34 @@ async def run_agent_via_paperclip_sync(
 
     # Post the full message body as a comment so the agent has the
     # complete context, not just the truncated title.
+    #
+    # Posting a comment on an issue assigned to an agent with
+    # wakeOnDemand=true (the default for claude_local agents) is enough
+    # to trigger an Automation run — Paperclip auto-wakes the agent on
+    # `issue.comment` events. Do NOT also POST /heartbeat/invoke; that
+    # would create a SECOND On-demand run racing the Automation one,
+    # and Paperclip's maxConcurrentRuns=1 would cancel one of them
+    # ('Cancelled by control plane'). One comment = one run.
+    #
+    # Prepend the tenant_id explicitly so the agent's aria-backend-api
+    # skill knows where to POST results. The skill MD says
+    # `curl POST /api/inbox/{tenant_id}/items` — the agent needs to
+    # substitute {tenant_id} from somewhere, and this comment is the
+    # only place it shows up in the agent's prompt context.
+    comment_body = (
+        f"TENANT_ID: {tenant_id}\n\n"
+        f"USER MESSAGE:\n{message}\n\n"
+        f"---\n"
+        f"After you respond, save your output to ARIA's inbox by calling:\n"
+        f"  curl -X POST http://172.17.0.1:8000/api/inbox/{tenant_id}/items \\\n"
+        f"    -H 'Content-Type: application/json' \\\n"
+        f"    -d '{{\"title\": \"...\", \"content\": \"...\", \"type\": \"...\", \"agent\": \"{agent_name}\", \"priority\": \"medium\", \"status\": \"needs_review\"}}'\n"
+    )
     _urllib_request(
         "POST",
         f"/api/issues/{issue_id}/comments",
-        data={"body": message, "content": message},
+        data={"body": comment_body, "content": comment_body},
     )
-
-    # Trigger the heartbeat so Paperclip wakes the agent immediately.
-    heartbeat_payload = {
-        "metadata": {
-            "tenant_id": tenant_id,
-            "agent_name": agent_name,
-            "issue_id": issue_id,
-            "triggered_at": datetime.now(timezone.utc).isoformat(),
-        },
-    }
-    agent_key = AGENT_API_KEYS.get(agent_name, "")
-    resp = await _paperclip_api(
-        "POST",
-        f"/api/agents/{paperclip_id}/heartbeat/invoke",
-        agent_key=agent_key,
-        json=heartbeat_payload,
-    )
-    if resp is not None and resp.status_code in (401, 403):
-        resp = await _paperclip_api(
-            "POST",
-            f"/api/agents/{paperclip_id}/heartbeat/invoke",
-            agent_key="",
-            json=heartbeat_payload,
-        )
-    if not resp or resp.status_code not in (200, 201, 202):
-        status = resp.status_code if resp else "no-response"
-        raise RuntimeError(f"Paperclip heartbeat invoke rejected for {agent_name}: {status}")
 
     # Poll the issue until it's done or we time out. Paperclip marks
     # finished issues as done/in_review/completed and writes the agent's
