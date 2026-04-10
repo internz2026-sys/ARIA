@@ -123,21 +123,23 @@ async def _scheduler_executor_loop():
 
 
 async def _paperclip_office_sync_loop():
-    """Background loop: sync Paperclip agent run status to the Virtual Office.
+    """Background loop: import completed Paperclip issues to inbox + sync Virtual Office.
 
-    This used to also import completed Paperclip issues into ARIA's inbox,
-    but that path was redundant — agents on the claude_local adapter POST
-    their results directly via the aria-backend-api skill (Path A). Two
-    write paths kept fighting and producing duplicates, so the inbox
-    importer was deleted in favor of the skill flow.
+    The inbox importer (poll_completed_issues) is the actual mechanism that
+    fills ARIA's Inbox page from Paperclip agent runs. We tried briefly to
+    rely on the agent's aria-backend-api skill curling /api/inbox directly,
+    but the claude_local sandbox blocks `curl` without manual permission
+    prompts so that path never worked. The poller scrapes the agent's
+    output from the issue's comments instead.
     """
-    from backend.paperclip_office_sync import sync_agent_statuses
+    from backend.paperclip_office_sync import poll_completed_issues, sync_agent_statuses
     _log = logging.getLogger("aria.paperclip_office_sync")
     while True:
-        await asyncio.sleep(5)  # 5s for responsive Virtual Office updates
+        await asyncio.sleep(5)  # 5s for responsive inbox + office updates
         try:
             if not paperclip_connected():
                 continue
+            await poll_completed_issues()
             await sync_agent_statuses(sio)
         except Exception as e:
             _log.warning("Paperclip office sync failed: %s", e)
