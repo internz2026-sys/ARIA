@@ -3404,14 +3404,14 @@ import pathlib as _pathlib
 _AGENTS_DIR = _pathlib.Path(__file__).resolve().parent.parent / "docs" / "agents"
 _CEO_MD_FULL = (_AGENTS_DIR / "ceo.md").read_text(encoding="utf-8")
 _CEO_MD = _CEO_MD_FULL[:800]  # Truncate to ~200 tokens — prompt caching handles the rest
+# Sub-agent role MDs — used by the CEO chat handler to build a one-line
+# capabilities cheat sheet on the FIRST chat turn only (see _build_sub_agent_context).
+# Skill MDs are NOT loaded here — BaseAgent.run() loads them per-agent at
+# runtime via backend.agents.base._load_agent_skill().
 _AGENT_MDS = {}
 for _f in _AGENTS_DIR.glob("*.md"):
-    _AGENT_MDS[_f.stem] = _f.read_text(encoding="utf-8")
-# Load skill files
-_SKILLS_DIR = _AGENTS_DIR / "skills"
-if _SKILLS_DIR.exists():
-    for _f in _SKILLS_DIR.glob("*.md"):
-        _AGENT_MDS[f"skill_{_f.stem}"] = _f.read_text(encoding="utf-8")
+    if _f.stem != "ceo":
+        _AGENT_MDS[_f.stem] = _f.read_text(encoding="utf-8")
 
 # In-memory chat cache with LRU eviction (max 100 sessions)
 _chat_sessions: dict[str, list[dict]] = {}
@@ -3555,13 +3555,22 @@ async def ceo_chat(body: CEOChatMessage):
                                  current_task="In meeting with user",
                                  action="meeting_with_user")
 
-    # Include sub-agent docs only on first message (cached via prompt caching after that)
-    # Truncate each to 200 chars to save tokens — the CEO just needs to know capabilities
-    sub_agent_context = "\n".join(
-        f"- {name}: {content[:200].replace(chr(10), ' ')}"
-        for name, content in _AGENT_MDS.items()
-        if name != "ceo" and not name.startswith("skill_")
-    )
+    # Inject the sub-agent capabilities cheat sheet ONLY on the first message
+    # of a session. Subsequent turns rely on the CEO already knowing its team
+    # from earlier in the conversation. This used to fire every turn — the old
+    # comment claimed it was first-message-only but the code didn't actually
+    # check is_first_message. Saves ~1k tokens per non-first chat call.
+    # On follow-up turns we leave a single line so the CEO doesn't forget the
+    # roster entirely if the conversation history scrolls off.
+    if is_first_message:
+        sub_agent_context = "\n".join(
+            f"- {name}: {content[:200].replace(chr(10), ' ')}"
+            for name, content in _AGENT_MDS.items()
+        )
+    else:
+        sub_agent_context = (
+            "Your team: content_writer, email_marketer, social_manager, ad_strategist, media."
+        )
 
     # Load tenant config once — reused for business context + integration checks
     business_context = ""
@@ -3586,36 +3595,51 @@ Channels: {', '.join(tc.channels)}
         except Exception:
             pass
 
-    # Check connected integrations for this tenant (reuse tc from above)
-    integration_notes = ""
+    # Check connected integrations for this tenant (reuse tc from above).
+    # Compact one-line notes only — the CEO doesn't need a paragraph per
+    # integration. Saves ~300 tokens per chat call.
+    integration_lines = []
     if tenant_id and tc:
         try:
-            _gmail_connected = bool(
-                tc.integrations.google_access_token or tc.integrations.google_refresh_token
-            )
-            if _gmail_connected:
-                integration_notes += f"""
-5. **Gmail is connected** ({tc.owner_email}). When the user asks you to SEND an email,
-   delegate to email_marketer with a task starting with "SEND:" including the recipient email.
-   IMPORTANT: Always include the recipient's full email address in the task description."""
-
-            _twitter_connected = bool(tc.integrations.twitter_access_token or tc.integrations.twitter_refresh_token)
-            if _twitter_connected:
-                integration_notes += f"""
-6. **X/Twitter is connected** (@{tc.integrations.twitter_username or 'user'}). When the user asks to post on social media:
-   - Delegate to social_manager with task like "Adapt latest content for social media"
-   - Social Manager fetches the latest Content Writer output and creates platform-specific posts
-   - Posts go to Inbox for user approval — NEVER auto-publish without approval"""
+            if tc.integrations.google_access_token or tc.integrations.google_refresh_token:
+                integration_lines.append(
+                    f"Gmail connected ({tc.owner_email}) — to send mail, delegate to email_marketer "
+                    f'with a task starting "SEND:" and include the full recipient email.'
+                )
+            if tc.integrations.twitter_access_token or tc.integrations.twitter_refresh_token:
+                handle = tc.integrations.twitter_username or "user"
+                integration_lines.append(
+                    f"X/Twitter connected (@{handle}) — for social posts, delegate to social_manager. "
+                    f"Output goes to Inbox for approval; never auto-publish."
+                )
         except Exception:
             pass
+    integration_notes = ("\n" + "\n".join(integration_lines)) if integration_lines else ""
 
     # ── CRM context injection (only when message references contacts/deals/companies) ──
     crm_context = ""
-    _crm_keywords = ["contact", "contacts", "company", "companies", "deal", "deals", "pipeline",
-                      "lead", "leads", "prospect", "customer", "crm", "send email to", "reach out to",
-                      "follow up with", "who", "client", "clients"]
+    # Tightened heuristic: only inject CRM context when the message clearly
+    # references CRM ENTITIES (not generic words like "who" or "client" that
+    # match unrelated questions). Saves ~1.5k tokens per non-CRM chat call.
+    # Either an explicit phrase OR (a CRM noun AND a CRM-ish action verb) triggers.
+    _crm_phrases = (
+        "send email to", "reach out to", "follow up with",
+        "the contact", "this contact", "all contacts",
+        "the company", "this company", "all companies",
+        "the deal", "this deal", "all deals",
+        "the lead", "this lead", "all leads",
+        "the customer", "this customer", "all customers",
+        "the client", "this client", "all clients",
+        "crm",
+    )
+    _crm_nouns = ("contact", "company", "companies", "deal", "lead", "prospect", "customer", "client", "pipeline")
+    _crm_verbs = ("create", "add", "update", "delete", "find", "show", "list", "search", "email", "call", "remove")
     _msg_lower = body.message.lower()
-    if tenant_id and any(kw in _msg_lower for kw in _crm_keywords):
+    _crm_match = (
+        any(phrase in _msg_lower for phrase in _crm_phrases)
+        or (any(n in _msg_lower for n in _crm_nouns) and any(v in _msg_lower for v in _crm_verbs))
+    )
+    if tenant_id and _crm_match:
         try:
             _crm_sb = _get_supabase()
             # Fetch compact summaries — minimal tokens
@@ -3774,6 +3798,19 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     # times out, or anything else fails — fall back to the local call_claude
     # path so chat keeps working even when Paperclip is down.
     _ceo_logger = logging.getLogger("aria.ceo_chat")
+    # Token-budget visibility: log the rendered system prompt + conversation
+    # sizes so we can see token-optimization wins (or regressions) live in
+    # production logs. ~4 chars/token is a rough rule of thumb.
+    _sys_chars = len(system_prompt)
+    _conv_chars = len(conversation)
+    _ceo_logger.warning(
+        "[ceo-chat-tokens] first_message=%s sys_prompt=%d chars (~%d tok) conversation=%d chars (~%d tok) crm_ctx=%d integrations=%d",
+        is_first_message,
+        _sys_chars, _sys_chars // 4,
+        _conv_chars, _conv_chars // 4,
+        len(crm_context),
+        len(integration_notes),
+    )
     raw = ""
     paperclip_used = False
     try:
