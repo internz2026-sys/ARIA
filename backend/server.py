@@ -3881,21 +3881,41 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             await _emit_agent_status(tenant_id, agent_id, "running",
                                      current_task=task_desc,
                                      action="walk_to_meeting")
-        # Execute agent — route through Paperclip if connected, else local fallback
+        # Execute agent — route through Paperclip if connected, else local fallback.
+        # Loud logging here is critical: a silent failure inside this block was
+        # the previous bug and made it look like 'Paperclip orchestration is not
+        # being used' when really an import or task-creation error was being
+        # swallowed by a bare except.
+        _dispatch_logger = logging.getLogger("aria.ceo_chat.dispatch")
         try:
             from backend.orchestrator import dispatch_agent
-            from backend.paperclip_sync import is_connected
+            from backend.paperclip_sync import is_connected, get_paperclip_agent_id
             import asyncio as _aio
 
-            if is_connected():
-                # Paperclip-first: create issue + trigger heartbeat
+            connected = is_connected()
+            paperclip_id = get_paperclip_agent_id(agent_id) if connected else None
+            _dispatch_logger.warning(
+                "[ceo-dispatch] agent=%s paperclip_connected=%s paperclip_id=%s",
+                agent_id, connected, paperclip_id,
+            )
+
+            if connected and paperclip_id:
+                _dispatch_logger.warning(
+                    "[ceo-dispatch] routing %s through Paperclip (id=%s)",
+                    agent_id, paperclip_id,
+                )
                 _aio.create_task(dispatch_agent(tenant_id, agent_id, context={
                     "task": task_desc,
                     "priority": d.get("priority", "medium"),
                     "session_id": body.session_id,
                 }))
             else:
-                # Local fallback
+                _dispatch_logger.warning(
+                    "[ceo-dispatch] FALLING BACK to local for %s "
+                    "(connected=%s, paperclip_id=%s) — set PAPERCLIP_*_KEY env vars or "
+                    "ensure paperclip_sync.initialize() ran successfully",
+                    agent_id, connected, paperclip_id,
+                )
                 from backend.agents import AGENT_REGISTRY
                 agent_module = AGENT_REGISTRY.get(agent_id)
                 if agent_module:
@@ -3905,8 +3925,16 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                         saved_tasks[-1]["id"] if saved_tasks else None,
                         d.get("priority", "medium"),
                     ))
-        except Exception:
-            pass
+                else:
+                    _dispatch_logger.error(
+                        "[ceo-dispatch] no agent_module for %s in AGENT_REGISTRY", agent_id,
+                    )
+        except Exception as _disp_exc:
+            import traceback
+            _dispatch_logger.error(
+                "[ceo-dispatch] FAILED to dispatch %s: %s\n%s",
+                agent_id, _disp_exc, traceback.format_exc(),
+            )
 
     response_data = {
         "response": clean_response,
