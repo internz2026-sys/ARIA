@@ -3756,13 +3756,44 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             f"User: {current_msg['content']}"
         )
 
+    # Route the CEO through Paperclip first so the same CEO that handles
+    # Timer runs and skill-based work also answers chat messages — single
+    # source of truth for CEO behavior. The Paperclip path can be slow
+    # (10-30s) but the CEO has its full identity from docs/agents/ceo.md,
+    # access to the aria-backend-api skill, and persistent workspace memory.
+    #
+    # If Paperclip is unreachable, the issue can't be created, the agent
+    # times out, or anything else fails — fall back to the local call_claude
+    # path so chat keeps working even when Paperclip is down.
+    _ceo_logger = logging.getLogger("aria.ceo_chat")
+    raw = ""
+    paperclip_used = False
     try:
-        raw = await call_claude(system_prompt, conversation, tenant_id=tenant_id or "global", agent_id="ceo")
-    except Exception as exc:
-        import traceback
-        logger = logging.getLogger("aria.ceo_chat")
-        logger.error(f"CEO chat error: {exc}\n{traceback.format_exc()}")
-        raw = f"I encountered an error: {str(exc)[:200]}. Please try again."
+        from backend.orchestrator import paperclip_connected, run_agent_via_paperclip_sync
+        if paperclip_connected():
+            _ceo_logger.warning("[ceo-chat] routing through Paperclip CEO")
+            raw = await run_agent_via_paperclip_sync(
+                tenant_id=tenant_id or "global",
+                agent_name="ceo",
+                message=conversation,
+                poll_timeout_sec=60,
+            )
+            paperclip_used = True
+            _ceo_logger.warning("[ceo-chat] Paperclip CEO returned %d chars", len(raw))
+    except Exception as paperclip_exc:
+        _ceo_logger.warning(
+            "[ceo-chat] Paperclip path failed (%s), falling back to local call_claude",
+            paperclip_exc,
+        )
+
+    if not raw:
+        try:
+            raw = await call_claude(system_prompt, conversation, tenant_id=tenant_id or "global", agent_id="ceo")
+            _ceo_logger.info("[ceo-chat] used local call_claude (paperclip_used=%s)", paperclip_used)
+        except Exception as exc:
+            import traceback
+            _ceo_logger.error(f"CEO chat error: {exc}\n{traceback.format_exc()}")
+            raw = f"I encountered an error: {str(exc)[:200]}. Please try again."
 
     # Check for forbidden requests
     from backend.ceo_actions import is_forbidden_request, REFUSAL_MESSAGE

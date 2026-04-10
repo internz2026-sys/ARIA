@@ -296,6 +296,146 @@ async def _dispatch_via_paperclip(
     }
 
 
+async def run_agent_via_paperclip_sync(
+    tenant_id: str,
+    agent_name: str,
+    message: str,
+    *,
+    poll_timeout_sec: int = 60,
+    poll_interval_sec: float = 2.0,
+) -> str:
+    """Create a Paperclip issue, trigger the agent, poll for the response.
+
+    Unlike dispatch_agent (which is fire-and-forget), this function blocks
+    until the agent finishes or the timeout is reached. Used by the CEO
+    chat handler so the same CEO that runs Paperclip Timer cycles also
+    answers chat messages — single source of truth for CEO behavior.
+
+    Args:
+        tenant_id: tenant the message belongs to
+        agent_name: ARIA agent slug (typically "ceo")
+        message: the user's chat message
+        poll_timeout_sec: max seconds to wait for the agent's reply
+        poll_interval_sec: how often to poll the issue for completion
+
+    Returns:
+        The agent's response text (the longest comment on the issue).
+
+    Raises:
+        RuntimeError: if Paperclip is unreachable, the issue can't be
+                      created, the heartbeat is rejected, or the agent
+                      doesn't finish before poll_timeout_sec elapses.
+                      Callers should catch this and fall back to local
+                      dispatch via call_claude.
+    """
+    paperclip_id = get_paperclip_agent_id(agent_name)
+    if not paperclip_id:
+        raise RuntimeError(f"No Paperclip agent ID configured for {agent_name}")
+
+    company_id = get_company_id()
+    if not company_id:
+        raise RuntimeError("No Paperclip company_id configured")
+
+    # Create the issue with the user's message in the title (Paperclip
+    # doesn't store issue bodies in a way the agent reads, so we encode
+    # tenant_id + message into the title prefix that the agent's spawned
+    # CLI will see in its instructions context).
+    title = f"[{tenant_id}] {message[:170]}"
+    issue = _urllib_request("POST", f"/api/companies/{company_id}/issues", data={
+        "title": title,
+        "assigneeAgentId": paperclip_id,
+        "priority": "high",  # chat is real-time, prioritize
+    })
+    if not issue or not issue.get("id"):
+        raise RuntimeError(f"Failed to create Paperclip issue for {agent_name}")
+
+    issue_id = issue["id"]
+    identifier = issue.get("identifier", issue_id)
+    logger.warning(f"[paperclip-sync] created issue {identifier} for {agent_name}")
+
+    # Post the full message body as a comment so the agent has the
+    # complete context, not just the truncated title.
+    _urllib_request(
+        "POST",
+        f"/api/issues/{issue_id}/comments",
+        data={"body": message, "content": message},
+    )
+
+    # Trigger the heartbeat so Paperclip wakes the agent immediately.
+    heartbeat_payload = {
+        "metadata": {
+            "tenant_id": tenant_id,
+            "agent_name": agent_name,
+            "issue_id": issue_id,
+            "triggered_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    agent_key = AGENT_API_KEYS.get(agent_name, "")
+    resp = await _paperclip_api(
+        "POST",
+        f"/api/agents/{paperclip_id}/heartbeat/invoke",
+        agent_key=agent_key,
+        json=heartbeat_payload,
+    )
+    if resp is not None and resp.status_code in (401, 403):
+        resp = await _paperclip_api(
+            "POST",
+            f"/api/agents/{paperclip_id}/heartbeat/invoke",
+            agent_key="",
+            json=heartbeat_payload,
+        )
+    if not resp or resp.status_code not in (200, 201, 202):
+        status = resp.status_code if resp else "no-response"
+        raise RuntimeError(f"Paperclip heartbeat invoke rejected for {agent_name}: {status}")
+
+    # Poll the issue until it's done or we time out. Paperclip marks
+    # finished issues as done/in_review/completed and writes the agent's
+    # output as a comment.
+    start = asyncio.get_event_loop().time()
+    last_comment_count = 0
+    while True:
+        elapsed = asyncio.get_event_loop().time() - start
+        if elapsed >= poll_timeout_sec:
+            raise RuntimeError(
+                f"Paperclip {agent_name} run did not complete within {poll_timeout_sec}s "
+                f"(issue {identifier})"
+            )
+
+        await asyncio.sleep(poll_interval_sec)
+
+        issue_now = _urllib_request("GET", f"/api/issues/{issue_id}")
+        if not issue_now:
+            continue
+        status = (issue_now.get("status") or "").lower()
+
+        # Pull comments to detect both completion and new agent output
+        comments = _urllib_request("GET", f"/api/issues/{issue_id}/comments")
+        comment_list = []
+        if comments:
+            comment_list = comments if isinstance(comments, list) else comments.get(
+                "data", comments.get("comments", [])
+            )
+
+        if status in ("done", "in_review", "completed") or len(comment_list) > last_comment_count + 1:
+            # +1 because we posted the original user message as comment 0
+            best = ""
+            for c in comment_list:
+                body = c.get("body") or c.get("content") or ""
+                # Skip the user's original message (longest non-user comment wins)
+                if body == message:
+                    continue
+                if len(body) > len(best):
+                    best = body
+            if best:
+                logger.warning(
+                    f"[paperclip-sync] {agent_name} responded for issue {identifier} "
+                    f"({len(best)} chars after {elapsed:.1f}s)"
+                )
+                return best
+
+        last_comment_count = len(comment_list)
+
+
 async def _dispatch_local(tenant_id: str, agent_name: str, agent_module, context: dict | None) -> dict:
     """Direct local dispatch without Paperclip coordination."""
     try:
