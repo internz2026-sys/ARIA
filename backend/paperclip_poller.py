@@ -17,7 +17,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from backend.paperclip_sync import _urllib_request, get_company_id, get_paperclip_agent_id
+from backend.orchestrator import _urllib_request, get_company_id, get_paperclip_agent_id
 from backend.services.supabase import get_db
 
 logger = logging.getLogger("aria.paperclip_poller")

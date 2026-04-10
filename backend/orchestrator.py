@@ -7,29 +7,108 @@ Paperclip AI (localhost:3100) handles multi-agent orchestration:
 - Atomic task checkout to prevent double-work
 
 When Paperclip is unavailable, falls back to direct local dispatch.
+
+Paperclip lookup helpers (PAPERCLIP_URL, _urllib_request, get_company_id,
+get_paperclip_agent_id, is_connected) used to live in backend/paperclip_sync.py
+alongside ~320 lines of startup automation that re-registered agents on every
+restart. That automation kept fighting with the user's manual Paperclip
+configuration (re-flipping adapters, re-attaching skills, getting agents stuck
+in error states), so we deleted the file and inlined the lookup helpers here.
 """
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 import os
+import ssl
+import urllib.request
 from datetime import datetime, timezone
 
 import httpx
 
 from backend.agents import AGENT_REGISTRY, DEPARTMENT_MAP
 from backend.config.loader import get_tenant_config, get_active_tenants
-from backend.paperclip_sync import (
-    get_paperclip_agent_id,
-    get_company_id,
-    is_connected as paperclip_connected,
-    PAPERCLIP_URL,
-    _urllib_request,
-)
 from backend.services.supabase import get_db
 from backend.tasks.task_definitions import CRON_SCHEDULES, WORKFLOW_TEMPLATES
 
 logger = logging.getLogger("aria.orchestrator")
+
+
+# ── Paperclip lookup helpers (formerly in backend/paperclip_sync.py) ─────
+
+PAPERCLIP_URL = os.environ.get("PAPERCLIP_API_URL", "http://127.0.0.1:3100")
+
+# Hardcoded fallback IDs from the production Paperclip company. These are
+# used when no live sync has populated the cache. Override via env vars per
+# agent if you spin up a new Paperclip instance.
+_KNOWN_COMPANY_ID = "a33b6679-9b72-44ed-9b73-92035f32d887"
+_KNOWN_AGENT_IDS = {
+    "ceo": "1b64e9b0-4bb3-4aca-b8ad-d1eb9a7ffa7f",
+    "content_writer": "f9e9abcc-e51f-4a41-8e67-7bc8111230c5",
+    "email_marketer": "da5109c3-2ab5-4a50-988e-896f078a712c",
+    "social_manager": "37f25bf9-8dfa-4943-9cf8-f6eb1e5157f7",
+    "ad_strategist": "8f827b80-b441-4065-bc50-fe3b470790af",
+    "media": "25c7a6f4-34ff-4846-b149-502be12b836d",
+}
+
+
+def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | list | None:
+    """Make a request to Paperclip using urllib (bypasses httpx cookie issues).
+
+    Used by the Paperclip poller and skill manager. Authenticates via the
+    PAPERCLIP_SESSION_COOKIE or PAPERCLIP_API_TOKEN env var.
+    """
+    session_cookie = os.environ.get("PAPERCLIP_SESSION_COOKIE", "")
+    token = os.environ.get("PAPERCLIP_API_TOKEN", "")
+    url = f"{PAPERCLIP_URL}{path}"
+    body = _json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, method=method)
+    req.add_header("Content-Type", "application/json")
+    if session_cookie:
+        req.add_header("Cookie", f"__Secure-better-auth.session_token={session_cookie}")
+        req.add_header("Origin", PAPERCLIP_URL)
+        req.add_header("Referer", PAPERCLIP_URL + "/")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        r = urllib.request.urlopen(req, timeout=15, context=ctx)
+        return _json.loads(r.read().decode())
+    except Exception as e:
+        logger.warning(f"urllib {method} {path} failed: {type(e).__name__}: {e}")
+        return None
+
+
+def get_company_id() -> str | None:
+    """Return the configured Paperclip company ID, or the production fallback."""
+    return os.environ.get("PAPERCLIP_COMPANY_ID", _KNOWN_COMPANY_ID)
+
+
+def get_paperclip_agent_id(agent_name: str) -> str | None:
+    """Return the Paperclip agent UUID for an ARIA agent slug."""
+    env_key = f"PAPERCLIP_{agent_name.upper()}_AGENT_ID"
+    return os.environ.get(env_key) or _KNOWN_AGENT_IDS.get(agent_name)
+
+
+def paperclip_connected() -> bool:
+    """Return True if at least one Paperclip agent API key is configured.
+
+    This is the only signal we have for 'is Paperclip set up?' without
+    making a live HTTP call on every check. The orchestrator uses this
+    to decide whether to route through Paperclip or fall back to local
+    dispatch.
+    """
+    return any(
+        os.environ.get(f"PAPERCLIP_{k}_KEY")
+        for k in ("CEO", "CONTENT_WRITER", "EMAIL_MARKETER", "SOCIAL_MANAGER", "AD_STRATEGIST", "MEDIA")
+    )
+
+
+# Backwards-compat alias for code that imports `is_connected` directly
+is_connected = paperclip_connected
 
 
 async def log_agent_action(tenant_id: str, agent_name: str, action: str, result: dict, status: str = "completed"):

@@ -46,7 +46,7 @@ from backend.orchestrator import (
     resume_agent_paperclip,
     run_scheduled_agents,
 )
-from backend.paperclip_sync import initialize as paperclip_init, is_connected as paperclip_connected
+from backend.orchestrator import is_connected as paperclip_connected
 
 # ── CORS — restrict to known frontend origins ────────────────────────────
 _allowed_origins = [
@@ -139,7 +139,14 @@ async def _paperclip_poller_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: sync agents with Paperclip AI orchestrator + start background loops."""
+    """Startup: initialize background loops + integrations.
+
+    NOTE: We used to call `await paperclip_init()` here to auto-register
+    agents with Paperclip on every restart. That was deleted along with
+    backend/paperclip_sync.py — agents are now configured directly in
+    Paperclip's UI and ARIA only does runtime lookups via the helpers in
+    backend/orchestrator.py.
+    """
     # Initialize semantic cache (Qdrant)
     try:
         from backend.services.semantic_cache import ensure_collection
@@ -147,7 +154,6 @@ async def lifespan(app: FastAPI):
         logger.info("Semantic cache (Qdrant) initialized")
     except Exception as e:
         logger.warning("Qdrant not available — semantic caching disabled: %s", e)
-    await paperclip_init()
     sync_task = asyncio.create_task(_gmail_sync_loop())
     scheduler_task = asyncio.create_task(_scheduler_executor_loop())
     poller_task = asyncio.create_task(_paperclip_poller_loop())
@@ -2649,11 +2655,11 @@ async def analytics_data(tenant_id: str, date_range: str = "7d"):
 @app.get("/api/paperclip/status")
 async def paperclip_status():
     """Check if Paperclip AI orchestrator is connected."""
-    from backend.paperclip_sync import get_company_id, _agent_id_cache
+    from backend.orchestrator import AGENT_API_KEYS, get_company_id
     return {
         "connected": paperclip_connected(),
         "company_id": get_company_id(),
-        "agents_registered": len(_agent_id_cache),
+        "agents_registered": sum(1 for k in AGENT_API_KEYS.values() if k),
         "url": os.environ.get("PAPERCLIP_API_URL", "http://127.0.0.1:3100"),
     }
 
@@ -3889,8 +3895,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         # swallowed by a bare except.
         _dispatch_logger = logging.getLogger("aria.ceo_chat.dispatch")
         try:
-            from backend.orchestrator import dispatch_agent
-            from backend.paperclip_sync import is_connected, get_paperclip_agent_id
+            from backend.orchestrator import dispatch_agent, is_connected, get_paperclip_agent_id
             import asyncio as _aio
 
             connected = is_connected()
@@ -3913,8 +3918,8 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             else:
                 _dispatch_logger.warning(
                     "[ceo-dispatch] FALLING BACK to local for %s "
-                    "(connected=%s, paperclip_id=%s) — set PAPERCLIP_*_KEY env vars or "
-                    "ensure paperclip_sync.initialize() ran successfully",
+                    "(connected=%s, paperclip_id=%s) — set PAPERCLIP_*_KEY env vars "
+                    "in .env to enable Paperclip routing",
                     agent_id, connected, paperclip_id,
                 )
                 from backend.agents import AGENT_REGISTRY
