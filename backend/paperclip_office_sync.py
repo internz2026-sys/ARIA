@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from backend.orchestrator import _urllib_request, get_company_id
 from backend.services.supabase import get_db
 
-logger = logging.getLogger("aria.paperclip_poller")
+logger = logging.getLogger("aria.paperclip_office_sync")
 
 # ─── Tenant ID cache (refreshed every 60s instead of every poll) ─────────────
 _tenant_ids_cache: list[str] = []

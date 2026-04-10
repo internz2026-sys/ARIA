@@ -1,10 +1,10 @@
 """Helpers for parsing Paperclip /comments responses.
 
 Used by orchestrator.run_agent_via_paperclip_sync() to find the agent's
-reply among the comments on an issue. Originally also shared with
-paperclip_poller.poll_completed_issues(), but the inbox importer was
-deleted in favor of Path A (agent uses aria-backend-api skill to write
-inbox items directly), so only the chat-side helpers remain.
+reply among the comments on an issue. Originally also shared with the
+inbox-importer poller, but that was deleted in favor of Path A (agent
+uses aria-backend-api skill to write inbox items directly), so only
+the chat-side helpers remain.
 """
 from __future__ import annotations
 

@@ -122,7 +122,7 @@ async def _scheduler_executor_loop():
             _log.warning("Scheduler executor loop failed: %s", e)
 
 
-async def _paperclip_poller_loop():
+async def _paperclip_office_sync_loop():
     """Background loop: sync Paperclip agent run status to the Virtual Office.
 
     This used to also import completed Paperclip issues into ARIA's inbox,
@@ -131,8 +131,8 @@ async def _paperclip_poller_loop():
     write paths kept fighting and producing duplicates, so the inbox
     importer was deleted in favor of the skill flow.
     """
-    from backend.paperclip_poller import sync_agent_statuses
-    _log = logging.getLogger("aria.paperclip_poller")
+    from backend.paperclip_office_sync import sync_agent_statuses
+    _log = logging.getLogger("aria.paperclip_office_sync")
     while True:
         await asyncio.sleep(5)  # 5s for responsive Virtual Office updates
         try:
@@ -162,11 +162,11 @@ async def lifespan(app: FastAPI):
         logger.warning("Qdrant not available — semantic caching disabled: %s", e)
     sync_task = asyncio.create_task(_gmail_sync_loop())
     scheduler_task = asyncio.create_task(_scheduler_executor_loop())
-    poller_task = asyncio.create_task(_paperclip_poller_loop())
+    office_sync_task = asyncio.create_task(_paperclip_office_sync_loop())
     yield
     sync_task.cancel()
     scheduler_task.cancel()
-    poller_task.cancel()
+    office_sync_task.cancel()
 
 
 app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
