@@ -18,12 +18,20 @@ def normalize_comments(payload: object) -> list[dict]:
     return []
 
 
-def pick_agent_output(comments: list[dict], exclude_text: str = "") -> str | None:
-    """Return the longest non-empty comment that isn't `exclude_text`.
+# Comments that match these prefixes are ARIA's own framing wrappers
+# (not real agent replies). Used by pick_agent_output as a safety net
+# in case the orchestrator's exclude_text doesn't catch a near-duplicate.
+_ARIA_FRAMING_PREFIXES = ("[tenant_id=", "TENANT_ID:", "USER MESSAGE:")
 
-    The chat sync route posts the user's prompt as a comment so the agent
-    has full context beyond the truncated title. We don't want to return
-    that as the agent's reply, so callers pass `exclude_text=user_message`.
+
+def pick_agent_output(comments: list[dict], exclude_text: str = "") -> str | None:
+    """Return the longest comment that's a real agent reply.
+
+    Skips:
+    - Empty/whitespace-only comments
+    - The exact `exclude_text` (the user's original message, prefixed)
+    - Anything starting with an ARIA framing prefix like `[tenant_id=`
+      or `TENANT_ID:` — those are our own wrappers, never the agent
 
     Returns None if no usable comment was found.
     """
@@ -34,6 +42,8 @@ def pick_agent_output(comments: list[dict], exclude_text: str = "") -> str | Non
         if not body:
             continue
         if needle and body == needle:
+            continue
+        if any(body.startswith(prefix) for prefix in _ARIA_FRAMING_PREFIXES):
             continue
         if len(body) > len(best):
             best = body

@@ -372,17 +372,22 @@ def _post_chat_comment(issue_id: str, tenant_id: str, agent_name: str, message: 
 
 
 def _build_chat_comment_body(tenant_id: str, agent_name: str, message: str) -> str:
-    """Render the comment body the agent will read. Pure function for testing."""
-    return (
-        f"TENANT_ID: {tenant_id}\n\n"
-        f"USER MESSAGE:\n{message}\n\n"
-        f"---\n"
-        f"After you respond, save your output to ARIA's inbox by calling:\n"
-        f"  curl -X POST http://172.17.0.1:8000/api/inbox/{tenant_id}/items \\\n"
-        f"    -H 'Content-Type: application/json' \\\n"
-        f"    -d '{{\"title\": \"...\", \"content\": \"...\", \"type\": \"...\", "
-        f"\"agent\": \"{agent_name}\", \"priority\": \"medium\", \"status\": \"needs_review\"}}'\n"
-    )
+    """Render the comment body the agent will read.
+
+    Keep this MINIMAL — don't include curl examples or instructions in
+    here. Why: when we stuffed the curl example into the comment, the
+    Paperclip CEO interpreted it as content to reformat and posted the
+    framing back as its reply (the user saw the literal TENANT_ID: /
+    curl -X POST text in chat). The aria-backend-api skill that's
+    attached to every claude_local agent already tells the agent how
+    to write to ARIA's inbox; we don't need to repeat the instructions
+    in every chat message.
+
+    Single-line tenant_id prefix is enough for the agent to substitute
+    {tenant_id} into its skill's curl template. Pure function so
+    _build_chat_comment_body can be unit-tested without network calls.
+    """
+    return f"[tenant_id={tenant_id}]\n\n{message}"
 
 
 # Adaptive polling intervals: poll fast for the first few seconds (in case
