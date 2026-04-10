@@ -50,8 +50,16 @@ def _embed(text: str) -> list[float]:
 
 
 def _prompt_key(system_prompt: str, user_message: str, model: str) -> str:
-    """Create a combined text for embedding from the prompt components."""
-    return f"[model:{model}] [system:{system_prompt[:200]}] {user_message}"
+    """Create a combined text for embedding from the prompt components.
+
+    Includes a hash of the FULL system prompt (not a truncation) so two
+    requests with different system prompts never collide. Previously this
+    truncated to 200 chars, which made every CEO chat call share the same
+    cache key prefix and caused unrelated user messages to return identical
+    cached responses.
+    """
+    system_hash = hashlib.md5(system_prompt.encode("utf-8")).hexdigest()[:12]
+    return f"[model:{model}] [system_hash:{system_hash}] {user_message}"
 
 
 def ensure_collection():

@@ -163,12 +163,14 @@ app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
 from backend.routers.crm import router as crm_router
 from backend.routers.inbox import router as inbox_router
 from backend.routers.campaigns import router as campaigns_router
-from backend.routers.paperclip import router as paperclip_router
+# NOTE: backend/routers/paperclip.py was a webhook receiver for the HTTP
+# adapter experiment — we reverted to claude_local, so Paperclip never
+# calls our webhook anymore. The agents now POST results back to ARIA via
+# the aria-backend-api skill (which curls /api/inbox/{tenant}/items).
 
 app.include_router(crm_router)
 app.include_router(inbox_router)
 app.include_router(campaigns_router)
-app.include_router(paperclip_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -195,7 +197,6 @@ _PUBLIC_PREFIXES = (
     "/api/webhooks/",       # External webhooks (Stripe, SendGrid)
     "/api/inbox/",          # Inbox item creation (used by Paperclip agents)
     "/api/tenant/by-email/", # Tenant lookup during login (returns only tenant_id)
-    "/api/paperclip/heartbeat/",  # Paperclip HTTP-adapter webhook callbacks
     "/docs",                # Swagger UI
     "/openapi.json",
 )

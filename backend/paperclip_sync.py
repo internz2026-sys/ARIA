@@ -150,119 +150,36 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
         # Match by slug first, then by exact title name
         agent_id = existing_by_slug.get(agent_name) or existing_by_name.get(title)
 
-        webhook_url = f"{ARIA_INTERNAL_URL}/api/paperclip/heartbeat/{agent_name}"
-
         if agent_id:
-            # Agent already exists — re-PATCH adapter, webhookUrl, and heartbeat
-            # so any agents previously created with the wrong adapter
-            # (claude_local) or wrong webhookUrl (127.0.0.1) get auto-fixed.
-            #
-            # Paperclip's actual field is `adapterType` (NOT `adapter`) and the
-            # webhook URL lives inside `adapterConfig`. Sending the wrong field
-            # name results in a silent 200 OK with no state change. We send
-            # both shapes so the right one wins regardless of Paperclip version.
+            # Agent already exists — re-PATCH the heartbeat schedule only.
+            # We deliberately leave adapterType alone so it stays as
+            # `claude_local`, which is what makes the agents read the
+            # `aria-backend-api` skill MD and POST results back to ARIA via
+            # curl. (We previously experimented with the `http` adapter +
+            # webhook callback, but that bypassed Paperclip's skill system
+            # entirely, so we reverted.)
             agent_ids[agent_name] = agent_id
-            patch_payload = {
-                "adapterType": "http",
-                "adapter": "http",
-                "adapterConfig": {
-                    "webhookUrl": webhook_url,
-                    "url": webhook_url,
-                },
-                "webhookUrl": webhook_url,
-            }
+            patch_payload: dict = {}
             if cron:
                 patch_payload["heartbeatSchedule"] = cron
-            patch_resp = await _api(client, "PATCH", f"/api/agents/{agent_id}", json=patch_payload)
-            patch_status = patch_resp.status_code if patch_resp else "no-response"
-            patch_body = (patch_resp.text[:300] if patch_resp else "")
-            if patch_resp and patch_resp.status_code in (200, 204):
-                logger.warning(f"[paperclip-patch] OK {agent_name} ({title}): adapter=http webhook={webhook_url} body={patch_body[:200]}")
+            if not patch_payload:
+                logger.info(f"[paperclip-patch] {agent_name} ({title}): nothing to update")
             else:
-                logger.error(f"[paperclip-patch] FAILED {agent_name} ({title}) — status={patch_status} body={patch_body}")
+                patch_resp = await _api(client, "PATCH", f"/api/agents/{agent_id}", json=patch_payload)
+                patch_status = patch_resp.status_code if patch_resp else "no-response"
+                if patch_resp and patch_resp.status_code in (200, 204):
+                    logger.warning(f"[paperclip-patch] OK {agent_name} ({title}): heartbeat={cron}")
+                else:
+                    logger.error(f"[paperclip-patch] FAILED {agent_name} ({title}) — status={patch_status}")
 
-            # Verify the PATCH actually took effect by re-fetching the agent.
-            # Paperclip's response shape varies — dump the full payload at
-            # WARNING level so it shows up in container logs even when INFO
-            # is filtered.
-            verify_resp = await _api(client, "GET", f"/api/agents/{agent_id}")
-            if verify_resp and verify_resp.status_code == 200:
-                v = verify_resp.json()
-                # Try multiple possible field names for the adapter
-                actual_adapter = (
-                    v.get("adapter")
-                    or v.get("adapterType")
-                    or v.get("adapter_type")
-                    or (v.get("config") or {}).get("adapter")
-                )
-                # Paperclip stores the webhook inside adapterConfig, not at
-                # the top level. Check both the new nested location and the
-                # old top-level shape.
-                adapter_config = v.get("adapterConfig") or {}
-                actual_webhook = (
-                    adapter_config.get("webhookUrl")
-                    or adapter_config.get("url")
-                    or v.get("webhookUrl")
-                    or v.get("webhook_url")
-                    or (v.get("config") or {}).get("webhookUrl")
-                )
-                actual_status = v.get("status") or v.get("state")
-                # Log every top-level key so we can see what Paperclip
-                # actually returns and find the right field name.
-                top_keys = sorted(v.keys()) if isinstance(v, dict) else []
-                logger.warning(
-                    f"[paperclip-verify] {agent_name}: keys={top_keys} "
-                    f"adapter={actual_adapter} webhook={actual_webhook} status={actual_status}"
-                )
-                # Dump the full body once per agent for debugging — bumped
-                # to 2000 chars so we can see runtimeConfig, pauseReason,
-                # and other state fields that come after adapterConfig.
-                import json as _json_dbg
-                logger.warning(
-                    f"[paperclip-verify-body] {agent_name}: "
-                    f"{_json_dbg.dumps(v)[:2000]}"
-                )
-                if actual_adapter and actual_adapter != "http":
-                    logger.error(f"AGENT {agent_name} STILL HAS adapter={actual_adapter} after PATCH — Paperclip may have rejected the field")
-
-                # Recover the agent if it's in any non-runnable state. Paperclip
-                # marks an agent as 'error' after a failed adapter invocation
-                # (e.g. our earlier 400/401 returns), and 'paused' if a user
-                # explicitly paused it. In either case the heartbeat will not
-                # fire until we recover. Try /resume first (covers both states
-                # in most Paperclip versions); if that fails for an errored
-                # agent, fall back to a pause+resume cycle which always clears
-                # error state.
-                if actual_status in ("paused", "PAUSED", "error", "ERROR", "errored", "failed"):
-                    resume_resp = await _api(client, "POST", f"/api/agents/{agent_id}/resume")
-                    if resume_resp and resume_resp.status_code in (200, 204):
-                        logger.warning(
-                            f"[paperclip-resume] Recovered {actual_status} agent {agent_name} via /resume"
-                        )
-                    else:
-                        # Pause+resume cycle as a fallback to clear stuck error state
-                        logger.warning(
-                            f"[paperclip-resume] /resume failed ({resume_resp.status_code if resume_resp else 'no-response'}) "
-                            f"for {agent_name}, trying pause+resume cycle"
-                        )
-                        await _api(client, "POST", f"/api/agents/{agent_id}/pause")
-                        cycle_resp = await _api(client, "POST", f"/api/agents/{agent_id}/resume")
-                        if cycle_resp and cycle_resp.status_code in (200, 204):
-                            logger.warning(
-                                f"[paperclip-resume] Recovered {agent_name} via pause+resume cycle"
-                            )
-                        else:
-                            logger.error(
-                                f"[paperclip-resume] Could not recover {agent_name} from {actual_status}: "
-                                f"{cycle_resp.status_code if cycle_resp else 'no-response'}"
-                            )
-            else:
-                logger.error(
-                    f"[paperclip-verify] {agent_name}: GET failed status="
-                    f"{verify_resp.status_code if verify_resp else 'no-response'}"
-                )
+            # Auto-recover the agent if it got stuck in a paused/error state
+            # from a prior failed run. Try /resume first; if that fails for an
+            # errored agent, do a pause+resume cycle which reliably clears it.
+            await _recover_if_stuck(client, agent_id, agent_name)
         else:
-            # Agent does not exist — create it
+            # Agent does not exist — create it with the claude_local adapter
+            # so Paperclip's spawned Claude CLI reads the aria-backend-api
+            # skill MD and POSTs results back to ARIA via curl.
             logger.info(f"Agent {agent_name} ({title}) not found in Paperclip, creating...")
             resp = await _api(client, "POST", f"/api/companies/{company_id}/agents", json={
                 "name": title,
@@ -270,15 +187,9 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
                 "description": meta["description"],
                 "role": meta.get("role", "general"),
                 "department": dept,
-                "adapterType": "http",
-                "adapter": "http",
-                "adapterConfig": {
-                    "webhookUrl": webhook_url,
-                    "url": webhook_url,
-                },
+                "adapterType": "claude_local",
                 "model": meta["model"],
                 "heartbeatSchedule": cron,
-                "webhookUrl": webhook_url,
             })
             if resp.status_code in (200, 201):
                 agent_id = resp.json().get("id")
@@ -288,6 +199,32 @@ async def sync_agents(client: httpx.AsyncClient, company_id: str) -> dict[str, s
                 logger.error(f"Failed to register agent {agent_name}: {resp.status_code} {resp.text}")
 
     return agent_ids
+
+
+async def _recover_if_stuck(client: httpx.AsyncClient, agent_id: str, agent_name: str) -> None:
+    """If an agent is paused or errored, resume it so heartbeats can fire."""
+    verify_resp = await _api(client, "GET", f"/api/agents/{agent_id}")
+    if not (verify_resp and verify_resp.status_code == 200):
+        return
+    status = (verify_resp.json() or {}).get("status") or ""
+    if status not in ("paused", "PAUSED", "error", "ERROR", "errored", "failed"):
+        return
+
+    resume_resp = await _api(client, "POST", f"/api/agents/{agent_id}/resume")
+    if resume_resp and resume_resp.status_code in (200, 204):
+        logger.warning(f"[paperclip-resume] Recovered {status} agent {agent_name} via /resume")
+        return
+
+    # Pause+resume cycle as a fallback to clear stuck error state
+    await _api(client, "POST", f"/api/agents/{agent_id}/pause")
+    cycle_resp = await _api(client, "POST", f"/api/agents/{agent_id}/resume")
+    if cycle_resp and cycle_resp.status_code in (200, 204):
+        logger.warning(f"[paperclip-resume] Recovered {agent_name} via pause+resume cycle")
+    else:
+        logger.error(
+            f"[paperclip-resume] Could not recover {agent_name} from {status}: "
+            f"{cycle_resp.status_code if cycle_resp else 'no-response'}"
+        )
 
 
 async def sync_org_chart(client: httpx.AsyncClient, company_id: str, agent_ids: dict[str, str]):
