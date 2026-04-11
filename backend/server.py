@@ -5381,6 +5381,12 @@ for _f in _AGENTS_DIR.glob("*.md"):
     if _f.stem != "ceo":
         _AGENT_MDS[_f.stem] = _f.read_text(encoding="utf-8")
 
+# Shared `re` alias for all module-level compiled patterns below. Imported
+# once under a short name so the pre-compiled regex blocks don't each need
+# their own import line. Kept at module scope because these patterns run on
+# every CEO chat call.
+import re as _re_crm
+
 # Pre-compiled regex patterns for CEO chat delegate/action block parsing.
 # Compiling these per-request is cheap but not free, and the chat handler
 # is the hottest non-streaming endpoint. Module-level wins about 50us per
@@ -5392,7 +5398,6 @@ _ACTION_BLOCK_RE = _re_crm.compile(r"```action\s*\n(.*?)\n```", _re_crm.DOTALL)
 # so the CEO chat handler can decide in O(1) whether to inject the CRM block.
 # Word-boundary matching avoids substring false positives ("ideal"→"deal",
 # "leader"→"lead", "calling"→"call").
-import re as _re_crm
 _CRM_TRIGGER_PHRASES = (
     "send email to", "reach out to", "follow up with",
     "the contact", "this contact", "all contacts", "my contacts",
