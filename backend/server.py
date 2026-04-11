@@ -41,12 +41,25 @@ from backend.onboarding_agent import OnboardingAgent
 from backend.orchestrator import (
     dispatch_agent,
     get_agent_status,
+    get_paperclip_agent_id,
     handle_webhook,
     pause_agent_paperclip,
     resume_agent_paperclip,
     run_scheduled_agents,
+    _sanitize_error_message,
+    _urllib_request,
+    PaperclipUnreachable,
 )
 from backend.orchestrator import is_connected as paperclip_connected
+from backend.agents import AGENT_REGISTRY
+from backend.services.paperclip_chat import normalize_comments, pick_agent_output
+from backend.paperclip_office_sync import (
+    _is_finished,
+    _is_failed,
+    _add_processed,
+    poll_completed_issues,
+    sync_agent_statuses,
+)
 
 # ── CORS — restrict to known frontend origins ────────────────────────────
 _allowed_origins = [
@@ -142,7 +155,6 @@ async def _paperclip_office_sync_loop():
     and inbox routes manually reset the interval when the user does
     something so the next tick is fast even if we were in idle mode.
     """
-    from backend.paperclip_office_sync import poll_completed_issues, sync_agent_statuses
     _log = logging.getLogger("aria.paperclip_office_sync")
 
     FAST_INTERVAL = 5
@@ -397,8 +409,11 @@ async def socket_app(scope, receive, send):
                 return
     await _sio_asgi(scope, receive, send)
 
-# In-memory live status store + persisted to Supabase
+# In-memory live status store + persisted to Supabase. Bounded so a busy
+# multi-tenant deployment can't grow this dict unbounded — eviction is by
+# insertion order (oldest tenant out).
 _live_agent_status: dict[str, dict[str, dict]] = {}
+_LIVE_STATUS_MAX_TENANTS = 1000
 
 
 async def _emit_agent_status(tenant_id: str, agent_id: str, status: str,
@@ -412,6 +427,11 @@ async def _emit_agent_status(tenant_id: str, agent_id: str, status: str,
         "last_updated": now_ts,
         **extra,
     }
+    if tenant_id not in _live_agent_status and len(_live_agent_status) >= _LIVE_STATUS_MAX_TENANTS:
+        # Evict oldest entry by insertion order to keep the dict bounded.
+        oldest = next(iter(_live_agent_status), None)
+        if oldest is not None:
+            _live_agent_status.pop(oldest, None)
     _live_agent_status.setdefault(tenant_id, {})[agent_id] = payload
     await sio.emit("agent_status_change", payload, room=tenant_id)
 
@@ -3349,6 +3369,40 @@ def _enrich_task_desc_with_crm(task_desc: str, tenant_id: str) -> str:
         return task_desc
 
 
+# ── Module-level email template regexes ───────────────────────────────
+# Compiled once at import time so the email-render path doesn't recompile
+# 12 patterns on every inbox row build. Used by _wrap_email_in_designed_template
+# and _strip_html_to_text.
+import re as _re_email
+_EMAIL_BODY_TAG_RE = _re_email.compile(r"<body[^>]*>(.*?)</body>", _re_email.IGNORECASE | _re_email.DOTALL)
+_EMAIL_CTA_RE = _re_email.compile(
+    r"(?:book|schedule|claim|get|see|try|start|book a)\s+(?:your\s+)?(?:free\s+)?(?:[a-z\-]+\s+){0,3}(?:demo|call|trial|consultation|meeting)",
+    _re_email.IGNORECASE,
+)
+_EMAIL_LI_CALLOUT_RE = _re_email.compile(r"<li[^>]*>\s*<strong>([^<]+?):</strong>\s*([^<]+?)</li>")
+_EMAIL_P_RESULT_RE = _re_email.compile(
+    r"<p[^>]*>\s*<strong>(Result|Summary|Bottom Line)[^<]*:?</strong>([^<]+?)</p>",
+    _re_email.IGNORECASE,
+)
+_EMAIL_H2_RE = _re_email.compile(r"<h2[^>]*>(.*?)</h2>", _re_email.IGNORECASE | _re_email.DOTALL)
+_EMAIL_H3_RE = _re_email.compile(r"<h3[^>]*>(.*?)</h3>", _re_email.IGNORECASE | _re_email.DOTALL)
+_EMAIL_P_NOSTYLE_RE = _re_email.compile(r"<p(?![^>]*style=)")
+_EMAIL_UL_NOSTYLE_RE = _re_email.compile(r"<ul(?![^>]*style=)")
+_EMAIL_LI_NOSTYLE_RE = _re_email.compile(r"<li(?![^>]*style=)")
+_EMAIL_A_NOSTYLE_RE = _re_email.compile(r"<a(?![^>]*style=)")
+_EMAIL_STRONG_NOSTYLE_RE = _re_email.compile(r"<strong(?![^>]*style=)")
+# _strip_html_to_text patterns
+_STRIP_STYLE_RE = _re_email.compile(r"<style[^>]*>[\s\S]*?</style>", _re_email.IGNORECASE)
+_STRIP_SCRIPT_RE = _re_email.compile(r"<script[^>]*>[\s\S]*?</script>", _re_email.IGNORECASE)
+_STRIP_BR_RE = _re_email.compile(r"<br\s*/?>", _re_email.IGNORECASE)
+_STRIP_P_CLOSE_RE = _re_email.compile(r"</p>", _re_email.IGNORECASE)
+_STRIP_DIV_CLOSE_RE = _re_email.compile(r"</div>", _re_email.IGNORECASE)
+_STRIP_LI_CLOSE_RE = _re_email.compile(r"</li>", _re_email.IGNORECASE)
+_STRIP_H_CLOSE_RE = _re_email.compile(r"</h[1-6]>", _re_email.IGNORECASE)
+_STRIP_TAGS_RE = _re_email.compile(r"<[^>]+>")
+_STRIP_BLANKS_RE = _re_email.compile(r"\n{3,}")
+
+
 def _agent_html_already_designed(html: str) -> bool:
     """Return True if the agent's HTML output already has its own design.
 
@@ -3429,8 +3483,6 @@ def _wrap_email_in_designed_template(
     document and we leave it alone (assume the agent designed it
     intentionally).
     """
-    import re
-
     if not body_html:
         return ""
 
@@ -3439,19 +3491,15 @@ def _wrap_email_in_designed_template(
         return body_html  # complete document already, don't double-wrap
 
     # Strip the outer <body> wrapper if the parser added one
-    m = re.search(r"<body[^>]*>(.*?)</body>", body_html, re.IGNORECASE | re.DOTALL)
+    m = _EMAIL_BODY_TAG_RE.search(body_html)
     if m:
         body_html = m.group(1).strip()
 
     # Auto-extract a CTA from common phrases if not provided
     if not cta_text:
-        for pattern in (
-            r"(?:book|schedule|claim|get|see|try|start|book a)\s+(?:your\s+)?(?:free\s+)?(?:[a-z\-]+\s+){0,3}(?:demo|call|trial|consultation|meeting)",
-        ):
-            m = re.search(pattern, _strip_html_to_text(body_html), re.IGNORECASE)
-            if m:
-                cta_text = m.group(0).title()
-                break
+        m = _EMAIL_CTA_RE.search(_strip_html_to_text(body_html))
+        if m:
+            cta_text = m.group(0).title()
     if not cta_text:
         cta_text = "Schedule a 15-Minute Demo"
     if not cta_url:
@@ -3460,7 +3508,7 @@ def _wrap_email_in_designed_template(
     # Style sections that look like callouts. The agent often uses
     # **Bold:** prefix lines for highlights -- give them card styling
     # with a colored left border on a light background.
-    def _stylize_callout(match: "re.Match[str]") -> str:
+    def _stylize_callout(match) -> str:
         label = match.group(1)
         rest = match.group(2)
         return (
@@ -3473,15 +3521,10 @@ def _wrap_email_in_designed_template(
         )
 
     # Find <li><strong>Label:</strong> rest</li> patterns and turn into callouts
-    body_html = re.sub(
-        r"<li[^>]*>\s*<strong>([^<]+?):</strong>\s*([^<]+?)</li>",
-        _stylize_callout,
-        body_html,
-    )
+    body_html = _EMAIL_LI_CALLOUT_RE.sub(_stylize_callout, body_html)
 
     # Highlight <p><strong>Result:</strong> ...</p> as a green callout
-    body_html = re.sub(
-        r"<p[^>]*>\s*<strong>(Result|Summary|Bottom Line)[^<]*:?</strong>([^<]+?)</p>",
+    body_html = _EMAIL_P_RESULT_RE.sub(
         lambda m: (
             f'<div style="background: #ecfdf5; '
             f'border-left: 4px solid #10b981; padding: 14px 18px; '
@@ -3491,46 +3534,36 @@ def _wrap_email_in_designed_template(
             f"</div>"
         ),
         body_html,
-        flags=re.IGNORECASE,
     )
 
     # Restyle <h2>/<h3> as blue section headers
-    body_html = re.sub(
-        r"<h2[^>]*>(.*?)</h2>",
+    body_html = _EMAIL_H2_RE.sub(
         r'<h2 style="color: #2563eb; font-size: 20px; font-weight: 600; margin: 28px 0 12px 0;">\1</h2>',
         body_html,
-        flags=re.IGNORECASE | re.DOTALL,
     )
-    body_html = re.sub(
-        r"<h3[^>]*>(.*?)</h3>",
+    body_html = _EMAIL_H3_RE.sub(
         r'<h3 style="color: #2563eb; font-size: 17px; font-weight: 600; margin: 24px 0 10px 0;">\1</h3>',
         body_html,
-        flags=re.IGNORECASE | re.DOTALL,
     )
 
     # Restyle paragraphs, lists, links, and bold text in the light theme
-    body_html = re.sub(
-        r"<p(?![^>]*style=)",
+    body_html = _EMAIL_P_NOSTYLE_RE.sub(
         '<p style="color: #374151; font-size: 15px; line-height: 1.7; margin: 14px 0;"',
         body_html,
     )
-    body_html = re.sub(
-        r"<ul(?![^>]*style=)",
+    body_html = _EMAIL_UL_NOSTYLE_RE.sub(
         '<ul style="color: #374151; padding-left: 22px; margin: 14px 0;"',
         body_html,
     )
-    body_html = re.sub(
-        r"<li(?![^>]*style=)",
+    body_html = _EMAIL_LI_NOSTYLE_RE.sub(
         '<li style="margin: 8px 0; line-height: 1.6;"',
         body_html,
     )
-    body_html = re.sub(
-        r"<a(?![^>]*style=)",
+    body_html = _EMAIL_A_NOSTYLE_RE.sub(
         '<a style="color: #2563eb; text-decoration: underline;"',
         body_html,
     )
-    body_html = re.sub(
-        r"<strong(?![^>]*style=)",
+    body_html = _EMAIL_STRONG_NOSTYLE_RE.sub(
         '<strong style="color: #111827;"',
         body_html,
     )
@@ -3587,18 +3620,17 @@ def _strip_html_to_text(html: str) -> str:
     give the user a readable plaintext version. Mirrors the same logic
     the frontend uses in stripHtml() at frontend/app/.../inbox/page.tsx.
     """
-    import re
     if not html:
         return ""
     out = html
-    out = re.sub(r"<style[^>]*>[\s\S]*?</style>", "", out, flags=re.IGNORECASE)
-    out = re.sub(r"<script[^>]*>[\s\S]*?</script>", "", out, flags=re.IGNORECASE)
-    out = re.sub(r"<br\s*/?>", "\n", out, flags=re.IGNORECASE)
-    out = re.sub(r"</p>", "\n\n", out, flags=re.IGNORECASE)
-    out = re.sub(r"</div>", "\n", out, flags=re.IGNORECASE)
-    out = re.sub(r"</li>", "\n", out, flags=re.IGNORECASE)
-    out = re.sub(r"</h[1-6]>", "\n\n", out, flags=re.IGNORECASE)
-    out = re.sub(r"<[^>]+>", "", out)
+    out = _STRIP_STYLE_RE.sub("", out)
+    out = _STRIP_SCRIPT_RE.sub("", out)
+    out = _STRIP_BR_RE.sub("\n", out)
+    out = _STRIP_P_CLOSE_RE.sub("\n\n", out)
+    out = _STRIP_DIV_CLOSE_RE.sub("\n", out)
+    out = _STRIP_LI_CLOSE_RE.sub("\n", out)
+    out = _STRIP_H_CLOSE_RE.sub("\n\n", out)
+    out = _STRIP_TAGS_RE.sub("", out)
     out = (out
            .replace("&nbsp;", " ")
            .replace("&amp;", "&")
@@ -3606,7 +3638,7 @@ def _strip_html_to_text(html: str) -> str:
            .replace("&gt;", ">")
            .replace("&quot;", '"')
            .replace("&#39;", "'"))
-    out = re.sub(r"\n{3,}", "\n\n", out)
+    out = _STRIP_BLANKS_RE.sub("\n\n", out)
     return out.strip()
 
 
@@ -4301,7 +4333,6 @@ async def _run_agent_to_inbox(
         # Sanitize the error -- don't leak raw exception details (may
         # include API keys / connection strings) into the user-visible
         # inbox row.
-        from backend.orchestrator import _sanitize_error_message
         error_summary = _sanitize_error_message(e)
         error_content = (
             f"The {agent_id} agent encountered an error while processing this task:\n\n"
@@ -4397,9 +4428,6 @@ async def _dispatch_paperclip_and_watch_to_inbox(
     Timer runs and edge cases this watcher times out on.
     """
     import asyncio as _aio_inner
-    from backend.orchestrator import dispatch_agent, _urllib_request, PaperclipUnreachable
-    from backend.services.paperclip_chat import normalize_comments, pick_agent_output
-    from backend.paperclip_office_sync import _is_finished, _is_failed, _add_processed
 
     _logger = logging.getLogger("aria.paperclip_watch")
 
@@ -5986,10 +6014,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         # swallowed by a bare except.
         _dispatch_logger = logging.getLogger("aria.ceo_chat.dispatch")
         try:
-            from backend.orchestrator import dispatch_agent, is_connected, get_paperclip_agent_id
-            import asyncio as _aio
-
-            connected = is_connected()
+            connected = paperclip_connected()
             paperclip_id = get_paperclip_agent_id(agent_id) if connected else None
             _dispatch_logger.warning(
                 "[ceo-dispatch] agent=%s paperclip_connected=%s paperclip_id=%s",
@@ -6026,7 +6051,6 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                     "in .env to enable Paperclip routing",
                     agent_id, connected, paperclip_id,
                 )
-                from backend.agents import AGENT_REGISTRY
                 agent_module = AGENT_REGISTRY.get(agent_id)
                 if agent_module:
                     _safe_background(

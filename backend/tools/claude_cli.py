@@ -20,6 +20,13 @@ logger = logging.getLogger("aria.claude")
 MODEL_SONNET = "claude-sonnet-4-6"
 MODEL_HAIKU = "claude-haiku-4-5"
 
+# Cache the resolved `claude` binary path at module load. shutil.which()
+# walks PATH on each call (~500us-3ms on Windows, less on Linux), and we
+# spawn the CLI on every agent call. Resolving once means subprocess
+# invocation skips the PATH lookup. Falls back to "claude" if which()
+# can't find it (e.g. before npm install) — exec will surface the error.
+_CLAUDE_BIN: str = shutil.which("claude") or "claude"
+
 # ── Supabase helper ─────────────────────────────────────────────────────────
 
 def _get_supabase():
@@ -42,8 +49,20 @@ AGENT_HOURLY_LIMITS: dict[str, dict] = {
 }
 DEFAULT_AGENT_LIMIT = {"requests": 15}
 
-# Local cache to avoid hitting Supabase on every single check
+# Local cache to avoid hitting Supabase on every single check. Bounded so a
+# busy multi-tenant deployment can't grow these dicts unbounded over the
+# lifetime of the process — eviction is by insertion order (oldest tenant out).
 _usage_cache: dict[str, dict] = {}
+_USAGE_CACHE_MAX = 1000
+
+
+def _usage_cache_set(tenant_id: str, usage: dict) -> None:
+    """Set usage cache entry with bounded eviction."""
+    if tenant_id not in _usage_cache and len(_usage_cache) >= _USAGE_CACHE_MAX:
+        oldest = next(iter(_usage_cache), None)
+        if oldest is not None:
+            _usage_cache.pop(oldest, None)
+    _usage_cache[tenant_id] = usage
 
 
 def _current_hour() -> str:
@@ -81,7 +100,7 @@ def _load_usage(tenant_id: str) -> dict:
         logger.warning("Failed to load usage from Supabase: %s — using cache/defaults", e)
         usage = cached or {"hour": hour, "input_tokens": 0, "output_tokens": 0, "requests": 0}
 
-    _usage_cache[tenant_id] = usage
+    _usage_cache_set(tenant_id, usage)
     return usage
 
 
@@ -127,6 +146,10 @@ _agent_usage: dict[str, dict[str, dict]] = {}
 
 def _get_agent_usage(tenant_id: str, agent_id: str) -> dict:
     hour = _current_hour()
+    if tenant_id not in _agent_usage and len(_agent_usage) >= _USAGE_CACHE_MAX:
+        oldest = next(iter(_agent_usage), None)
+        if oldest is not None:
+            _agent_usage.pop(oldest, None)
     tenant_agents = _agent_usage.setdefault(tenant_id, {})
     entry = tenant_agents.get(agent_id)
     if entry and entry.get("hour") == hour:
@@ -308,7 +331,7 @@ async def call_claude(
     # tool + emit the final reply, while still bounding any runaway
     # tool spiral (most chat replies still finish in 1-2 turns).
     cmd = [
-        "claude",
+        _CLAUDE_BIN,
         "-p", prompt,
         "--output-format", "text",
         "--model", use_model,
@@ -397,7 +420,7 @@ async def call_claude(
     # Update usage tracking
     usage = _load_usage(tenant_id)
     usage["requests"] += 1
-    _usage_cache[tenant_id] = usage
+    _usage_cache_set(tenant_id, usage)
     _save_usage(tenant_id, usage)
 
     if agent_id:
@@ -407,7 +430,7 @@ async def call_claude(
     if tenant_id != "global":
         global_usage = _load_usage("global")
         global_usage["requests"] += 1
-        _usage_cache["global"] = global_usage
+        _usage_cache_set("global", global_usage)
         _save_usage("global", global_usage)
 
     # Store in semantic cache — same exclusion as the lookup above. Don't
