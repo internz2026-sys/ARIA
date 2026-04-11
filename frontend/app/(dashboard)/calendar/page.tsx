@@ -18,14 +18,32 @@ interface ScheduledTask {
   created_by: string;
   related_entity_type?: string;
   payload?: Record<string, any>;
+  // Activity-feed fields populated when source isn't 'scheduled'.
+  // These let the same component handle multiple event sources without
+  // a separate parallel state tree.
+  source?: "scheduled" | "inbox_draft" | "inbox_sent";
+  agent?: string;
+  href?: string;
 }
 
 type ViewMode = "month" | "week" | "agenda";
+type FilterMode = "all" | "scheduled";
+
+// Strip the source prefix from a composite event id ("scheduled:uuid"
+// -> "uuid") so we can call the scheduler endpoints with the raw uuid.
+function rawTaskId(id: string): string {
+  if (id.includes(":")) return id.split(":").slice(1).join(":");
+  return id;
+}
 
 // Keys must match the backend's task_type values from
 // backend/services/scheduler.py executor switch.
 // Both with and without `_task` suffix are listed because earlier code
 // used the suffixed form -- support both so old rows still render.
+//
+// The 'inbox_draft' / 'inbox_sent' / 'agent_run' keys are activity-feed
+// pseudo-types used by the /api/calendar/{tenant}/activity endpoint to
+// represent inbox items as calendar events.
 const TASK_TYPE_COLORS: Record<string, { bg: string; text: string; label: string }> = {
   send_email: { bg: "bg-blue-100", text: "text-blue-700", label: "Email" },
   publish_post: { bg: "bg-purple-100", text: "text-purple-700", label: "Post" },
@@ -34,6 +52,10 @@ const TASK_TYPE_COLORS: Record<string, { bg: string; text: string; label: string
   follow_up_task: { bg: "bg-emerald-100", text: "text-emerald-700", label: "Follow-up" },
   reminder: { bg: "bg-amber-100", text: "text-amber-700", label: "Reminder" },
   reminder_task: { bg: "bg-amber-100", text: "text-amber-700", label: "Reminder" },
+  // Activity feed pseudo-types
+  inbox_draft: { bg: "bg-gray-100", text: "text-gray-700", label: "Draft" },
+  inbox_sent: { bg: "bg-emerald-100", text: "text-emerald-700", label: "Sent" },
+  agent_run: { bg: "bg-purple-100", text: "text-purple-700", label: "Agent" },
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -86,6 +108,11 @@ export default function CalendarPage() {
   const { confirm } = useConfirm();
   const { showToast } = useNotifications();
   const [view, setView] = useState<ViewMode>("month");
+  // Filter mode: "all" (activity dashboard: scheduled + inbox + sent)
+  // vs "scheduled" (only things explicitly queued for execution).
+  // Default to "all" so the calendar feels useful even when the user
+  // hasn't explicitly scheduled anything yet.
+  const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [currentDate, setCurrentDate] = useState(new Date());
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [loading, setLoading] = useState(false);
@@ -113,15 +140,43 @@ export default function CalendarPage() {
         start = new Date().toISOString();
         end = addDays(new Date(), 30).toISOString();
       }
-      const res = await authFetch(`${API_URL}/api/schedule/${tenantId}/calendar?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
-      const data = await res.json();
-      setTasks(data.tasks || []);
+
+      if (filterMode === "all") {
+        // Unified marketing activity feed: scheduled tasks + inbox
+        // drafts + sent items, all in one normalized event shape.
+        const res = await authFetch(`${API_URL}/api/calendar/${tenantId}/activity?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
+        const data = await res.json();
+        // Map activity events into the ScheduledTask shape so the
+        // existing render code (TaskCard, MonthView, etc) works
+        // unchanged. The `source` field tells the renderer which
+        // colors/labels to use.
+        const events: ScheduledTask[] = (data.events || []).map((e: any) => ({
+          id: e.id,
+          task_type: e.source === "scheduled" ? (e.task_type || "reminder") : e.source,
+          title: e.title || "(untitled)",
+          scheduled_at: e.timestamp,
+          timezone: e.metadata?.timezone || "UTC",
+          status: e.status || "",
+          approval_status: e.approval_status || "",
+          created_by: e.metadata?.created_by || "",
+          payload: e.metadata || {},
+          source: e.source,
+          agent: e.agent,
+          href: e.href,
+        }));
+        setTasks(events);
+      } else {
+        const res = await authFetch(`${API_URL}/api/schedule/${tenantId}/calendar?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
+        const data = await res.json();
+        const scheduled: ScheduledTask[] = (data.tasks || []).map((t: any) => ({ ...t, source: "scheduled" as const }));
+        setTasks(scheduled);
+      }
     } catch {
       setTasks([]);
     } finally {
       setLoading(false);
     }
-  }, [tenantId, view, currentDate]);
+  }, [tenantId, view, currentDate, filterMode]);
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
@@ -187,9 +242,20 @@ export default function CalendarPage() {
     const tt = TASK_TYPE_COLORS[task.task_type] || TASK_TYPE_COLORS.reminder_task;
     const sc = STATUS_COLORS[task.status] || STATUS_COLORS.draft;
 
+    // Click behavior depends on source: scheduled tasks open the in-app
+    // detail panel (with Approve/Cancel/Execute buttons); inbox events
+    // jump to the inbox page deep-linked to that item.
+    const handleClick = () => {
+      if (task.source && task.source !== "scheduled" && task.href) {
+        window.location.href = task.href;
+      } else {
+        setSelected(task);
+      }
+    };
+
     return (
       <button
-        onClick={() => setSelected(task)}
+        onClick={handleClick}
         className={`w-full text-left rounded-md px-2 py-1 transition-colors hover:ring-1 hover:ring-[#534AB7]/30 ${tt.bg} ${compact ? "text-[10px]" : "text-xs"}`}
       >
         <div className="flex items-center gap-1">
@@ -397,14 +463,26 @@ export default function CalendarPage() {
               <div className="bg-[#F8F8F6] rounded-lg p-3 text-xs text-[#2C2C2A] whitespace-pre-wrap max-h-[150px] overflow-y-auto">{selected.payload.text}</div>
             )}
             <div className="flex items-center gap-2 pt-2 border-t border-[#E0DED8]">
-              {selected.approval_status === "pending" && (
-                <button onClick={() => handleApprove(selected.id)} className="px-3 py-1.5 bg-[#1D9E75] text-white text-xs rounded-lg hover:bg-[#178a64] transition-colors">Approve</button>
+              {/* Approve / Execute / Cancel only apply to ACTUAL scheduled
+                  tasks (rows in scheduled_tasks). For inbox events from
+                  the activity feed, show an "Open in Inbox" link instead.
+                  We strip the "scheduled:" id prefix when calling the
+                  scheduler endpoints since the backend expects raw uuids. */}
+              {(!selected.source || selected.source === "scheduled") && (
+                <>
+                  {selected.approval_status === "pending" && (
+                    <button onClick={() => handleApprove(rawTaskId(selected.id))} className="px-3 py-1.5 bg-[#1D9E75] text-white text-xs rounded-lg hover:bg-[#178a64] transition-colors">Approve</button>
+                  )}
+                  {["scheduled", "approved", "draft"].includes(selected.status) && (
+                    <button onClick={() => handleExecuteNow(rawTaskId(selected.id))} className="px-3 py-1.5 bg-[#534AB7] text-white text-xs rounded-lg hover:bg-[#433AA0] transition-colors">Execute Now</button>
+                  )}
+                  {!["sent", "published", "cancelled", "failed"].includes(selected.status) && (
+                    <button onClick={() => handleCancel(rawTaskId(selected.id))} className="px-3 py-1.5 bg-white text-[#D85A30] text-xs rounded-lg border border-[#D85A30] hover:bg-[#FEF2EE] transition-colors">Cancel</button>
+                  )}
+                </>
               )}
-              {["scheduled", "approved", "draft"].includes(selected.status) && (
-                <button onClick={() => handleExecuteNow(selected.id)} className="px-3 py-1.5 bg-[#534AB7] text-white text-xs rounded-lg hover:bg-[#433AA0] transition-colors">Execute Now</button>
-              )}
-              {!["sent", "published", "cancelled", "failed"].includes(selected.status) && (
-                <button onClick={() => handleCancel(selected.id)} className="px-3 py-1.5 bg-white text-[#D85A30] text-xs rounded-lg border border-[#D85A30] hover:bg-[#FEF2EE] transition-colors">Cancel</button>
+              {selected.source && selected.source !== "scheduled" && selected.href && (
+                <a href={selected.href} className="px-3 py-1.5 bg-[#534AB7] text-white text-xs rounded-lg hover:bg-[#433AA0] transition-colors">Open in Inbox →</a>
               )}
               <button onClick={() => setSelected(null)} className="px-3 py-1.5 text-xs text-[#5F5E5A] hover:text-[#2C2C2A] ml-auto">Close</button>
             </div>
@@ -446,20 +524,62 @@ export default function CalendarPage() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
           </button>
         </div>
-        <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-0.5">
-          {(["month", "week", "agenda"] as ViewMode[]).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                view === v ? "bg-white text-[#534AB7] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"
-              }`}
-            >
-              {v.charAt(0).toUpperCase() + v.slice(1)}
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          {/* Filter mode: All activity (drafts+sent+scheduled) vs Scheduled only */}
+          <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-0.5">
+            {([
+              { key: "all" as FilterMode, label: "All activity" },
+              { key: "scheduled" as FilterMode, label: "Scheduled" },
+            ]).map((opt) => (
+              <button
+                key={opt.key}
+                onClick={() => setFilterMode(opt.key)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  filterMode === opt.key ? "bg-white text-[#534AB7] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"
+                }`}
+                title={opt.key === "all" ? "Show drafts, sent items, and scheduled tasks" : "Show only items explicitly queued for execution"}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {/* View mode: month / week / agenda */}
+          <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-0.5">
+            {(["month", "week", "agenda"] as ViewMode[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  view === v ? "bg-white text-[#534AB7] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"
+                }`}
+              >
+                {v.charAt(0).toUpperCase() + v.slice(1)}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
+
+      {/* Activity legend (only when in 'all' mode and we have events) */}
+      {filterMode === "all" && tasks.length > 0 && (
+        <div className="flex items-center gap-3 text-[10px] text-[#5F5E5A] flex-wrap">
+          <span className="font-medium">Showing:</span>
+          {([
+            { key: "scheduled", label: "Scheduled", color: "bg-blue-400" },
+            { key: "inbox_draft", label: "Drafts", color: "bg-gray-400" },
+            { key: "inbox_sent", label: "Sent", color: "bg-emerald-400" },
+          ] as const).map((legend) => {
+            const count = tasks.filter((t) => t.source === legend.key).length;
+            if (count === 0) return null;
+            return (
+              <span key={legend.key} className="inline-flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${legend.color}`} />
+                {count} {legend.label.toLowerCase()}
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {/* Loading */}
       {loading && (

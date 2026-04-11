@@ -1217,11 +1217,120 @@ async def execute_task_now(tenant_id: str, task_id: str):
 async def get_calendar(tenant_id: str, start: str = "", end: str = ""):
     """Get scheduled tasks for the calendar view."""
     if not start or not end:
-        from datetime import timedelta
         now = datetime.now(timezone.utc)
         start = start or (now - timedelta(days=7)).isoformat()
         end = end or (now + timedelta(days=60)).isoformat()
     return {"tasks": scheduler_service.calendar_tasks(tenant_id, start, end)}
+
+
+@app.get("/api/calendar/{tenant_id}/activity")
+async def get_calendar_activity(tenant_id: str, start: str = "", end: str = ""):
+    """Unified marketing activity feed for the calendar view.
+
+    Returns events from multiple sources (scheduled tasks, inbox drafts,
+    sent items) in a single normalized event shape, so the calendar
+    becomes a 'marketing activity dashboard' instead of a 'things I
+    explicitly queued' calendar.
+
+    Each event has:
+      - id: stable id (uuid or composite)
+      - source: 'scheduled' | 'inbox_draft' | 'inbox_sent' | 'agent_run'
+      - title: short display label
+      - timestamp: ISO datetime to anchor on the calendar
+      - status: optional status badge
+      - agent: optional agent slug for color/icon
+      - href: optional deep-link target inside ARIA
+      - metadata: source-specific extras
+    """
+    sb = _get_supabase()
+    if not start or not end:
+        now = datetime.now(timezone.utc)
+        start = start or (now - timedelta(days=30)).isoformat()
+        end = end or (now + timedelta(days=60)).isoformat()
+
+    events: list[dict] = []
+
+    # 1. Scheduled tasks (existing source)
+    try:
+        tasks = scheduler_service.calendar_tasks(tenant_id, start, end)
+        for t in tasks:
+            tt = t.get("task_type", "")
+            href = "/calendar"
+            payload = t.get("payload") or {}
+            inbox_id = payload.get("inbox_item_id")
+            if inbox_id:
+                href = f"/inbox?id={inbox_id}"
+            events.append({
+                "id": f"scheduled:{t.get('id')}",
+                "source": "scheduled",
+                "task_type": tt,
+                "title": t.get("title") or tt,
+                "timestamp": t.get("scheduled_at"),
+                "status": t.get("status", ""),
+                "approval_status": t.get("approval_status", ""),
+                "href": href,
+                "metadata": {
+                    "timezone": t.get("timezone"),
+                    "created_by": t.get("created_by"),
+                    "raw_id": t.get("id"),
+                },
+            })
+    except Exception as e:
+        logger.warning("[calendar-activity] scheduled fetch failed: %s", e)
+
+    # 2. Inbox items (drafts + sent). Drafts use created_at, sent items
+    #    use updated_at when status is sent/published. Both within the
+    #    requested date range. This is what makes the calendar useful
+    #    even when nothing is explicitly scheduled.
+    try:
+        inbox_rows = (
+            sb.table("inbox_items")
+            .select("id,title,agent,type,status,created_at,updated_at")
+            .eq("tenant_id", tenant_id)
+            .gte("created_at", start)
+            .lte("created_at", end)
+            .order("created_at", desc=True)
+            .limit(500)
+            .execute()
+        )
+        for row in (inbox_rows.data or []):
+            status = row.get("status") or ""
+            is_sent = status in ("sent", "published", "completed")
+            # Choose timestamp: when it was sent (if applicable) or when
+            # it was created (if it's still a draft / pending)
+            ts = row.get("updated_at") if is_sent and row.get("updated_at") else row.get("created_at")
+            events.append({
+                "id": f"inbox:{row.get('id')}",
+                "source": "inbox_sent" if is_sent else "inbox_draft",
+                "task_type": row.get("type", ""),
+                "title": row.get("title", "Inbox item"),
+                "timestamp": ts,
+                "status": status,
+                "agent": row.get("agent", ""),
+                "href": f"/inbox?id={row.get('id')}",
+                "metadata": {
+                    "raw_id": row.get("id"),
+                    "type": row.get("type"),
+                },
+            })
+    except Exception as e:
+        logger.warning("[calendar-activity] inbox fetch failed: %s", e)
+
+    # Sort by timestamp ascending so the calendar can render in chrono order
+    events.sort(key=lambda e: (e.get("timestamp") or ""))
+
+    return {
+        "tenant_id": tenant_id,
+        "start": start,
+        "end": end,
+        "events": events,
+        "counts": {
+            "total": len(events),
+            "scheduled": sum(1 for e in events if e["source"] == "scheduled"),
+            "inbox_draft": sum(1 for e in events if e["source"] == "inbox_draft"),
+            "inbox_sent": sum(1 for e in events if e["source"] == "inbox_sent"),
+        },
+    }
 
 
 # ─── Usage API ───
