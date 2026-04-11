@@ -257,12 +257,22 @@ async def _dispatch_via_paperclip(
     if not task_desc:
         task_desc = f"Run {agent_name} agent for tenant {tenant_id}"
 
-    # Create an issue in Paperclip assigned to this agent
-    # Include tenant_id in title since Paperclip doesn't store issue body
+    # Create an issue in Paperclip assigned to this agent.
+    # Include tenant_id in title since Paperclip doesn't store issue body.
+    #
+    # status="todo" (not the default "backlog") is critical: the agent's
+    # heartbeat procedure queries /api/agents/me/inbox-lite first, which
+    # only returns todo/in_progress/blocked tasks. Without this, every
+    # delegated issue lands in backlog, the agent's inbox-lite returns
+    # empty, and the agent falls through to "list all assignments and
+    # ask the user which to work on" -- which is exactly what we saw in
+    # production: 18 backlog tasks accumulated, agent kept asking
+    # "which would you prefer?" instead of just executing.
     issue = _urllib_request("POST", f"/api/companies/{company_id}/issues", data={
         "title": f"[{tenant_id}] {task_desc[:170]}",
         "assigneeAgentId": paperclip_id,
         "priority": context.get("priority", "medium") if context else "medium",
+        "status": "todo",
     })
 
     if not issue or not issue.get("id"):
@@ -277,22 +287,34 @@ async def _dispatch_via_paperclip(
     # SAME mechanism the CEO chat path (run_agent_via_paperclip_sync)
     # uses, and it's the only one that actually works for claude_local
     # agents -- the comment fires Paperclip's `issue.comment` event
-    # which triggers the Automation run via wakeOnDemand=true (the
-    # claude_local default).
+    # which triggers the Automation run via wakeOnDemand=true.
     #
-    # We used to call /heartbeat/invoke here, but heartbeat doesn't
-    # actually trigger an Automation run for claude_local agents
-    # (it just succeeds at the HTTP level), so issues stayed in
-    # `backlog` forever and the watcher polled in vain. The memory
-    # docs warn explicitly: "Posting a comment on the issue auto-wakes
-    # the CEO via Paperclip's wakeOnDemand mechanism. Do NOT also
-    # call /heartbeat/invoke -- that creates a second On-demand run
-    # racing the Automation one."
-    #
-    # The body uses the [wake] prefix so pick_agent_output filters it
-    # out via _ARIA_FRAMING_PREFIXES (otherwise the watcher would
-    # potentially mistake the wake comment for the agent's reply).
-    wake_body = f"[wake] {task_desc[:1000]}"
+    # The wake comment is intentionally directive. We saw in production
+    # that a short wake body like "[wake] Create marketing email" got
+    # the agent to wake up but then "list all assignments and ask the
+    # user which to work on" instead of executing -- the agent's
+    # autonomy mode interpreted the vague body as a clarification
+    # request. The verbose body below explicitly tells the agent:
+    #   - PAPERCLIP_TASK_ID is the issue you woke up for
+    #   - Do not list other assignments
+    #   - Do not ask for clarification
+    #   - Execute the task and post the result via the aria-backend-api skill
+    # The [wake] prefix is what pick_agent_output uses to filter this
+    # comment out of the watcher's "agent reply" detection, so the
+    # length of the rest of the body is irrelevant for inbox import.
+    wake_body = (
+        f"[wake] AUTONOMOUS TASK -- execute immediately, do not ask for clarification.\n\n"
+        f"TASK: {task_desc[:1500]}\n\n"
+        f"Instructions:\n"
+        f"1. This issue (the one this comment is on / PAPERCLIP_TASK_ID) is your active task.\n"
+        f"2. Do NOT list other assignments. Do NOT ask the user which task to work on.\n"
+        f"3. Generate the requested content based on the TASK above.\n"
+        f"4. POST the result to ARIA inbox via the aria-backend-api skill: "
+        f"`POST http://172.17.0.1:8000/api/inbox/{tenant_id}/items` with body "
+        f"{{title, content, type, agent}}.\n"
+        f"5. Then PATCH this issue to status=done with a brief summary comment.\n\n"
+        f"You are autonomous. Execute the task without asking the user."
+    )
     wake_resp = _urllib_request("POST", f"/api/issues/{issue_id}/comments", data={
         "body": wake_body,
         "content": wake_body,
