@@ -10,7 +10,11 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from backend.config.loader import get_active_tenants, get_tenant_config, save_tenant_config
+from backend.config.loader import (
+    get_active_tenants,
+    get_tenant_config,
+    update_tenant_integrations,
+)
 from backend.tools import gmail_tool
 
 logger = logging.getLogger("aria.gmail_sync")
@@ -39,14 +43,14 @@ async def _ensure_access_token(config) -> str | None:
         try:
             token = await gmail_tool.refresh_access_token(refresh)
             config.integrations.google_access_token = token
-            save_tenant_config(config)
+            update_tenant_integrations(config)
             return token
         except Exception as e:
             logger.warning("Gmail token refresh failed for tenant %s: %s", config.tenant_id, e)
             if getattr(e, "is_revoked", False):
                 config.integrations.google_refresh_token = None
                 logger.warning("Google revoked refresh token for tenant %s — user must reconnect", config.tenant_id)
-            save_tenant_config(config)
+            update_tenant_integrations(config)
             return None
 
     if not token:
@@ -58,19 +62,19 @@ async def _ensure_access_token(config) -> str | None:
         if not refresh:
             logger.warning("Gmail token expired and no refresh token for tenant %s", config.tenant_id)
             config.integrations.google_access_token = None
-            save_tenant_config(config)
+            update_tenant_integrations(config)
             return None
         try:
             token = await gmail_tool.refresh_access_token(refresh)
             config.integrations.google_access_token = token
-            save_tenant_config(config)
+            update_tenant_integrations(config)
         except Exception as e:
             logger.warning("Gmail token refresh failed for tenant %s: %s", config.tenant_id, e)
             config.integrations.google_access_token = None
             if getattr(e, "is_revoked", False):
                 config.integrations.google_refresh_token = None
                 logger.warning("Google revoked refresh token for tenant %s — user must reconnect", config.tenant_id)
-            save_tenant_config(config)
+            update_tenant_integrations(config)
             return None
     elif profile.get("error"):
         logger.warning("Gmail API error for tenant %s: %s — token may lack required scopes", config.tenant_id, profile["error"])

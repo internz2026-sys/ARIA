@@ -236,6 +236,13 @@ async def lifespan(app: FastAPI):
     sync_task.cancel()
     scheduler_task.cancel()
     office_sync_task.cancel()
+    # Close the shared Paperclip httpx client so we don't leak connections
+    # on graceful shutdown (uvicorn reload during dev, container stop in prod).
+    try:
+        from backend.orchestrator import close_httpx_client
+        await close_httpx_client()
+    except Exception as e:
+        logger.warning("Failed to close orchestrator httpx client: %s", e)
 
 
 app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
@@ -5346,6 +5353,13 @@ for _f in _AGENTS_DIR.glob("*.md"):
     if _f.stem != "ceo":
         _AGENT_MDS[_f.stem] = _f.read_text(encoding="utf-8")
 
+# Pre-compiled regex patterns for CEO chat delegate/action block parsing.
+# Compiling these per-request is cheap but not free, and the chat handler
+# is the hottest non-streaming endpoint. Module-level wins about 50us per
+# call without changing semantics.
+_DELEGATE_BLOCK_RE = _re_crm.compile(r"```delegate\s*\n(.*?)\n```", _re_crm.DOTALL)
+_ACTION_BLOCK_RE = _re_crm.compile(r"```action\s*\n(.*?)\n```", _re_crm.DOTALL)
+
 # CRM context heuristic — module-level regexes (compiled once, not per request)
 # so the CEO chat handler can decide in O(1) whether to inject the CRM block.
 # Word-boundary matching avoids substring false positives ("ideal"→"deal",
@@ -5839,13 +5853,11 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     delegations = []
     clean_response = raw
     if "```delegate" in raw:
-        import re
-        blocks = re.findall(r"```delegate\s*\n(.*?)\n```", raw, re.DOTALL)
-        for block in blocks:
+        for block in _DELEGATE_BLOCK_RE.findall(raw):
             d = _parse_codeblock_json(block, "delegate")
             if d and d.get("agent") in ("content_writer", "email_marketer", "social_manager", "ad_strategist", "media"):
                 delegations.append(d)
-        clean_response = re.sub(r"```delegate\s*\n.*?\n```", "", raw, flags=re.DOTALL).strip()
+        clean_response = _DELEGATE_BLOCK_RE.sub("", raw).strip()
 
     # Defensive: if the model promised delegation in prose but forgot the block,
     # log loudly so we can see when the prompt isn't being followed.
@@ -5855,19 +5867,19 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                           "media designer to generate")
         raw_lower = raw.lower()
         if any(phrase in raw_lower for phrase in prose_promises):
-            logger = logging.getLogger("aria.ceo_chat")
-            logger.warning(f"CEO promised delegation in prose but emitted no ```delegate block. Raw response: {raw[:500]}")
+            logging.getLogger("aria.ceo_chat").warning(
+                "CEO promised delegation in prose but emitted no ```delegate block. Raw response: %s",
+                raw[:500],
+            )
 
     # Parse CEO action blocks
     ceo_actions = []
     if "```action" in clean_response:
-        import re
-        action_blocks = re.findall(r"```action\s*\n(.*?)\n```", clean_response, re.DOTALL)
-        for block in action_blocks:
+        for block in _ACTION_BLOCK_RE.findall(clean_response):
             a = _parse_codeblock_json(block, "action")
             if a and a.get("action"):
                 ceo_actions.append(a)
-        clean_response = re.sub(r"```action\s*\n.*?\n```", "", clean_response, flags=re.DOTALL).strip()
+        clean_response = _ACTION_BLOCK_RE.sub("", clean_response).strip()
 
     # Execute non-confirmation actions immediately; queue confirmations for frontend
     action_results = []

@@ -36,9 +36,40 @@ from backend.tasks.task_definitions import CRON_SCHEDULES, WORKFLOW_TEMPLATES
 logger = logging.getLogger("aria.orchestrator")
 
 
+# Cache the SSL context once at module load. ssl.create_default_context()
+# walks the system cert bundle on each call (~1-3ms on Windows) and we hit
+# this on every Paperclip urllib request — easy win in the watcher hot path.
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
+
+
 # ── Paperclip lookup helpers (formerly in backend/paperclip_sync.py) ─────
 
 PAPERCLIP_URL = os.environ.get("PAPERCLIP_API_URL", "http://127.0.0.1:3100")
+
+# Module-level httpx.AsyncClient singleton — opening a fresh client per request
+# pays the TCP+TLS handshake cost on every Paperclip GET, which adds up fast in
+# get_agent_status (now parallelized) and the office sync loop. Reuses
+# connections via the underlying connection pool.
+_httpx_client: httpx.AsyncClient | None = None
+
+
+def _get_httpx_client() -> httpx.AsyncClient:
+    global _httpx_client
+    if _httpx_client is None:
+        _httpx_client = httpx.AsyncClient(timeout=15.0)
+    return _httpx_client
+
+
+async def close_httpx_client() -> None:
+    """Close the shared httpx client. Call from app shutdown."""
+    global _httpx_client
+    if _httpx_client is not None:
+        try:
+            await _httpx_client.aclose()
+        finally:
+            _httpx_client = None
 
 # Hardcoded fallback IDs from the production Paperclip company. These are
 # used when no live sync has populated the cache. Override via env vars per
@@ -87,32 +118,29 @@ def _urllib_request(method: str, path: str, data: dict | None = None, *, strict:
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        r = urllib.request.urlopen(req, timeout=15, context=ctx)
+        r = urllib.request.urlopen(req, timeout=15, context=_SSL_CTX)
         try:
             return _json.loads(r.read().decode())
         except (_json.JSONDecodeError, UnicodeDecodeError) as e:
-            logger.warning(f"urllib {method} {path} returned non-JSON: {e}")
+            logger.warning("urllib %s %s returned non-JSON: %s", method, path, e)
             return None
     except urllib.error.HTTPError as e:
         # 4xx / 5xx -- Paperclip IS reachable, just unhappy with this
         # specific request. Don't treat as outage.
-        logger.warning(f"urllib {method} {path} HTTP {e.code}: {e.reason}")
+        logger.warning("urllib %s %s HTTP %s: %s", method, path, e.code, e.reason)
         return None
     except (urllib.error.URLError, ConnectionError, TimeoutError, OSError, ssl.SSLError) as e:
         # Network-level failure -- Paperclip is unreachable or DNS broken
         # or the connection died. THIS is the case the watcher needs to
         # bail on instead of waiting 10 minutes for nothing.
-        logger.warning(f"urllib {method} {path} unreachable: {type(e).__name__}: {e}")
+        logger.warning("urllib %s %s unreachable: %s: %s", method, path, type(e).__name__, e)
         if strict:
             raise PaperclipUnreachable(f"{type(e).__name__}: {e}") from e
         return None
     except Exception as e:
         # Catch-all for anything we didn't anticipate. Log loudly so we
         # notice new failure modes; never raise for non-strict callers.
-        logger.warning(f"urllib {method} {path} failed: {type(e).__name__}: {e}")
+        logger.warning("urllib %s %s failed: %s: %s", method, path, type(e).__name__, e)
         if strict:
             raise PaperclipUnreachable(f"{type(e).__name__}: {e}") from e
         return None
@@ -159,7 +187,7 @@ async def log_agent_action(tenant_id: str, agent_name: str, action: str, result:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }).execute()
     except Exception as e:
-        logger.error(f"Failed to log agent action: {e}")
+        logger.error("Failed to log agent action: %s", e)
 
 
 # Per-agent API keys for Paperclip
@@ -190,13 +218,13 @@ async def _paperclip_api(method: str, path: str, agent_key: str = "", **kwargs) 
         headers["referer"] = PAPERCLIP_URL + "/"
     headers["Content-Type"] = "application/json"
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            resp = await client.request(method, f"{PAPERCLIP_URL}{path}", headers=headers, **kwargs)
-            return resp
-        except httpx.ConnectError:
-            logger.warning("Paperclip unreachable, falling back to local dispatch")
-            return None
+    client = _get_httpx_client()
+    try:
+        resp = await client.request(method, f"{PAPERCLIP_URL}{path}", headers=headers, **kwargs)
+        return resp
+    except httpx.ConnectError:
+        logger.warning("Paperclip unreachable, falling back to local dispatch")
+        return None
 
 
 async def dispatch_agent(tenant_id: str, agent_name: str, context: dict | None = None) -> dict:
@@ -206,12 +234,12 @@ async def dispatch_agent(tenant_id: str, agent_name: str, context: dict | None =
     # The media agent is a utility available to every tenant — it doesn't
     # need to be in the per-tenant active_agents list to be usable.
     if agent_name != "media" and agent_name not in config.active_agents:
-        logger.warning(f"Agent {agent_name} not active for tenant {tenant_id}")
+        logger.warning("Agent %s not active for tenant %s", agent_name, tenant_id)
         return {"status": "skipped", "reason": "agent_not_active"}
 
     agent_module = AGENT_REGISTRY.get(agent_name)
     if not agent_module:
-        logger.error(f"Agent {agent_name} not found in registry")
+        logger.error("Agent %s not found in registry", agent_name)
         return {"status": "error", "reason": "agent_not_found"}
 
     # ── Route through Paperclip ──
@@ -276,12 +304,12 @@ async def _dispatch_via_paperclip(
     })
 
     if not issue or not issue.get("id"):
-        logger.warning(f"Failed to create Paperclip issue for {agent_name}")
+        logger.warning("Failed to create Paperclip issue for %s", agent_name)
         return None
 
     issue_id = issue["id"]
     identifier = issue.get("identifier", issue_id)
-    logger.info(f"Paperclip issue created for {agent_name}: {identifier}")
+    logger.info("Paperclip issue created for %s: %s", agent_name, identifier)
 
     # Wake the agent by posting a comment on the issue. This is the only
     # mechanism that actually works for claude_local agents -- the comment
@@ -320,11 +348,12 @@ async def _dispatch_via_paperclip(
     })
     wake_ok = wake_resp is not None
     if wake_ok:
-        logger.warning(f"[paperclip-wake] comment posted to wake {agent_name} (issue {identifier})")
+        logger.warning("[paperclip-wake] comment posted to wake %s (issue %s)", agent_name, identifier)
     else:
         logger.error(
-            f"[paperclip-wake] FAILED to post wake comment for {agent_name} (issue {identifier}) -- "
-            f"agent will only run when next Timer fires"
+            "[paperclip-wake] FAILED to post wake comment for %s (issue %s) -- "
+            "agent will only run when next Timer fires",
+            agent_name, identifier,
         )
 
     await log_agent_action(tenant_id, agent_name, "paperclip_dispatch", {
@@ -363,7 +392,7 @@ def _sanitize_error_message(exc: Exception, max_len: int = 200) -> str:
 async def _dispatch_local(tenant_id: str, agent_name: str, agent_module, context: dict | None) -> dict:
     """Direct local dispatch without Paperclip coordination."""
     try:
-        logger.info(f"Local dispatch: {agent_name} for tenant {tenant_id}")
+        logger.info("Local dispatch: %s for tenant %s", agent_name, tenant_id)
         result = await agent_module.run(
             tenant_id,
             **({"context": context} if context and "context" in agent_module.run.__code__.co_varnames else {}),
@@ -373,7 +402,7 @@ async def _dispatch_local(tenant_id: str, agent_name: str, agent_module, context
     except Exception as e:
         error_result = {"status": "error", "error": _sanitize_error_message(e)}
         await log_agent_action(tenant_id, agent_name, "run", error_result, status="error")
-        logger.error(f"Agent {agent_name} failed for tenant {tenant_id}: {type(e).__name__}: {e}")
+        logger.error("Agent %s failed for tenant %s: %s: %s", agent_name, tenant_id, type(e).__name__, e)
         return error_result
 
 
@@ -428,9 +457,9 @@ async def run_scheduled_agents():
             tasks.append(dispatch_agent(str(tenant.tenant_id), agent_name))
 
     if tasks:
-        logger.info(f"Running {len(tasks)} scheduled agent tasks")
+        logger.info("Running %d scheduled agent tasks", len(tasks))
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        logger.info(f"Completed {len(results)} tasks")
+        logger.info("Completed %d tasks", len(results))
         return results
 
     return []
@@ -455,7 +484,7 @@ async def handle_webhook(event_type: str, payload: dict) -> dict:
 
     agent_name = dispatch_map.get(event_type)
     if not agent_name:
-        logger.warning(f"No agent mapped for event type: {event_type}")
+        logger.warning("No agent mapped for event type: %s", event_type)
         return {"status": "skipped", "reason": f"unmapped_event: {event_type}"}
 
     return await dispatch_agent(tenant_id, agent_name, context=payload)
@@ -484,23 +513,51 @@ async def resume_agent_paperclip(agent_name: str) -> bool:
 
 
 async def get_agent_status(tenant_id: str) -> list[dict]:
-    """Get status of all agents for a tenant. Enriches with Paperclip status if available."""
-    config = get_tenant_config(tenant_id)
-    statuses = []
+    """Get status of all agents for a tenant. Enriches with Paperclip status if available.
 
-    for agent_name in config.active_agents:
-        last_log = (
+    Previously O(N) sequential round-trips to Supabase + O(N) sequential
+    Paperclip GETs (12 round-trips for 6 agents). Now: 1 batched logs query
+    grouped in Python + parallel Paperclip GETs via asyncio.gather.
+    """
+    config = get_tenant_config(tenant_id)
+    active = list(config.active_agents)
+    if not active:
+        return []
+
+    # ── 1. Single batched fetch of recent logs for all active agents ──
+    # Pull a slice big enough to contain at least one row per agent in the
+    # common case; we then group in Python and keep the most recent. The
+    # limit is generous because agent_logs is append-only and indexed on
+    # (tenant_id, timestamp DESC).
+    def _fetch_recent_logs():
+        return (
             get_db()
             .table("agent_logs")
-            .select("*")
+            .select("agent_name,action,timestamp")
             .eq("tenant_id", tenant_id)
-            .eq("agent_name", agent_name)
+            .in_("agent_name", active)
             .order("timestamp", desc=True)
-            .limit(1)
+            .limit(max(50, len(active) * 10))
             .execute()
         )
-        last_action = last_log.data[0] if last_log.data else None
 
+    logs_res = await asyncio.to_thread(_fetch_recent_logs)
+    last_by_agent: dict[str, dict] = {}
+    for row in logs_res.data or []:
+        name = row.get("agent_name")
+        if name and name not in last_by_agent:
+            last_by_agent[name] = row
+            if len(last_by_agent) == len(active):
+                break
+
+    # ── 2. Build status entries + collect Paperclip GETs to run in parallel ──
+    pc_connected = paperclip_connected()
+    statuses: list[dict] = []
+    pc_tasks: list[tuple[int, str]] = []  # (status_index, paperclip_id)
+
+    for agent_name in active:
+        last_action = last_by_agent.get(agent_name)
+        pid = get_paperclip_agent_id(agent_name) if pc_connected else None
         status_entry = {
             "agent_name": agent_name,
             "status": "idle",
@@ -510,18 +567,27 @@ async def get_agent_status(tenant_id: str) -> list[dict]:
                 (dept for dept, agents in DEPARTMENT_MAP.items() if agent_name in agents),
                 "unknown",
             ),
-            "paperclip_managed": paperclip_connected() and get_paperclip_agent_id(agent_name) is not None,
+            "paperclip_managed": pid is not None,
         }
-
-        # Enrich with Paperclip live status
-        if status_entry["paperclip_managed"]:
-            pid = get_paperclip_agent_id(agent_name)
-            resp = await _paperclip_api("GET", f"/api/agents/{pid}")
-            if resp and resp.status_code == 200:
-                pc_data = resp.json()
-                status_entry["paperclip_status"] = pc_data.get("status", "unknown")
-                status_entry["paperclip_agent_id"] = pid
-
+        if pid:
+            pc_tasks.append((len(statuses), pid))
         statuses.append(status_entry)
+
+    # ── 3. Parallel Paperclip enrichment ──
+    if pc_tasks:
+        responses = await asyncio.gather(
+            *(_paperclip_api("GET", f"/api/agents/{pid}") for _, pid in pc_tasks),
+            return_exceptions=True,
+        )
+        for (idx, pid), resp in zip(pc_tasks, responses):
+            if isinstance(resp, Exception) or resp is None:
+                continue
+            if getattr(resp, "status_code", None) == 200:
+                try:
+                    pc_data = resp.json()
+                except Exception:
+                    continue
+                statuses[idx]["paperclip_status"] = pc_data.get("status", "unknown")
+                statuses[idx]["paperclip_agent_id"] = pid
 
     return statuses

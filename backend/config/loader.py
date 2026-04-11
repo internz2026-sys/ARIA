@@ -30,6 +30,7 @@ def _get_supabase() -> Client:
 # Avoids hitting Supabase on every get_tenant_config call (30+ per request chain)
 _config_cache: dict[str, tuple[TenantConfig, float]] = {}
 _CACHE_TTL = 10  # seconds — short enough to pick up changes quickly
+_CACHE_MAX_ENTRIES = 500  # cap to prevent unbounded growth across many tenants
 
 
 def _cache_get(tenant_id: str) -> TenantConfig | None:
@@ -40,6 +41,14 @@ def _cache_get(tenant_id: str) -> TenantConfig | None:
 
 
 def _cache_set(tenant_id: str, config: TenantConfig):
+    # Bounded cache: when we hit the cap, evict the oldest entry by insertion
+    # order (Python dicts preserve insertion order). Cheap O(1) eviction
+    # without dragging in functools.lru_cache, which doesn't fit our manual
+    # invalidation pattern.
+    if len(_config_cache) >= _CACHE_MAX_ENTRIES and tenant_id not in _config_cache:
+        oldest = next(iter(_config_cache), None)
+        if oldest is not None:
+            _config_cache.pop(oldest, None)
     _config_cache[tenant_id] = (config, time.time())
 
 
@@ -90,6 +99,29 @@ def update_tenant_config(tenant_id: str | UUID, updates: dict) -> TenantConfig:
     sb.table("tenant_configs").update(updates).eq("tenant_id", tid).execute()
     _cache_invalidate(tid)
     return get_tenant_config(tid)
+
+
+def update_tenant_integrations(config: TenantConfig) -> None:
+    """Persist ONLY the integrations column for a tenant.
+
+    Hot-path callers (Gmail token refresh, OAuth callbacks) only mutate
+    config.integrations but were going through save_tenant_config which
+    upserts the entire row — that's a 30+ column write that also has to
+    survive the column-strip retry loop. Targeted UPDATE of the integrations
+    JSONB column is dramatically cheaper, especially when the loop is
+    refreshing tokens for many tenants in series.
+
+    Note: this also primes the in-memory cache with the supplied config so
+    the very next get_tenant_config() in the same request doesn't refetch.
+    """
+    sb = _get_supabase()
+    tid = str(config.tenant_id)
+    integrations_json = config.integrations.model_dump(mode="json")
+    sb.table("tenant_configs").update(
+        {"integrations": integrations_json}
+    ).eq("tenant_id", tid).execute()
+    # Prime cache instead of invalidating — we already have the new state.
+    _cache_set(tid, config)
 
 
 def get_active_tenants() -> list[TenantConfig]:
