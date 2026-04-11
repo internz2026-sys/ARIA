@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { API_URL, authFetch } from "@/lib/api";
 
@@ -16,6 +16,24 @@ const futureIntegrations = [
 ];
 
 export default function SettingsPage() {
+  // Track all OAuth message listeners + safety timers so we can clean
+  // them up if the component unmounts before the popup completes its
+  // postMessage. Without this, listeners leaked: a popup closed cleanly
+  // by the user (no postMessage) would leave a window listener active
+  // until its 15-30s safety timer fired -- and if the user navigated
+  // away first, the listener stayed pinned to the SettingsPage closure
+  // forever.
+  const oauthCleanupRef = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    return () => {
+      // Run all cleanup callbacks on unmount
+      for (const cleanup of oauthCleanupRef.current) {
+        try { cleanup(); } catch {}
+      }
+      oauthCleanupRef.current = [];
+    };
+  }, []);
+
   const [activeTab, setActiveTab] = useState("Profile");
   const [user, setUser] = useState({ name: "", email: "", company: "" });
   const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
@@ -86,10 +104,20 @@ export default function SettingsPage() {
       setGmailReconnecting(false);
     }
 
-    // Listen for postMessage from the popup
+    // Listen for postMessage from the popup. Cleanup is registered in
+    // oauthCleanupRef so an unmount during the popup window can still
+    // remove the listener instead of leaking it for 15s.
+    let cleaned = false;
+    function cleanup() {
+      if (cleaned) return;
+      cleaned = true;
+      window.removeEventListener("message", onMessage);
+      clearInterval(timer);
+      clearTimeout(safetyTimer);
+    }
     function onMessage(e: MessageEvent) {
       if (e.data === "gmail_connected") {
-        window.removeEventListener("message", onMessage);
+        cleanup();
         refreshGmailStatus();
       }
     }
@@ -103,39 +131,55 @@ export default function SettingsPage() {
     );
     // Fallback: poll for popup close (may fail cross-origin, so also use timer)
     const timer = setInterval(() => {
-      try { if (!popup || popup.closed) { clearInterval(timer); refreshGmailStatus(); } } catch { /* cross-origin */ }
+      try { if (!popup || popup.closed) { cleanup(); refreshGmailStatus(); } } catch { /* cross-origin */ }
     }, 500);
     // Safety fallback: refresh status after 15s regardless
-    setTimeout(() => { window.removeEventListener("message", onMessage); refreshGmailStatus(); }, 15000);
+    const safetyTimer = setTimeout(() => { cleanup(); refreshGmailStatus(); }, 15000);
+    oauthCleanupRef.current.push(cleanup);
   }
 
   function connectTwitter() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
     window.open(`${API_URL}/api/auth/twitter/connect/${tenantId}`, "twitter_auth", "width=600,height=700");
-    // Listen for postMessage from popup
+    let cleaned = false;
+    function cleanup() {
+      if (cleaned) return;
+      cleaned = true;
+      window.removeEventListener("message", onMsg);
+      clearTimeout(safetyTimer);
+    }
     function onMsg(e: MessageEvent) {
       if (e.data === "twitter_connected") {
-        window.removeEventListener("message", onMsg);
+        cleanup();
         authFetch(`${API_URL}/api/integrations/${tenantId}/twitter-status`).then(r => r.json()).then(data => { setTwitterConnected(!!data?.connected); setTwitterUsername(data?.username || ""); }).catch(() => {});
       }
     }
     window.addEventListener("message", onMsg);
-    setTimeout(() => window.removeEventListener("message", onMsg), 30000);
+    const safetyTimer = setTimeout(cleanup, 30000);
+    oauthCleanupRef.current.push(cleanup);
   }
 
   function connectLinkedIn() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
     window.open(`${API_URL}/api/auth/linkedin/connect/${tenantId}`, "linkedin_auth", "width=600,height=700");
+    let cleaned = false;
+    function cleanup() {
+      if (cleaned) return;
+      cleaned = true;
+      window.removeEventListener("message", onMsg);
+      clearTimeout(safetyTimer);
+    }
     function onMsg(e: MessageEvent) {
       if (e.data === "linkedin_connected") {
-        window.removeEventListener("message", onMsg);
+        cleanup();
         authFetch(`${API_URL}/api/integrations/${tenantId}/linkedin-status`).then(r => r.json()).then(data => { setLinkedinConnected(!!data?.connected); setLinkedinName(data?.name || ""); setLinkedinPostingTo(data?.posting_to || "personal"); setLinkedinOrgName(data?.org_name || ""); }).catch(() => {});
       }
     }
     window.addEventListener("message", onMsg);
-    setTimeout(() => window.removeEventListener("message", onMsg), 30000);
+    const safetyTimer = setTimeout(cleanup, 30000);
+    oauthCleanupRef.current.push(cleanup);
   }
 
   async function fetchLinkedInOrgs() {

@@ -9,6 +9,7 @@ import {
 } from "@/lib/crm-config";
 import { formatDateAgo as timeAgo } from "@/lib/utils";
 import { useNotifications } from "@/lib/use-notifications";
+import { useConfirm } from "@/lib/use-confirm";
 
 // ─── Modal ───
 
@@ -48,6 +49,7 @@ type Tab = "contacts" | "companies" | "deals";
 
 export default function CRMPage() {
   const { showToast } = useNotifications();
+  const { confirm } = useConfirm();
   const [tab, setTab] = useState<Tab>("contacts");
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
@@ -151,6 +153,15 @@ export default function CRMPage() {
   }
 
   async function handleDeleteContact(id: string) {
+    const c = contacts.find((x) => x.id === id);
+    const ok = await confirm({
+      title: "Delete this contact?",
+      message: c ? `${c.name} will be permanently removed from your CRM.` : "This contact will be permanently removed.",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await crm.deleteContact(tenantId, id);
       fetchContacts();
@@ -200,6 +211,15 @@ export default function CRMPage() {
   }
 
   async function handleDeleteCompany(id: string) {
+    const c = companies.find((x) => x.id === id);
+    const ok = await confirm({
+      title: "Delete this company?",
+      message: c ? `${c.name} will be permanently removed.` : "This company will be permanently removed.",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await crm.deleteCompany(tenantId, id);
       fetchCompanies();
@@ -251,6 +271,15 @@ export default function CRMPage() {
   }
 
   async function handleDeleteDeal(id: string) {
+    const d = deals.find((x) => x.id === id);
+    const ok = await confirm({
+      title: "Delete this deal?",
+      message: d ? `"${d.title}" will be permanently removed from your pipeline.` : "This deal will be permanently removed.",
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await crm.deleteDeal(tenantId, id);
       fetchDeals();
@@ -312,7 +341,7 @@ export default function CRMPage() {
               <input
                 value={contactSearch} onChange={e => setContactSearch(e.target.value)}
                 placeholder="Search contacts..."
-                className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-[#E0DED8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 text-[#2C2C2A] placeholder:text-[#B0AFA8]"
+                className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-[#E0DED8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 text-[#2C2C2A] placeholder:text-[#6B6A65]"
               />
             </div>
             <select value={contactFilter} onChange={e => setContactFilter(e.target.value)}
@@ -384,7 +413,7 @@ export default function CRMPage() {
             <div className="flex-1 relative">
               <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#9E9C95]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
               <input value={companySearch} onChange={e => setCompanySearch(e.target.value)} placeholder="Search companies..."
-                className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-[#E0DED8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 text-[#2C2C2A] placeholder:text-[#B0AFA8]" />
+                className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-[#E0DED8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 text-[#2C2C2A] placeholder:text-[#6B6A65]" />
             </div>
           </div>
           <div className="bg-white rounded-xl border border-[#E0DED8] overflow-hidden">

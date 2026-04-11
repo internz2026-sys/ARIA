@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { API_URL, authFetch } from "@/lib/api";
+import { useConfirm } from "@/lib/use-confirm";
+import { useNotifications } from "@/lib/use-notifications";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -81,11 +83,15 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export default function CalendarPage() {
+  const { confirm } = useConfirm();
+  const { showToast } = useNotifications();
   const [view, setView] = useState<ViewMode>("month");
   const [currentDate, setCurrentDate] = useState(new Date());
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<ScheduledTask | null>(null);
+  // For "+N more" expand-day modal
+  const [expandedDay, setExpandedDay] = useState<{ date: Date; tasks: ScheduledTask[] } | null>(null);
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
   const fetchTasks = useCallback(async () => {
@@ -128,23 +134,51 @@ export default function CalendarPage() {
   }
 
   async function handleCancel(taskId: string) {
-    if (!confirm("Cancel this scheduled task?")) return;
-    await authFetch(`${API_URL}/api/schedule/${tenantId}/tasks/${taskId}/cancel`, { method: "POST" });
-    setSelected(null);
-    fetchTasks();
+    const ok = await confirm({
+      title: "Cancel this scheduled task?",
+      message: "It will not be executed.",
+      confirmLabel: "Yes, cancel",
+      cancelLabel: "Keep it",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await authFetch(`${API_URL}/api/schedule/${tenantId}/tasks/${taskId}/cancel`, { method: "POST" });
+      setSelected(null);
+      fetchTasks();
+      showToast({ title: "Task cancelled", variant: "success" });
+    } catch (err: any) {
+      showToast({ title: "Couldn't cancel", body: err?.message, variant: "error" });
+    }
   }
 
   async function handleApprove(taskId: string) {
-    await authFetch(`${API_URL}/api/schedule/${tenantId}/tasks/${taskId}/approve`, { method: "POST" });
-    setSelected(null);
-    fetchTasks();
+    try {
+      await authFetch(`${API_URL}/api/schedule/${tenantId}/tasks/${taskId}/approve`, { method: "POST" });
+      setSelected(null);
+      fetchTasks();
+      showToast({ title: "Task approved", body: "Will run at the scheduled time.", variant: "success" });
+    } catch (err: any) {
+      showToast({ title: "Couldn't approve", body: err?.message, variant: "error" });
+    }
   }
 
   async function handleExecuteNow(taskId: string) {
-    if (!confirm("Execute this task immediately?")) return;
-    await authFetch(`${API_URL}/api/schedule/${tenantId}/tasks/${taskId}/execute-now`, { method: "POST" });
-    setSelected(null);
-    fetchTasks();
+    const ok = await confirm({
+      title: "Execute now?",
+      message: "This task will run immediately instead of waiting for its scheduled time.",
+      confirmLabel: "Run now",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    try {
+      await authFetch(`${API_URL}/api/schedule/${tenantId}/tasks/${taskId}/execute-now`, { method: "POST" });
+      setSelected(null);
+      fetchTasks();
+      showToast({ title: "Task executing", variant: "success" });
+    } catch (err: any) {
+      showToast({ title: "Couldn't execute", body: err?.message, variant: "error" });
+    }
   }
 
   // ─── Task Card ──────────────────────────────────────────────────────────
@@ -216,7 +250,12 @@ export default function CalendarPage() {
                       <TaskCard key={t.id} task={t} compact />
                     ))}
                     {dayTasks.length > 3 && (
-                      <div className="text-[9px] text-[#534AB7] font-medium pl-1">+{dayTasks.length - 3} more</div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setExpandedDay({ date: day, tasks: dayTasks }); }}
+                        className="text-[9px] text-[#534AB7] font-medium pl-1 hover:underline cursor-pointer w-full text-left"
+                      >
+                        +{dayTasks.length - 3} more
+                      </button>
                     )}
                   </div>
                 </div>
@@ -253,7 +292,7 @@ export default function CalendarPage() {
                   <TaskCard key={t.id} task={t} />
                 ))}
                 {dayTasks.length === 0 && (
-                  <div className="text-[10px] text-[#B0AFA8] text-center mt-4">No tasks</div>
+                  <div className="text-[10px] text-[#6B6A65] text-center mt-4">No tasks</div>
                 )}
               </div>
             );
@@ -436,6 +475,35 @@ export default function CalendarPage() {
 
       {/* Detail modal */}
       <DetailPanel />
+
+      {/* Expanded day modal: shown when user clicks "+N more" on a day cell */}
+      {expandedDay && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={() => setExpandedDay(null)}
+        >
+          <div
+            className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl w-[480px] max-w-[calc(100vw-32px)] max-h-[80vh] overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3 border-b border-[#E0DED8]">
+              <h3 className="text-sm font-semibold text-[#2C2C2A]">
+                {expandedDay.tasks.length} task{expandedDay.tasks.length === 1 ? "" : "s"} on {expandedDay.date.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+              </h3>
+              <button onClick={() => setExpandedDay(null)} className="text-[#6B6A65] hover:text-[#2C2C2A]">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto px-5 py-4 space-y-2">
+              {expandedDay.tasks.map((t) => (
+                <div key={t.id} onClick={() => { setSelected(t); setExpandedDay(null); }}>
+                  <TaskCard task={t} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

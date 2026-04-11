@@ -334,7 +334,7 @@ export default function DashboardPage() {
           <div key={kpi.label} className="bg-white rounded-xl border border-[#E0DED8] p-5 hover:shadow-sm transition-shadow">
             <p className="text-sm text-[#5F5E5A] font-medium">{kpi.label}</p>
             <p className={`text-3xl font-semibold mt-1 ${kpi.value ? "text-[#2C2C2A]" : "text-[#E0DED8]"}`}>{kpi.display}</p>
-            <p className={`text-xs mt-2 ${kpi.value ? "text-[#1D9E75] font-medium" : "text-[#B0AFA8]"}`}>{kpi.sub}</p>
+            <p className={`text-xs mt-2 ${kpi.value ? "text-[#1D9E75] font-medium" : "text-[#6B6A65]"}`}>{kpi.sub}</p>
           </div>
         ))}
       </div>
@@ -404,12 +404,18 @@ export default function DashboardPage() {
                         key={task.id}
                         draggable
                         onDragStart={() => handleDragStart(task.id)}
+                        onClick={() => setViewingTask(task)}
                         className="bg-white rounded-lg border border-[#E0DED8] px-3 py-2 shadow-sm hover:shadow-md transition-shadow cursor-grab active:cursor-grabbing group"
+                        title={task.title}
                       >
-                        {/* Compact: one-line title + agent dot */}
+                        {/* Compact: one-line title + agent dot. Whole card
+                            is clickable now (not just the eye icon which
+                            was opacity-0 group-hover-only and invisible on
+                            touch devices). title attr also gives a hover
+                            tooltip showing the full text on desktop. */}
                         <div className="flex items-center gap-2">
                           <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: agentInfo.color }} title={agentInfo.name} />
-                          <p className="text-xs font-medium text-[#2C2C2A] truncate flex-1">{shortTitle}</p>
+                          <p className="text-xs font-medium text-[#2C2C2A] truncate flex-1" title={task.title}>{shortTitle}</p>
                           <span className="text-[9px] font-medium px-1 py-0.5 rounded shrink-0" style={{ color: ps.color, backgroundColor: ps.bg }}>{ps.label}</span>
                           {/* View button */}
                           <button
@@ -456,7 +462,7 @@ export default function DashboardPage() {
                     onChange={e => handleTitleChange(e.target.value)}
                     placeholder="e.g. Write blog post about API best practices"
                     autoFocus
-                    className="w-full px-3 py-2.5 pr-10 bg-white border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7]"
+                    className="w-full px-3 py-2.5 pr-10 bg-white border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7]"
                     onKeyDown={e => e.key === "Enter" && !triaging && addTask()}
                   />
                   {triaging && (

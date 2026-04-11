@@ -12,6 +12,7 @@ import ToastContainer from "@/components/shared/ToastContainer";
 import { CeoChatProvider } from "@/lib/use-ceo-chat";
 import { NotificationProvider } from "@/lib/use-notifications";
 import { OfficeAgentsProvider } from "@/lib/use-office-agents";
+import { ConfirmProvider } from "@/lib/use-confirm";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -79,6 +80,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     <CeoChatProvider>
       <NotificationProvider>
       <OfficeAgentsProvider>
+      <ConfirmProvider>
       <div className="min-h-screen bg-[#F8F8F6] flex">
         {/* Mobile overlay */}
         {sidebarOpen && (
@@ -135,6 +137,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <OfficeKanban />
         <ToastContainer />
       </div>
+      </ConfirmProvider>
       </OfficeAgentsProvider>
       </NotificationProvider>
     </CeoChatProvider>

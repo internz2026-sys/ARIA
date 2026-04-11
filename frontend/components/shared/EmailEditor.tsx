@@ -103,7 +103,14 @@ export default function EmailEditor({
       await onSave({ to, subject, html_body: getCurrentHtml() });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch {}
+    } catch (err) {
+      // Re-throw so the parent's handleSaveDraft -> showToast catches
+      // it. Was previously swallowed silently with `catch {}` -- the
+      // user got no feedback when their save failed and lost their
+      // edits next time the iframe remounted.
+      setSaving(false);
+      throw err;
+    }
     setSaving(false);
   }, [to, subject, onSave, getCurrentHtml]);
 
@@ -210,11 +217,19 @@ export default function EmailEditor({
 
       {/* Content area */}
       <div className="flex-1 overflow-auto bg-white">
-        {/* Edit mode: contentEditable iframe — preserves all HTML/CSS styling */}
+        {/* Edit mode: contentEditable iframe — preserves all HTML/CSS styling.
+            NOTE: do NOT key this iframe by htmlBody content. A previous
+            version used `key={"edit-" + htmlBody.slice(0, 50)}` which
+            forced a remount whenever the first 50 chars of htmlBody
+            changed. Any parent re-render that passed a slightly modified
+            htmlBody (e.g. a Socket.IO `inbox_item_updated` event arriving
+            mid-edit) destroyed the iframe and threw away the user's
+            in-progress typing. Tab switches still cause a fresh mount via
+            the `tab === "edit"` conditional, which is the only remount
+            we actually want. */}
         {tab === "edit" && (
           <iframe
             ref={editIframeRef}
-            key={"edit-" + htmlBody.slice(0, 50)}
             srcDoc={sourceHtml}
             title="Edit email"
             className="w-full min-h-[300px] border-0"

@@ -45,6 +45,41 @@ export default function FloatingChat() {
     if (open) seenCount.current = messages.length;
   }, [open, messages]);
 
+  // Global keyboard shortcut: Cmd+K (Mac) or Ctrl+K (Win/Linux) toggles
+  // the chat panel from anywhere in the dashboard. Power-user feature
+  // -- the target user (technical founder) expects this on day 2.
+  // Skipped when typing in inputs/textareas/contenteditable so it
+  // doesn't fight with the user's text input.
+  useEffect(() => {
+    function isTypingTarget(e: KeyboardEvent): boolean {
+      const t = e.target as HTMLElement | null;
+      if (!t) return false;
+      const tag = t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (t.isContentEditable) return true;
+      return false;
+    }
+    function onKey(e: KeyboardEvent) {
+      // Cmd+K / Ctrl+K toggles the panel (Mac uses metaKey, Win/Linux ctrlKey)
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setOpen((v) => !v);
+        return;
+      }
+      // Plain "/" opens the panel and focuses input (when not typing)
+      if (e.key === "/" && !isTypingTarget(e) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setOpen(true);
+      }
+      // Escape closes if open
+      if (e.key === "Escape" && open) {
+        setOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
   // Scroll to bottom on new messages AND when panel opens
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, open]);
 
@@ -259,7 +294,7 @@ export default function FloatingChat() {
               <textarea value={stt.listening && stt.transcript ? stt.transcript : input} onChange={e => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 80) + "px"; } }}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                 placeholder={stt.listening ? "Listening... (sends after 5s of silence)" : "Ask the CEO..."} disabled={sending} rows={1}
-                className="flex-1 min-h-[36px] max-h-[80px] px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none" />
+                className="flex-1 min-h-[36px] max-h-[80px] px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none" />
               {tts.supported && (
                 <button
                   onClick={() => tts.setEnabled(!tts.enabled)}

@@ -7,6 +7,7 @@ import EmailEditor from "@/components/shared/EmailEditor";
 import { formatDateAgo } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/render-markdown";
 import { useNotifications } from "@/lib/use-notifications";
+import { useConfirm } from "@/lib/use-confirm";
 
 interface EmailDraft {
   to: string;
@@ -49,6 +50,18 @@ const TYPE_LABELS: Record<string, string> = {
   whatsapp_message: "WhatsApp",
   general: "General",
 };
+
+// Fall back to a humanized slug for any type the backend introduces
+// that isn't yet in TYPE_LABELS. Was previously rendering raw slugs
+// like "follow_up_task" in the UI; now becomes "Follow Up Task".
+function typeLabel(type: string): string {
+  if (TYPE_LABELS[type]) return TYPE_LABELS[type];
+  return (type || "Item")
+    .replace(/_/g, " ")
+    .split(" ")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
 
 const PRIORITY_DOT: Record<string, string> = {
   high: "bg-red-500",
@@ -96,8 +109,25 @@ function looksLikeHtml(text: string): boolean {
 
 export default function InboxPage() {
   const { showToast } = useNotifications();
+  const { confirm } = useConfirm();
+  // URL state: page/tab/id are stored in query params so refresh +
+  // shareable links + browser back-button all work. Read once on
+  // mount, then write back via history.replaceState as state changes.
+  const initialUrlState = (() => {
+    if (typeof window === "undefined") return { tab: "", page: 1, id: "" };
+    const sp = new URLSearchParams(window.location.search);
+    return {
+      tab: sp.get("tab") || "",
+      page: Math.max(1, parseInt(sp.get("page") || "1", 10) || 1),
+      id: sp.get("id") || "",
+    };
+  })();
+  // Selected index for keyboard navigation (j/k). Tracked separately
+  // from `selected` so the user can move focus without committing
+  // to opening the detail pane on every step.
+  const [keyboardIndex, setKeyboardIndex] = useState(0);
   const [items, setItems] = useState<InboxItem[]>([]);
-  const [activeTab, setActiveTab] = useState("");
+  const [activeTab, setActiveTab] = useState(initialUrlState.tab);
   const [selected, setSelected] = useState<InboxItem | null>(null);
   // Mobile master/detail: when an item is tapped on a phone, show only the
   // detail pane and a "Back to inbox" header. The previous design rendered
@@ -108,7 +138,7 @@ export default function InboxPage() {
   const [copied, setCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(initialUrlState.page);
   const [totalPages, setTotalPages] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
@@ -144,6 +174,87 @@ export default function InboxPage() {
     fetchItems();
   }, [fetchItems]);
 
+  // After items load, restore the selected item from the URL ?id=...
+  // param so refresh + shareable links land the user on the same row.
+  useEffect(() => {
+    if (initialUrlState.id && items.length > 0 && !selected) {
+      const found = items.find((i) => i.id === initialUrlState.id);
+      if (found) {
+        setSelected(found);
+        const idx = items.findIndex((i) => i.id === found.id);
+        if (idx >= 0) setKeyboardIndex(idx);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+
+  // Sync URL query params whenever tab / page / selected id change.
+  // Uses replaceState (not pushState) so back-button doesn't get
+  // polluted with every selection change.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sp = new URLSearchParams();
+    if (activeTab) sp.set("tab", activeTab);
+    if (page > 1) sp.set("page", String(page));
+    if (selected?.id) sp.set("id", selected.id);
+    const newUrl = `${window.location.pathname}${sp.toString() ? "?" + sp.toString() : ""}`;
+    window.history.replaceState({}, "", newUrl);
+  }, [activeTab, page, selected?.id]);
+
+  // Keyboard shortcuts -- power-user inbox navigation:
+  //   j / ↓     -- next item
+  //   k / ↑     -- previous item
+  //   Enter     -- open the focused item
+  //   e         -- mark complete (archive)
+  //   a         -- approve & send (email drafts only)
+  //   Escape    -- close detail pane / unselect
+  // Listener is gated on inputs/contenteditable not being focused so
+  // typing in the chat or editor doesn't accidentally trigger actions.
+  useEffect(() => {
+    function isTypingTarget(e: KeyboardEvent): boolean {
+      const t = e.target as HTMLElement | null;
+      if (!t) return false;
+      const tag = t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (t.isContentEditable) return true;
+      return false;
+    }
+    function onKey(e: KeyboardEvent) {
+      if (isTypingTarget(e)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        setKeyboardIndex((i) => Math.min(items.length - 1, i + 1));
+      } else if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        setKeyboardIndex((i) => Math.max(0, i - 1));
+      } else if (e.key === "Enter") {
+        const item = items[keyboardIndex];
+        if (item) {
+          e.preventDefault();
+          setSelected(item);
+          setMobileShowDetail(true);
+        }
+      } else if (e.key === "Escape") {
+        if (selected) {
+          e.preventDefault();
+          setSelected(null);
+          setMobileShowDetail(false);
+        }
+      } else if (e.key === "e" && selected) {
+        e.preventDefault();
+        handleStatusChange(selected, "completed");
+      } else if (e.key === "a" && selected && selected.email_draft && selected.status === "draft_pending_approval") {
+        e.preventDefault();
+        handleApproveSend(selected);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, keyboardIndex, selected]);
+
   // Listen for real-time inbox events via Socket.IO
   useEffect(() => {
     if (!tenantId) return;
@@ -176,6 +287,14 @@ export default function InboxPage() {
   };
 
   const handleDelete = async (item: InboxItem) => {
+    const ok = await confirm({
+      title: "Delete this item?",
+      message: `"${item.title.slice(0, 80)}" will be permanently removed.`,
+      confirmLabel: "Delete",
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await inbox.remove(item.id);
       setItems((prev) => prev.filter((i) => i.id !== item.id));
@@ -273,6 +392,16 @@ export default function InboxPage() {
 
   const handlePublishLinkedIn = async (item: InboxItem) => {
     if (!tenantId || actionLoading) return;
+    // Confirm BEFORE setting actionLoading so the spinner doesn't appear
+    // while the modal is up (was setting actionLoading then native
+    // confirm() which felt like the page froze).
+    const ok = await confirm({
+      title: "Publish to LinkedIn?",
+      message: "This will be visible publicly and cannot be undone.",
+      confirmLabel: "Publish",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
     setActionLoading("linkedin");
     try {
       // Extract LinkedIn-specific text from social post content
@@ -291,10 +420,6 @@ export default function InboxPage() {
         text = item.content;
       }
 
-      if (!confirm("Publish this post to LinkedIn? This will be visible publicly and cannot be undone.")) {
-        setActionLoading(null);
-        return;
-      }
       const res = await authFetch(`${API_URL}/api/linkedin/${tenantId}/post`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -304,9 +429,14 @@ export default function InboxPage() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `Failed (${res.status})`);
       }
-      alert("Published to LinkedIn!");
+      showToast({ title: "Published to LinkedIn", variant: "success" });
     } catch (err: any) {
-      alert(err?.message || "Failed to publish to LinkedIn. Check connection in Settings.");
+      showToast({
+        title: "Couldn't publish to LinkedIn",
+        body: err?.message || "Check connection in Settings.",
+        variant: "error",
+        href: "/settings",
+      });
     } finally {
       setActionLoading(null);
     }
@@ -396,18 +526,22 @@ export default function InboxPage() {
 
   const handleWhatsAppReply = async (item: InboxItem) => {
     if (!tenantId || !waReplyText.trim()) return;
+    // Parse from_number from item metadata stored in content title
+    const fromMatch = item.title.match(/\+?\d{10,15}/);
+    const toNumber = fromMatch?.[0] || "";
+    if (!toNumber) {
+      showToast({ title: "Cannot determine recipient number", variant: "error" });
+      return;
+    }
+    const ok = await confirm({
+      title: "Send WhatsApp message?",
+      message: `Send to ${toNumber}? This cannot be undone.`,
+      confirmLabel: "Send",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
     setWaReplying(true);
     try {
-      const meta = typeof item.content === "string" ? {} : {};
-      // Parse from_number from item metadata stored in content title
-      const fromMatch = item.title.match(/\+?\d{10,15}/);
-      const toNumber = fromMatch?.[0] || "";
-      if (!toNumber) { alert("Cannot determine recipient number"); return; }
-
-      if (!confirm(`Send WhatsApp message to ${toNumber}? This cannot be undone.`)) {
-        setWaReplying(false);
-        return;
-      }
       const res = await authFetch(`${API_URL}/api/whatsapp/${tenantId}/send?confirmed=true`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -418,9 +552,13 @@ export default function InboxPage() {
         throw new Error(body.detail || `Send failed (${res.status})`);
       }
       setWaReplyText("");
-      alert("WhatsApp reply sent!");
+      showToast({ title: "WhatsApp reply sent", variant: "success" });
     } catch (err: any) {
-      alert(err?.message || "Failed to send WhatsApp reply");
+      showToast({
+        title: "Couldn't send WhatsApp reply",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
     } finally {
       setWaReplying(false);
     }
@@ -453,6 +591,14 @@ export default function InboxPage() {
   const handleBulkDelete = async () => {
     if (checkedIds.size === 0) return;
     const count = checkedIds.size;
+    const ok = await confirm({
+      title: `Delete ${count} item${count === 1 ? "" : "s"}?`,
+      message: "These items will be permanently removed.",
+      confirmLabel: "Delete all",
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
     setActionLoading("bulk-delete");
     try {
       await Promise.all(Array.from(checkedIds).map((id) => inbox.remove(id)));
@@ -855,7 +1001,7 @@ export default function InboxPage() {
           <span className="text-sm font-medium" style={{ color: AGENT_COLORS[item.agent] || "#999" }}>
             {AGENT_NAMES[item.agent] || item.agent}
           </span>
-          <span className="text-xs text-[#9E9C95]">{TYPE_LABELS[item.type] || item.type}</span>
+          <span className="text-xs text-[#9E9C95]">{typeLabel(item.type)}</span>
           <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
         </div>
         <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
@@ -1012,9 +1158,10 @@ export default function InboxPage() {
               )}
             </div>
 
-            {filteredItems.map((item) => {
+            {filteredItems.map((item, idx) => {
               const badge = STATUS_BADGES[item.status];
               const isChecked = checkedIds.has(item.id);
+              const isKeyboardFocused = idx === keyboardIndex;
               return (
                 <div
                   key={item.id}
@@ -1023,6 +1170,8 @@ export default function InboxPage() {
                       ? "border-[#534AB7] bg-[#FAFAFF] shadow-sm"
                       : isChecked
                       ? "border-[#534AB7]/40 bg-[#FAFAFF]/50"
+                      : isKeyboardFocused
+                      ? "border-[#534AB7]/60 bg-white ring-1 ring-[#534AB7]/30"
                       : "border-[#E0DED8] bg-white hover:border-[#C5C3BC]"
                   }`}
                 >
@@ -1049,7 +1198,7 @@ export default function InboxPage() {
                     )}
                     <div className="flex items-center gap-2 mt-2">
                       <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#F8F8F6] text-[#5F5E5A] border border-[#E0DED8]">
-                        {TYPE_LABELS[item.type] || item.type}
+                        {typeLabel(item.type)}
                       </span>
                       <span className={`w-1.5 h-1.5 rounded-full ${PRIORITY_DOT[item.priority] || "bg-gray-400"}`} />
                       <span className="text-[11px] text-[#9E9C95] capitalize">{item.priority}</span>
@@ -1072,14 +1221,14 @@ export default function InboxPage() {
                 </span>
                 <div className="flex items-center gap-1">
                   <button
-                    onClick={() => { setPage(1); setCheckedIds(new Set()); }}
+                    onClick={() => { setPage(1); setCheckedIds(new Set()); setSelected(null); setKeyboardIndex(0); }}
                     disabled={page <= 1}
                     className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   >
                     First
                   </button>
                   <button
-                    onClick={() => { setPage((p) => Math.max(1, p - 1)); setCheckedIds(new Set()); }}
+                    onClick={() => { setPage((p) => Math.max(1, p - 1)); setCheckedIds(new Set()); setSelected(null); setKeyboardIndex(0); }}
                     disabled={page <= 1}
                     className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   >
@@ -1088,7 +1237,7 @@ export default function InboxPage() {
                     </svg>
                   </button>
                   <button
-                    onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setCheckedIds(new Set()); }}
+                    onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setCheckedIds(new Set()); setSelected(null); setKeyboardIndex(0); }}
                     disabled={page >= totalPages}
                     className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   >
@@ -1097,7 +1246,7 @@ export default function InboxPage() {
                     </svg>
                   </button>
                   <button
-                    onClick={() => { setPage(totalPages); setCheckedIds(new Set()); }}
+                    onClick={() => { setPage(totalPages); setCheckedIds(new Set()); setSelected(null); setKeyboardIndex(0); }}
                     disabled={page >= totalPages}
                     className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   >
