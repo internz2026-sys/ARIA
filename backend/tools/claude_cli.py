@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 
 logger = logging.getLogger("aria.claude")
 
@@ -164,6 +166,61 @@ DEFAULT_MODEL = os.getenv("ARIA_MODEL", MODEL_SONNET)
 CLI_TIMEOUT = int(os.getenv("ARIA_CLI_TIMEOUT", "120"))
 
 
+def _try_restore_claude_config() -> bool:
+    """Self-heal a missing ~/.claude.json by copying the most recent backup.
+
+    The Claude CLI rotates its auth config periodically and occasionally
+    leaves the live file deleted while only the backup survives (race
+    between write-backup and overwrite-live, made worse under load when
+    multiple CLI invocations fight over the file). When that happens
+    every subsequent call dies with:
+
+        Claude CLI error: Claude configuration file not found at: /root/.claude.json
+        A backup file exists at: /root/.claude/backups/.claude.json.backup.<ts>
+
+    Without auto-recovery the only fix is SSH + manual cp. This helper
+    runs the same cp programmatically using the most-recent backup, so
+    chat self-heals on the next request instead of being broken until
+    someone wakes up. Returns True iff a restore actually happened.
+
+    Cross-platform safe: uses Path.home() so the same code works inside
+    the docker container (root home = /root) and locally on dev machines.
+    """
+    config = Path.home() / ".claude.json"
+    if config.exists():
+        return False  # nothing to restore
+    backups_dir = Path.home() / ".claude" / "backups"
+    if not backups_dir.exists():
+        logger.error(
+            "Cannot auto-restore .claude.json: backups dir %s does not exist. "
+            "Run `claude /login` to re-authenticate.", backups_dir,
+        )
+        return False
+    backups = sorted(
+        backups_dir.glob(".claude.json.backup.*"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not backups:
+        logger.error(
+            "Cannot auto-restore .claude.json: no backups found in %s. "
+            "Run `claude /login` to re-authenticate.", backups_dir,
+        )
+        return False
+    latest = backups[0]
+    try:
+        shutil.copy2(latest, config)
+        config.chmod(0o600)  # match what the CLI expects
+        logger.warning(
+            "Auto-restored %s from %s (CLI config rotation race recovered)",
+            config, latest.name,
+        )
+        return True
+    except Exception as e:
+        logger.error("Failed to auto-restore %s from %s: %s", config, latest, e)
+        return False
+
+
 async def call_claude(
     system_prompt: str,
     user_message: str = "",
@@ -236,27 +293,46 @@ async def call_claude(
 
     logger.info("CLI call: model=%s, tenant=%s, agent=%s", use_model, tenant_id, agent_id)
 
-    try:
-        process = await asyncio.create_subprocess_exec(
+    async def _run_cli():
+        proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=CLI_TIMEOUT
-        )
-    except asyncio.TimeoutError:
-        process.kill()
-        raise RuntimeError(f"Claude CLI timed out after {CLI_TIMEOUT}s")
+        try:
+            so, se = await asyncio.wait_for(proc.communicate(), timeout=CLI_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError(f"Claude CLI timed out after {CLI_TIMEOUT}s")
+        return proc.returncode, so, se
+
+    try:
+        returncode, stdout, stderr = await _run_cli()
     except FileNotFoundError:
         raise RuntimeError(
             "Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
         )
 
-    if process.returncode != 0:
+    if returncode != 0:
         err = stderr.decode().strip()
-        logger.error("Claude CLI error (exit %d): %s", process.returncode, err)
-        raise RuntimeError(f"Claude CLI error: {err}")
+        # Self-heal the "config file not found" race: the CLI rotates its
+        # auth file and occasionally leaves only the backup. Restore from
+        # the most recent backup and retry once before giving up.
+        if "configuration file not found" in err and _try_restore_claude_config():
+            logger.warning("Retrying CLI call after auto-restore of .claude.json")
+            try:
+                returncode, stdout, stderr = await _run_cli()
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "Claude CLI not found after restore. Install with: npm install -g @anthropic-ai/claude-code"
+                )
+            if returncode != 0:
+                err = stderr.decode().strip()
+                logger.error("Claude CLI error after restore (exit %d): %s", returncode, err)
+                raise RuntimeError(f"Claude CLI error: {err}")
+        else:
+            logger.error("Claude CLI error (exit %d): %s", returncode, err)
+            raise RuntimeError(f"Claude CLI error: {err}")
 
     result = stdout.decode().strip()
 
