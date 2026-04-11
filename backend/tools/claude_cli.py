@@ -204,15 +204,22 @@ async def call_claude(
     else:
         prompt = user_message
 
-    # Check semantic cache first
-    try:
-        from backend.services.semantic_cache import search_cache
-        cached = search_cache(system_prompt, prompt, use_model, agent_id=agent_id)
-        if cached:
-            logger.info("Semantic cache hit — skipping CLI call (agent=%s)", agent_id)
-            return cached
-    except Exception as e:
-        logger.debug("Semantic cache unavailable: %s", e)
+    # Check semantic cache first — but NOT for the CEO. CEO chat is
+    # contextual dialogue where the same words mean different things turn
+    # to turn ("create a lead for Hanz" vs "create an email for Hanz" had
+    # 0.93 cosine similarity and were collapsing to the same cached reply).
+    # Other agents (content_writer, email_marketer, etc.) keep the cache
+    # because they generate reusable content where dedup is helpful.
+    cache_eligible = agent_id != "ceo"
+    if cache_eligible:
+        try:
+            from backend.services.semantic_cache import search_cache
+            cached = search_cache(system_prompt, prompt, use_model, agent_id=agent_id)
+            if cached:
+                logger.info("Semantic cache hit — skipping CLI call (agent=%s)", agent_id)
+                return cached
+        except Exception as e:
+            logger.debug("Semantic cache unavailable: %s", e)
 
     # Build claude CLI command
     cmd = [
@@ -269,12 +276,14 @@ async def call_claude(
         _usage_cache["global"] = global_usage
         _save_usage("global", global_usage)
 
-    # Store in semantic cache
-    try:
-        from backend.services.semantic_cache import store_cache
-        store_cache(system_prompt, prompt, use_model, result, agent_id=agent_id)
-    except Exception as e:
-        logger.debug("Failed to cache response: %s", e)
+    # Store in semantic cache — same exclusion as the lookup above. Don't
+    # cache CEO replies; they are contextual dialogue, not reusable artifacts.
+    if cache_eligible:
+        try:
+            from backend.services.semantic_cache import store_cache
+            store_cache(system_prompt, prompt, use_model, result, agent_id=agent_id)
+        except Exception as e:
+            logger.debug("Failed to cache response: %s", e)
 
     logger.info("CLI call complete: %d chars returned (model=%s, tenant=%s)", len(result), use_model, tenant_id)
     return result
