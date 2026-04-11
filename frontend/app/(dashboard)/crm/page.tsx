@@ -8,6 +8,7 @@ import {
   getStatusConfig, getStageConfig, formatCurrency,
 } from "@/lib/crm-config";
 import { formatDateAgo as timeAgo } from "@/lib/utils";
+import { useNotifications } from "@/lib/use-notifications";
 
 // ─── Modal ───
 
@@ -46,6 +47,7 @@ const selectCls = inputCls;
 type Tab = "contacts" | "companies" | "deals";
 
 export default function CRMPage() {
+  const { showToast } = useNotifications();
   const [tab, setTab] = useState<Tab>("contacts");
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
@@ -132,20 +134,48 @@ export default function CRMPage() {
 
   async function handleCreateContact() {
     if (!newContact.name.trim()) return;
-    await crm.createContact(tenantId, newContact);
-    setShowAddContact(false);
-    setNewContact({ name: "", email: "", phone: "", source: "manual", status: "lead", notes: "" });
-    fetchContacts();
+    try {
+      await crm.createContact(tenantId, newContact);
+      setShowAddContact(false);
+      const created = newContact.name;
+      setNewContact({ name: "", email: "", phone: "", source: "manual", status: "lead", notes: "" });
+      fetchContacts();
+      showToast({ title: `Contact added: ${created}`, variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't create contact",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   }
 
   async function handleDeleteContact(id: string) {
-    await crm.deleteContact(tenantId, id);
-    fetchContacts();
+    try {
+      await crm.deleteContact(tenantId, id);
+      fetchContacts();
+      showToast({ title: "Contact deleted", variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't delete contact",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   }
 
   async function handleContactStatusChange(id: string, status: string) {
-    await crm.updateContact(tenantId, id, { status });
-    setContacts(prev => prev.map(c => c.id === id ? { ...c, status } : c));
+    try {
+      await crm.updateContact(tenantId, id, { status });
+      setContacts(prev => prev.map(c => c.id === id ? { ...c, status } : c));
+      showToast({ title: `Status: ${status}`, variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't update status",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   }
 
   // ─── Company CRUD ───
@@ -153,15 +183,34 @@ export default function CRMPage() {
 
   async function handleCreateCompany() {
     if (!newCompany.name.trim()) return;
-    await crm.createCompany(tenantId, newCompany);
-    setShowAddCompany(false);
-    setNewCompany({ name: "", domain: "", industry: "", size: "", notes: "" });
-    fetchCompanies();
+    try {
+      await crm.createCompany(tenantId, newCompany);
+      setShowAddCompany(false);
+      const created = newCompany.name;
+      setNewCompany({ name: "", domain: "", industry: "", size: "", notes: "" });
+      fetchCompanies();
+      showToast({ title: `Company added: ${created}`, variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't create company",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   }
 
   async function handleDeleteCompany(id: string) {
-    await crm.deleteCompany(tenantId, id);
-    fetchCompanies();
+    try {
+      await crm.deleteCompany(tenantId, id);
+      fetchCompanies();
+      showToast({ title: "Company deleted", variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't delete company",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   }
 
   // ─── Deal CRUD ───
@@ -169,22 +218,50 @@ export default function CRMPage() {
 
   async function handleCreateDeal() {
     if (!newDeal.title.trim()) return;
-    await crm.createDeal(tenantId, newDeal);
-    setShowAddDeal(false);
-    setNewDeal({ title: "", value: 0, stage: "lead", notes: "" });
-    fetchDeals();
+    try {
+      await crm.createDeal(tenantId, newDeal);
+      setShowAddDeal(false);
+      const created = newDeal.title;
+      setNewDeal({ title: "", value: 0, stage: "lead", notes: "" });
+      fetchDeals();
+      showToast({ title: `Deal added: ${created}`, variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't create deal",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   }
 
   async function handleDealStageChange(id: string, stage: string) {
-    await crm.updateDeal(tenantId, id, { stage });
-    setDeals(prev => prev.map(d => d.id === id ? { ...d, stage } : d));
-    // Refresh pipeline summary
-    crm.pipelineSummary(tenantId).then(p => setPipelineSummary(p.stages || {})).catch(() => {});
+    try {
+      await crm.updateDeal(tenantId, id, { stage });
+      setDeals(prev => prev.map(d => d.id === id ? { ...d, stage } : d));
+      // Refresh pipeline summary
+      crm.pipelineSummary(tenantId).then(p => setPipelineSummary(p.stages || {})).catch(() => {});
+      showToast({ title: `Moved to ${stage}`, variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't update deal",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   }
 
   async function handleDeleteDeal(id: string) {
-    await crm.deleteDeal(tenantId, id);
-    fetchDeals();
+    try {
+      await crm.deleteDeal(tenantId, id);
+      fetchDeals();
+      showToast({ title: "Deal deleted", variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't delete deal",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   }
 
   const tabs: { key: Tab; label: string }[] = [

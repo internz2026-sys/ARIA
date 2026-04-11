@@ -24,6 +24,19 @@ export interface BadgeCounts {
   total: number;
 }
 
+// Variants for client-triggered toasts (for action feedback like
+// "Item deleted" / "Save failed"). Server-pushed notifications use
+// `category` instead — these two systems share the same toast UI.
+export type ToastVariant = "success" | "error" | "info" | "warning";
+
+export interface ClientToastOptions {
+  title: string;
+  body?: string;
+  variant?: ToastVariant;
+  href?: string;
+  durationMs?: number;
+}
+
 interface NotificationContextValue {
   notifications: Notification[];
   badges: BadgeCounts;
@@ -31,6 +44,8 @@ interface NotificationContextValue {
   markAsRead: (ids?: string[]) => void;
   dismissToast: (id: string) => void;
   refetchCounts: () => void;
+  /** Fire a client-side toast for action feedback (no server roundtrip). */
+  showToast: (opts: ClientToastOptions) => void;
 }
 
 const NotificationContext = createContext<NotificationContextValue>({
@@ -40,6 +55,7 @@ const NotificationContext = createContext<NotificationContextValue>({
   markAsRead: () => {},
   dismissToast: () => {},
   refetchCounts: () => {},
+  showToast: () => {},
 });
 
 export function useNotifications() {
@@ -159,6 +175,41 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     toastTimers.current.set(n.id, timer);
   }
 
+  // Client-triggered toast for action feedback ("Item deleted" / "Save failed").
+  // Synthesizes a Notification-shaped object so it shares the same toast UI
+  // as server-pushed notifications, but never hits the API. Variant maps to
+  // category so the left-border color in ToastContainer reflects success/
+  // error/info/warning.
+  const showToast = useCallback((opts: ClientToastOptions) => {
+    const variant: ToastVariant = opts.variant || "info";
+    const variantToCategory: Record<ToastVariant, string> = {
+      success: "conversation",  // green
+      error: "system",          // orange
+      info: "inbox",            // purple
+      warning: "system",        // orange
+    };
+    const synthetic: Notification = {
+      id: `client-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      tenant_id: tenantId,
+      type: `client_${variant}`,
+      category: variantToCategory[variant],
+      title: opts.title,
+      body: opts.body || "",
+      href: opts.href || "",
+      priority: variant === "error" ? "high" : "medium",
+      is_read: true,   // never goes in the bell badge
+      is_seen: true,
+      created_at: new Date().toISOString(),
+    };
+    setToasts(prev => {
+      const next = [synthetic, ...prev].slice(0, MAX_TOASTS);
+      return next;
+    });
+    const duration = opts.durationMs || (variant === "error" ? 7000 : TOAST_DURATION);
+    const timer = setTimeout(() => dismissToast(synthetic.id), duration);
+    toastTimers.current.set(synthetic.id, timer);
+  }, [tenantId]);
+
   function dismissToast(id: string) {
     setToasts(prev => prev.filter(t => t.id !== id));
     const timer = toastTimers.current.get(id);
@@ -189,6 +240,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       markAsRead,
       dismissToast,
       refetchCounts: fetchCounts,
+      showToast,
     }}>
       {children}
     </NotificationContext.Provider>

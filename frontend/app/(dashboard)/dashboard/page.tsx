@@ -195,12 +195,48 @@ export default function DashboardPage() {
     }
   }
 
-  const kpiCards = [
-    { label: "Content Published", value: kpis.content_published.value, display: String(kpis.content_published.value), sub: kpis.content_published.delta ? `+${kpis.content_published.delta} this week` : "No activity yet" },
-    { label: "Emails Sent", value: kpis.emails_sent.value, display: kpis.emails_sent.value.toLocaleString(), sub: kpis.emails_sent.value ? `${kpis.emails_sent.open_rate}% open rate` : "No activity yet" },
-    { label: "Social Engagement", value: kpis.social_engagement.value, display: String(kpis.social_engagement.value), sub: kpis.social_engagement.value ? `+${kpis.social_engagement.delta_pct}% vs last week` : "No activity yet" },
-    { label: "Ad Spend", value: kpis.ad_spend.value, display: kpis.ad_spend.value ? `$${kpis.ad_spend.value}` : "$0", sub: kpis.ad_spend.value ? `${kpis.ad_spend.roas}x ROAS` : "No activity yet" },
+  // KPI cards: hide cards whose value is 0 AND whose corresponding agent
+  // isn't enabled. A first-time user with only 3 agents enabled (e.g.
+  // CEO + content_writer + email_marketer) shouldn't see two grey
+  // "Social Engagement: 0" / "Ad Spend: $0" cards making them feel like
+  // the product isn't doing anything. Show only relevant + active KPIs.
+  const enabledAgents = biz?.active_agents || [];
+  const allKpiCards = [
+    {
+      label: "Content Published",
+      value: kpis.content_published.value,
+      display: String(kpis.content_published.value),
+      sub: kpis.content_published.delta ? `+${kpis.content_published.delta} this week` : "Drafts will appear in your inbox",
+      requiresAgent: "content_writer",
+    },
+    {
+      label: "Emails Sent",
+      value: kpis.emails_sent.value,
+      display: kpis.emails_sent.value.toLocaleString(),
+      sub: kpis.emails_sent.value ? `${kpis.emails_sent.open_rate}% open rate` : "Not sending yet",
+      requiresAgent: "email_marketer",
+    },
+    {
+      label: "Social Engagement",
+      value: kpis.social_engagement.value,
+      display: String(kpis.social_engagement.value),
+      sub: kpis.social_engagement.value ? `+${kpis.social_engagement.delta_pct}% vs last week` : "No posts yet",
+      requiresAgent: "social_manager",
+    },
+    {
+      label: "Ad Spend",
+      value: kpis.ad_spend.value,
+      display: kpis.ad_spend.value ? `$${kpis.ad_spend.value}` : "$0",
+      sub: kpis.ad_spend.value ? `${kpis.ad_spend.roas}x ROAS` : "No campaigns running",
+      requiresAgent: "ad_strategist",
+    },
   ];
+  const kpiCards = allKpiCards.filter((kpi) => {
+    // Show the card if value > 0 (real activity) OR the agent is enabled
+    if (kpi.value > 0) return true;
+    // No activity yet -- only show if the user actually has the agent on
+    return enabledAgents.includes(kpi.requiresAgent);
+  });
 
   return (
     <div className="space-y-6 max-w-[1400px]">
@@ -635,11 +671,42 @@ export default function DashboardPage() {
           </div>
           <div className="p-5 space-y-3">
             {[
-              { label: "Complete onboarding", desc: "Tell ARIA about your product and target audience", href: "/welcome", done: !!biz },
-              { label: "Review your GTM playbook", desc: "CEO agent creates your go-to-market strategy", href: "/dashboard", done: !!biz?.positioning },
-              { label: "Run your first agent", desc: "Generate a blog post or social media content", href: "/agents", done: false },
-              { label: "Set up email marketing", desc: "Create a welcome sequence for new subscribers", href: "/agents", done: false },
-              { label: "Launch an ad campaign", desc: "Get step-by-step Facebook Ads setup guides", href: "/agents", done: false },
+              {
+                label: "Complete onboarding",
+                desc: "Tell ARIA about your product and target audience",
+                href: "/welcome",
+                done: !!biz,
+              },
+              {
+                label: "Review your GTM playbook",
+                desc: "CEO agent creates your go-to-market strategy",
+                href: "/dashboard",
+                done: !!biz?.positioning,
+              },
+              {
+                // Was: "Run your first agent" -> /agents (dead link, no launcher)
+                // Now: opens chat with a prefilled prompt asking the CEO to ship a blog post
+                label: "Generate your first blog post",
+                desc: "Ask the CEO to write a blog post -- it'll appear in your inbox",
+                href: "/chat?prefill=write%20a%20blog%20post%20about%20%5Byour%20topic%5D",
+                done: kpis.content_published.value > 0,
+              },
+              {
+                // Was: "Set up email marketing" -> /agents
+                // Now: opens chat with email-specific prefill
+                label: "Draft your first marketing email",
+                desc: "Ask the CEO to write a welcome email -- review it in your inbox",
+                href: "/chat?prefill=draft%20a%20welcome%20email%20for%20new%20signups",
+                done: kpis.emails_sent.value > 0,
+              },
+              {
+                // Was: "Launch an ad campaign" -> /agents
+                // Now: opens chat with ad strategy prefill
+                label: "Plan your first ad campaign",
+                desc: "Get a Facebook Ads setup guide tailored to your business",
+                href: "/chat?prefill=give%20me%20a%20facebook%20ads%20strategy%20for%20my%20business",
+                done: kpis.ad_spend.value > 0,
+              },
             ].map((step) => (
               <a key={step.label} href={step.href} className="flex items-start gap-3 p-3 rounded-lg hover:bg-[#F8F8F6] transition-colors group">
                 {step.done ? (

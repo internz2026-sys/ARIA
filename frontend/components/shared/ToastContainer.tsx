@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import { useNotifications, Notification } from "@/lib/use-notifications";
 
 const CATEGORY_COLORS: Record<string, string> = {
-  inbox: "#534AB7",
-  conversation: "#1D9E75",
-  system: "#D85A30",
-  status: "#5F5E5A",
+  inbox: "#534AB7",       // purple — info
+  conversation: "#1D9E75", // green — success
+  system: "#D85A30",       // orange — error/warning
+  status: "#5F5E5A",       // grey — neutral
+  email: "#2563eb",        // blue — email send confirmations
+  social: "#1D9E75",       // green — social publish confirmations
 };
 
 export default function ToastContainer() {

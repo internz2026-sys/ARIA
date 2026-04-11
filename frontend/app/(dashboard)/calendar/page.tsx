@@ -20,11 +20,17 @@ interface ScheduledTask {
 
 type ViewMode = "month" | "week" | "agenda";
 
+// Keys must match the backend's task_type values from
+// backend/services/scheduler.py executor switch.
+// Both with and without `_task` suffix are listed because earlier code
+// used the suffixed form -- support both so old rows still render.
 const TASK_TYPE_COLORS: Record<string, { bg: string; text: string; label: string }> = {
   send_email: { bg: "bg-blue-100", text: "text-blue-700", label: "Email" },
   publish_post: { bg: "bg-purple-100", text: "text-purple-700", label: "Post" },
   publish_campaign: { bg: "bg-orange-100", text: "text-orange-700", label: "Campaign" },
+  follow_up: { bg: "bg-emerald-100", text: "text-emerald-700", label: "Follow-up" },
   follow_up_task: { bg: "bg-emerald-100", text: "text-emerald-700", label: "Follow-up" },
+  reminder: { bg: "bg-amber-100", text: "text-amber-700", label: "Reminder" },
   reminder_task: { bg: "bg-amber-100", text: "text-amber-700", label: "Reminder" },
 };
 

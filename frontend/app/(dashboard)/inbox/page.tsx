@@ -6,6 +6,7 @@ import { AGENT_NAMES, AGENT_COLORS } from "@/lib/agent-config";
 import EmailEditor from "@/components/shared/EmailEditor";
 import { formatDateAgo } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/render-markdown";
+import { useNotifications } from "@/lib/use-notifications";
 
 interface EmailDraft {
   to: string;
@@ -94,9 +95,15 @@ function looksLikeHtml(text: string): boolean {
 }
 
 export default function InboxPage() {
+  const { showToast } = useNotifications();
   const [items, setItems] = useState<InboxItem[]>([]);
   const [activeTab, setActiveTab] = useState("");
   const [selected, setSelected] = useState<InboxItem | null>(null);
+  // Mobile master/detail: when an item is tapped on a phone, show only the
+  // detail pane and a "Back to inbox" header. The previous design rendered
+  // the detail pane as `hidden md:flex`, so on mobile users could tap items
+  // but never read or approve them.
+  const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -158,15 +165,32 @@ export default function InboxPage() {
       await inbox.update(item.id, { status: newStatus });
       setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: newStatus } : i)));
       if (selected?.id === item.id) setSelected({ ...item, status: newStatus });
-    } catch {}
+      showToast({ title: `Marked as ${newStatus.replace(/_/g, " ")}`, variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't update status",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   };
 
   const handleDelete = async (item: InboxItem) => {
     try {
       await inbox.remove(item.id);
       setItems((prev) => prev.filter((i) => i.id !== item.id));
-      if (selected?.id === item.id) setSelected(null);
-    } catch {}
+      if (selected?.id === item.id) {
+        setSelected(null);
+        setMobileShowDetail(false);
+      }
+      showToast({ title: "Item deleted", variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't delete item",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
   };
 
   const handleCopy = (content: string) => {
@@ -182,8 +206,18 @@ export default function InboxPage() {
       await inbox.approveSend(tenantId, item.id);
       setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "sent" } : i)));
       if (selected?.id === item.id) setSelected({ ...item, status: "sent" });
+      showToast({
+        title: "Email sent",
+        body: item.email_draft?.to ? `Delivered to ${item.email_draft.to}` : undefined,
+        variant: "success",
+      });
     } catch (err: any) {
-      alert(err?.message || "Failed to send email. Check Gmail connection in Settings.");
+      showToast({
+        title: "Couldn't send email",
+        body: err?.message || "Check Gmail connection in Settings.",
+        variant: "error",
+        href: "/settings",
+      });
     } finally {
       setActionLoading(null);
     }
@@ -196,7 +230,14 @@ export default function InboxPage() {
       await inbox.cancelDraft(tenantId, item.id);
       setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "cancelled" } : i)));
       if (selected?.id === item.id) setSelected({ ...item, status: "cancelled" });
-    } catch {}
+      showToast({ title: "Draft cancelled", variant: "info" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't cancel draft",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
     setActionLoading(null);
   };
 
@@ -209,10 +250,22 @@ export default function InboxPage() {
       setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: newStatus } : i)));
       if (selected?.id === item.id) setSelected({ ...item, status: newStatus });
       if (newStatus === "failed") {
-        alert("Failed to publish. Check your Twitter connection in Settings.");
+        showToast({
+          title: "Couldn't publish to X",
+          body: "Check your Twitter connection in Settings.",
+          variant: "error",
+          href: "/settings",
+        });
+      } else {
+        showToast({ title: "Published to X", variant: "success" });
       }
     } catch (err: any) {
-      alert(err?.message || "Failed to publish to X. Check connection in Settings.");
+      showToast({
+        title: "Couldn't publish to X",
+        body: err?.message || "Check connection in Settings.",
+        variant: "error",
+        href: "/settings",
+      });
     } finally {
       setActionLoading(null);
     }
@@ -271,19 +324,46 @@ export default function InboxPage() {
     setScheduling(true);
     try {
       const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}:00`).toISOString();
-      const isEmail = scheduleItem.type === "email" || scheduleItem.email_draft;
-      const taskType = isEmail ? "send_email" : "publish_post";
-      const title = scheduleItem.title || (isEmail ? "Scheduled email" : "Scheduled post");
+      const isEmail = scheduleItem.type === "email" || scheduleItem.type === "email_sequence" || !!scheduleItem.email_draft;
+      const isSocial = scheduleItem.type === "social_post" || scheduleItem.type === "social";
+
+      // Pick task_type from item type. Email/social have dedicated executors;
+      // everything else (blog_post, ad_campaign, general, follow_up) becomes
+      // a generic 'reminder' task -- it shows up on the calendar as a
+      // "publish this" reminder, fires a notification at the scheduled time,
+      // and links back to the inbox item via inbox_item_id so the user can
+      // jump straight to it.
+      let taskType: string;
+      if (isEmail) taskType = "send_email";
+      else if (isSocial) taskType = "publish_post";
+      else taskType = "reminder";
+
+      const title = scheduleItem.title || (isEmail ? "Scheduled email" : isSocial ? "Scheduled post" : "Scheduled task");
 
       let payload: Record<string, any> = { inbox_item_id: scheduleItem.id };
       if (isEmail && scheduleItem.email_draft) {
-        payload = { ...payload, to: scheduleItem.email_draft.to, subject: scheduleItem.email_draft.subject, html_body: scheduleItem.email_draft.html_body };
-      } else {
+        payload = {
+          ...payload,
+          to: scheduleItem.email_draft.to,
+          subject: scheduleItem.email_draft.subject,
+          html_body: scheduleItem.email_draft.html_body,
+        };
+      } else if (isSocial) {
         const posts = parseSocialPosts(scheduleItem.content);
         const post = schedulePlatform === "linkedin"
           ? posts.find(p => p.platform?.toLowerCase() === "linkedin") || posts[0]
           : posts.find(p => p.platform?.toLowerCase() === "twitter") || posts[0];
         if (post) payload = { ...payload, text: post.text, platform: schedulePlatform || post.platform || "twitter" };
+      } else {
+        // Generic reminder for blog_post / ad_campaign / general -- the
+        // executor's _execute_reminder writes a notification at the
+        // scheduled time. The body links back to the inbox item.
+        payload = {
+          ...payload,
+          title: scheduleItem.title,
+          body: `Time to publish: ${scheduleItem.title}. Open your inbox to review and ship.`,
+          description: scheduleItem.content?.slice(0, 500) || "",
+        };
       }
 
       await authFetch(`${API_URL}/api/schedule/${tenantId}/tasks`, {
@@ -291,12 +371,21 @@ export default function InboxPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ task_type: taskType, title, scheduled_at: scheduledAt, payload, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       });
-      alert(`Scheduled for ${new Date(scheduledAt).toLocaleString()}`);
+      showToast({
+        title: "Scheduled",
+        body: `Will fire on ${new Date(scheduledAt).toLocaleString()}. Approve from the calendar before then.`,
+        variant: "success",
+        href: "/calendar",
+      });
       setScheduleItem(null);
       setScheduleDate("");
       setScheduleTime("09:00");
     } catch (err: any) {
-      alert(err?.message || "Failed to schedule");
+      showToast({
+        title: "Couldn't schedule",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
     } finally {
       setScheduling(false);
     }
@@ -363,18 +452,27 @@ export default function InboxPage() {
 
   const handleBulkDelete = async () => {
     if (checkedIds.size === 0) return;
+    const count = checkedIds.size;
     setActionLoading("bulk-delete");
     try {
       await Promise.all(Array.from(checkedIds).map((id) => inbox.remove(id)));
       setItems((prev) => prev.filter((i) => !checkedIds.has(i.id)));
       if (selected && checkedIds.has(selected.id)) setSelected(null);
       setCheckedIds(new Set());
-    } catch {}
+      showToast({ title: `Deleted ${count} item${count === 1 ? "" : "s"}`, variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Some deletions failed",
+        body: err?.message || "Refresh to see what was deleted.",
+        variant: "error",
+      });
+    }
     setActionLoading(null);
   };
 
   const handleBulkComplete = async () => {
     if (checkedIds.size === 0) return;
+    const count = checkedIds.size;
     setActionLoading("bulk-complete");
     try {
       await Promise.all(Array.from(checkedIds).map((id) => inbox.update(id, { status: "completed" })));
@@ -383,7 +481,14 @@ export default function InboxPage() {
       );
       if (selected && checkedIds.has(selected.id)) setSelected({ ...selected, status: "completed" });
       setCheckedIds(new Set());
-    } catch {}
+      showToast({ title: `Marked ${count} item${count === 1 ? "" : "s"} complete`, variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Some updates failed",
+        body: err?.message || "Refresh to see current state.",
+        variant: "error",
+      });
+    }
     setActionLoading(null);
   };
 
@@ -400,8 +505,13 @@ export default function InboxPage() {
       if (selected?.id === item.id) {
         setSelected({ ...item, email_draft: updatedDraft });
       }
+      showToast({ title: "Draft saved", variant: "success" });
     } catch (err: any) {
-      alert(err?.message || "Failed to save changes");
+      showToast({
+        title: "Couldn't save draft",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
       throw err;
     }
   };
@@ -759,6 +869,19 @@ export default function InboxPage() {
             </svg>
             {copied ? "Copied!" : "Copy content"}
           </button>
+          {/* Schedule button -- available for ANY non-failed/non-cancelled item.
+              The user explicitly asked for this on every sub-agent output, not
+              just emails. The schedule modal/handler picks the right task_type
+              based on item.type / item.email_draft. */}
+          {item.status !== "failed" && item.status !== "cancelled" && item.status !== "sent" && (
+            <button
+              onClick={() => { setScheduleItem(item); setSchedulePlatform(""); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-white text-[#534AB7] border border-[#534AB7] hover:bg-[#EEEDFE] transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" /></svg>
+              Schedule
+            </button>
+          )}
           {item.status === "ready" && (
             <button onClick={() => handleStatusChange(item, "completed")} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors">
               Mark complete
@@ -846,8 +969,10 @@ export default function InboxPage() {
         </div>
       ) : (
         <div className="flex gap-4 min-h-[500px]">
-          {/* Item list */}
-          <div className="w-full md:w-[380px] shrink-0 flex flex-col gap-2">
+          {/* Item list -- on mobile, hidden once an item is selected so the
+              detail pane gets full screen. On desktop (md+) both panes are
+              visible side-by-side as before. */}
+          <div className={`${mobileShowDetail ? "hidden" : "flex"} md:flex w-full md:w-[380px] shrink-0 flex-col gap-2`}>
             {/* Bulk action toolbar */}
             <div className="flex items-center gap-2 px-1">
               <label className="flex items-center gap-2 cursor-pointer">
@@ -908,7 +1033,7 @@ export default function InboxPage() {
                     className="w-4 h-4 mt-0.5 rounded border-[#C5C3BC] text-[#534AB7] focus:ring-[#534AB7] cursor-pointer shrink-0"
                   />
                   <button
-                    onClick={() => { setSelected(item); }}
+                    onClick={() => { setSelected(item); setMobileShowDetail(true); }}
                     className="flex-1 text-left min-w-0"
                   >
                     <div className="flex items-center gap-2 mb-1.5">
@@ -983,14 +1108,36 @@ export default function InboxPage() {
             )}
           </div>
 
-          {/* Detail pane */}
-          <div className="hidden md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
+          {/* Detail pane. On mobile, hidden until the user taps an item; on
+              desktop (md+) always visible. The "Back to inbox" header bar
+              only renders on mobile (md:hidden) and lets the user pop back
+              to the list. Without this, mobile users could tap items but
+              never see the content (the previous design was hidden md:flex
+              which made the inbox effectively read-only-of-titles on phones). */}
+          <div className={`${mobileShowDetail ? "flex" : "hidden"} md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}>
             {selected ? (
-              isEmailDraft(selected)
-                ? (isPendingApproval(selected) ? renderEmailEditor(selected) : renderEmailReadOnly(selected))
-                : isSocialPost(selected) ? renderSocialDetail(selected)
-                : selected.type === "whatsapp_message" ? renderWhatsAppDetail(selected)
-                : renderStandardDetail(selected)
+              <>
+                {/* Mobile-only back button -- the desktop layout has both
+                    panes side-by-side so this header is unnecessary there. */}
+                <div className="md:hidden flex items-center gap-2 px-4 py-3 border-b border-[#E0DED8] bg-white">
+                  <button
+                    onClick={() => { setMobileShowDetail(false); }}
+                    className="flex items-center gap-1.5 text-sm font-medium text-[#534AB7] hover:text-[#4339A0]"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                    </svg>
+                    Back to inbox
+                  </button>
+                </div>
+                <div className="flex-1 flex overflow-hidden">
+                  {isEmailDraft(selected)
+                    ? (isPendingApproval(selected) ? renderEmailEditor(selected) : renderEmailReadOnly(selected))
+                    : isSocialPost(selected) ? renderSocialDetail(selected)
+                    : selected.type === "whatsapp_message" ? renderWhatsAppDetail(selected)
+                    : renderStandardDetail(selected)}
+                </div>
+              </>
             ) : (
               <div className="flex items-center justify-center w-full text-sm text-[#9E9C95]">
                 Select an item to view its content
