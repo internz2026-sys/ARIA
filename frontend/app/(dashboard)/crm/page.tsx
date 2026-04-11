@@ -5,11 +5,12 @@ import { crm } from "@/lib/api";
 import {
   CrmContact, CrmCompany, CrmDeal,
   CONTACT_STATUSES, DEAL_STAGES, CONTACT_SOURCES, COMPANY_SIZES,
-  getStatusConfig, getStageConfig, formatCurrency,
+  getStageConfig, formatCurrency,
 } from "@/lib/crm-config";
 import { formatDateAgo as timeAgo } from "@/lib/utils";
 import { useNotifications } from "@/lib/use-notifications";
 import { useConfirm } from "@/lib/use-confirm";
+import StatusDropdown from "@/components/shared/StatusDropdown";
 
 // ─── Modal ───
 
@@ -460,19 +461,17 @@ export default function CRMPage() {
                 </thead>
                 <tbody>
                   {sortRows(contacts, contactSort).slice((contactPage - 1) * CRM_PAGE_SIZE, contactPage * CRM_PAGE_SIZE).map(c => {
-                    const sc = getStatusConfig(c.status);
                     return (
                       <tr key={c.id} className="border-b border-[#F0EFEC] hover:bg-[#F8F8F6] transition-colors">
                         <td className="px-4 py-3 font-medium text-[#2C2C2A]">{c.name}</td>
                         <td className="px-4 py-3 text-[#5F5E5A]">{c.email || "—"}</td>
                         <td className="px-4 py-3 text-[#5F5E5A]">{c.phone || "—"}</td>
                         <td className="px-4 py-3">
-                          <select value={c.status} onChange={e => handleContactStatusChange(c.id, e.target.value)}
-                            className="text-[11px] font-medium px-2 py-1 rounded-full border cursor-pointer focus:outline-none"
-                            style={{ color: sc.color, backgroundColor: sc.bg, borderColor: sc.color + "40" }}
-                          >
-                            {CONTACT_STATUSES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
-                          </select>
+                          <StatusDropdown
+                            value={c.status}
+                            options={CONTACT_STATUSES}
+                            onChange={(newStatus) => handleContactStatusChange(c.id, newStatus)}
+                          />
                         </td>
                         <td className="px-4 py-3 text-[#9E9C95] text-xs">{c.source}</td>
                         <td className="px-4 py-3 text-[#9E9C95] text-xs">{timeAgo(c.created_at)}</td>

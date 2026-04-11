@@ -216,6 +216,8 @@ _PUBLIC_PATHS = {
     "/api/onboarding/extract-config",
     "/api/onboarding/save-config",
     "/api/onboarding/save-config-direct",
+    "/api/onboarding/save-draft",
+    "/api/onboarding/draft",
     "/api/whatsapp/webhook",
     "/api/cron/run-scheduled",
 }
@@ -1430,6 +1432,95 @@ async def save_config_direct(body: SaveConfigDirect):
 
     save_tenant_config(config)
     return {"tenant_id": tenant_id, "config": config.model_dump(mode="json")}
+
+
+# ─── Onboarding Draft Persistence ───
+# Server-side persistence of in-progress onboarding state, keyed on the
+# Supabase auth user_id. Solves the bug where users who clear localStorage,
+# open onboarding in a second tab, hard-refresh after a long idle, or
+# switch browsers would lose their 10-min CEO conversation and have to
+# restart from scratch.
+#
+# Frontend flow:
+#   1. /review extracts the config -> POST /api/onboarding/save-draft
+#      to mirror it to the DB
+#   2. /select-agents tries GET /api/onboarding/draft on mount BEFORE
+#      reading localStorage; falls back to localStorage only if the API
+#      returns empty
+#   3. After successful /save-config, frontend calls DELETE to clean up
+
+class OnboardingDraftPayload(BaseModel):
+    user_id: str
+    session_id: str | None = None
+    extracted_config: dict
+    skipped_topics: list | None = None
+    conversation_history: list | None = None
+
+
+@app.post("/api/onboarding/save-draft")
+async def save_onboarding_draft(body: OnboardingDraftPayload):
+    """Upsert the user's in-progress onboarding draft.
+
+    Public (no JWT required) because the user is mid-onboarding and may
+    not have a tenant yet -- but the user_id MUST come from the
+    authenticated Supabase session on the client side. This endpoint
+    just trusts that and writes the row.
+    """
+    try:
+        sb = _get_supabase()
+        row = {
+            "user_id": body.user_id,
+            "session_id": body.session_id,
+            "extracted_config": body.extracted_config,
+            "skipped_topics": body.skipped_topics,
+            "conversation_history": body.conversation_history,
+        }
+        # Upsert on user_id so we always have at most one in-progress
+        # draft per user. The trigger updates updated_at automatically.
+        sb.table("onboarding_drafts").upsert(row, on_conflict="user_id").execute()
+        return {"saved": True}
+    except Exception as e:
+        logger.warning("Failed to save onboarding draft: %s", e)
+        return {"saved": False, "error": str(e)[:200]}
+
+
+@app.get("/api/onboarding/draft")
+async def get_onboarding_draft(user_id: str):
+    """Return the user's most recent in-progress onboarding draft, or 404
+    if none exists. Used by /select-agents on mount before falling back
+    to localStorage."""
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    try:
+        sb = _get_supabase()
+        result = (
+            sb.table("onboarding_drafts")
+            .select("session_id,extracted_config,skipped_topics,conversation_history,updated_at")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            raise HTTPException(status_code=404, detail="No draft found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Failed to load onboarding draft: %s", e)
+        raise HTTPException(status_code=500, detail="Could not load draft")
+
+
+@app.delete("/api/onboarding/draft")
+async def delete_onboarding_draft(user_id: str):
+    """Clean up the user's draft after successful save-config. Best-effort:
+    if the delete fails the row will just expire naturally over time."""
+    try:
+        sb = _get_supabase()
+        sb.table("onboarding_drafts").delete().eq("user_id", user_id).execute()
+        return {"deleted": True}
+    except Exception as e:
+        logger.warning("Failed to delete onboarding draft: %s", e)
+        return {"deleted": False}
 
 
 # ─── Re-onboarding / Edit Mode ───

@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { API_URL } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 
 export default function ReviewPage() {
   const router = useRouter();
@@ -11,8 +12,36 @@ export default function ReviewPage() {
 
   useEffect(() => {
     const sessionId = localStorage.getItem("aria_onboarding_session");
+    // If localStorage is empty, try the SERVER-SIDE draft first before
+    // bouncing back to /describe. This is the fix for "user cleared
+    // localStorage and lost 10 minutes of onboarding": the draft is
+    // mirrored to onboarding_drafts (server) on every successful
+    // extraction, so even with no localStorage we can resume.
     if (!sessionId) {
-      router.push("/describe");
+      (async () => {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          const userId = session?.user?.id;
+          if (!userId) {
+            router.push("/describe");
+            return;
+          }
+          const res = await fetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(userId)}`);
+          if (res.ok) {
+            const draft = await res.json();
+            if (draft?.extracted_config && Object.keys(draft.extracted_config).length > 0) {
+              setConfig(draft.extracted_config);
+              // Re-seed localStorage so the rest of the flow works normally
+              localStorage.setItem("aria_onboarding_config", JSON.stringify(draft.extracted_config));
+              if (draft.session_id) localStorage.setItem("aria_onboarding_session", draft.session_id);
+              if (draft.skipped_topics) localStorage.setItem("aria_skipped_topics", JSON.stringify(draft.skipped_topics));
+              setLoading(false);
+              return;
+            }
+          }
+        } catch { /* fall through */ }
+        router.push("/describe");
+      })();
       return;
     }
 
@@ -32,10 +61,32 @@ export default function ReviewPage() {
         if (!r.ok) throw new Error("Session expired");
         return r.json();
       })
-      .then(data => {
+      .then(async (data) => {
         const cfg = data.config || {};
         setConfig(cfg);
         localStorage.setItem("aria_onboarding_config", JSON.stringify(cfg));
+
+        // Mirror to server-side onboarding_drafts. Best-effort: if it
+        // fails the localStorage path still works for this session;
+        // the user just doesn't get cross-tab/cross-browser resume.
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          const userId = session?.user?.id;
+          if (userId) {
+            const skippedTopicsRaw = localStorage.getItem("aria_skipped_topics");
+            await fetch(`${API_URL}/api/onboarding/save-draft`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                user_id: userId,
+                session_id: sessionId,
+                extracted_config: cfg,
+                skipped_topics: skippedTopicsRaw ? JSON.parse(skippedTopicsRaw) : null,
+              }),
+            });
+          }
+        } catch { /* non-blocking */ }
+
         setLoading(false);
       })
       .catch(() => {

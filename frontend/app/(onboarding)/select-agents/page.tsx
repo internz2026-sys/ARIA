@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { API_URL, getAuthHeaders } from "@/lib/api";
@@ -46,6 +46,32 @@ export default function SelectAgentsPage() {
   const billableCount = activeCount - (enabled.ceo ? 1 : 0);
   const tier = PRICING_TIERS.find((t) => t.key === selectedTier)!;
   const overQuota = tier.agents !== null && billableCount > tier.agents;
+
+  // On mount, try to restore the in-progress onboarding draft from the
+  // server BEFORE checking localStorage. Solves the bug where users
+  // who cleared cookies / opened a second tab / hard-refreshed after
+  // a long idle would lose their 10-min CEO conversation.
+  useEffect(() => {
+    (async () => {
+      // Already have local state? Skip.
+      if (localStorage.getItem("aria_onboarding_config")) return;
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const userId = session?.user?.id;
+        if (!userId) return;
+        const res = await fetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(userId)}`);
+        if (!res.ok) return;
+        const draft = await res.json();
+        if (draft?.extracted_config && Object.keys(draft.extracted_config).length > 0) {
+          // Re-seed localStorage so handleLaunch's existing logic can
+          // pick it up via the cachedConfig path.
+          localStorage.setItem("aria_onboarding_config", JSON.stringify(draft.extracted_config));
+          if (draft.session_id) localStorage.setItem("aria_onboarding_session", draft.session_id);
+          if (draft.skipped_topics) localStorage.setItem("aria_skipped_topics", JSON.stringify(draft.skipped_topics));
+        }
+      } catch { /* non-blocking */ }
+    })();
+  }, []);
 
   // Flush Google OAuth tokens saved during signup to the backend
   async function flushGoogleTokens(tenantId: string) {
@@ -116,6 +142,12 @@ export default function SelectAgentsPage() {
           localStorage.removeItem("aria_onboarding_config");
           localStorage.removeItem("aria_skipped_topics");
           localStorage.removeItem("aria_reonboarding_tenant_id");
+          // Clean up the server-side draft now that we have a real tenant
+          if (user?.id) {
+            try {
+              await fetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(user.id)}`, { method: "DELETE" });
+            } catch { /* best-effort */ }
+          }
           router.push("/dashboard");
           return;
         }
@@ -151,6 +183,12 @@ export default function SelectAgentsPage() {
         localStorage.removeItem("aria_onboarding_session");
         localStorage.removeItem("aria_onboarding_config");
         localStorage.removeItem("aria_skipped_topics");
+        // Clean up the server-side draft now that we have a real tenant
+        if (user?.id) {
+          try {
+            await fetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(user.id)}`, { method: "DELETE" });
+          } catch { /* best-effort */ }
+        }
         router.push("/dashboard");
         return;
       }
