@@ -21,6 +21,7 @@ It does TWO related jobs against Paperclip's API every few seconds:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -222,22 +223,27 @@ def _load_processed_ids_from_db():
         logger.debug(f"Could not seed processed IDs (column may not exist): {e}")
 
 
-async def poll_completed_issues():
+async def poll_completed_issues() -> int:
     """Check Paperclip for completed agent issues and import results to ARIA inbox.
 
-    Hot path: this runs every 5 seconds. The in-memory `_processed_issues`
-    set is the primary dedupe layer (zero DB hits per cycle for known IDs);
-    the DB existence check is the cold-start safety net for restarts.
+    Hot path: this runs every 5 seconds (or 30s in idle mode). The in-memory
+    `_processed_issues` set is the primary dedupe layer (zero DB hits per
+    cycle for known IDs); the DB existence check is the cold-start safety
+    net for restarts.
+
+    Returns the number of new inbox rows imported on this tick. The
+    background loop uses this to decide whether to back off the polling
+    interval (no work for N consecutive cycles -> 30s).
     """
     company_id = get_company_id()
     if not company_id:
-        return
+        return 0
 
     _load_processed_ids_from_db()
 
     issues = _urllib_request("GET", f"/api/companies/{company_id}/issues")
     if not issues:
-        return
+        return 0
 
     issue_list = issues if isinstance(issues, list) else issues.get("data", issues.get("issues", []))
 
@@ -310,30 +316,36 @@ async def poll_completed_issues():
             continue
 
         # Dedupe: have we already imported this Paperclip issue?
-        try:
-            existing = (
-                sb.table("inbox_items")
-                .select("id")
-                .eq("tenant_id", tenant_id)
-                .eq("paperclip_issue_id", issue_id)
-                .limit(1)
-                .execute()
-            )
-        except Exception:
-            # Fallback if paperclip_issue_id column doesn't exist yet
-            existing = (
-                sb.table("inbox_items")
-                .select("id")
-                .eq("tenant_id", tenant_id)
-                .ilike("title", f"%{title[:50]}%")
-                .limit(1)
-                .execute()
-            )
+        # Wrapped in to_thread so the supabase-py sync HTTP call doesn't
+        # block the event loop. The poller runs every 5s and a single
+        # blocking call here would stall every other request for the
+        # duration.
+        def _check_existing():
+            try:
+                return (
+                    sb.table("inbox_items")
+                    .select("id")
+                    .eq("tenant_id", tenant_id)
+                    .eq("paperclip_issue_id", issue_id)
+                    .limit(1)
+                    .execute()
+                )
+            except Exception:
+                return (
+                    sb.table("inbox_items")
+                    .select("id")
+                    .eq("tenant_id", tenant_id)
+                    .ilike("title", f"%{title[:50]}%")
+                    .limit(1)
+                    .execute()
+                )
+        existing = await asyncio.to_thread(_check_existing)
         if existing.data:
             _add_processed(issue_id)
             continue
 
-        # Insert the inbox item
+        # Insert the inbox item + bell notification. Both writes are
+        # wrapped in to_thread so they don't block the event loop.
         try:
             inbox_status = "draft_pending_approval" if content_type == "email" else "needs_review"
             row = {
@@ -346,27 +358,27 @@ async def poll_completed_issues():
                 "status": inbox_status,
                 "paperclip_issue_id": issue_id,
             }
-            result = sb.table("inbox_items").insert(row).execute()
+            result = await asyncio.to_thread(lambda: sb.table("inbox_items").insert(row).execute())
             if result.data:
                 imported += 1
                 logger.warning(
-                    f"[poller] imported {issue.get('identifier', issue_id)} -> "
-                    f"inbox ({agent_name}, {len(output)} chars): {title[:60]}"
+                    "[poller] imported %s -> inbox (%s, %d chars): %s",
+                    issue.get("identifier", issue_id), agent_name, len(output), title[:60],
                 )
-                # Bell notification
+                notif_row = {
+                    "tenant_id": tenant_id,
+                    "title": f"New from {agent_name}: {title[:60]}",
+                    "body": output[:200],
+                    "category": "inbox",
+                    "href": "/inbox",
+                }
                 try:
-                    sb.table("notifications").insert({
-                        "tenant_id": tenant_id,
-                        "title": f"New from {agent_name}: {title[:60]}",
-                        "body": output[:200],
-                        "category": "inbox",
-                        "href": "/inbox",
-                    }).execute()
+                    await asyncio.to_thread(lambda: sb.table("notifications").insert(notif_row).execute())
                 except Exception:
                     pass
             _add_processed(issue_id)
         except Exception as e:
-            logger.error(f"[poller] failed to import {issue_id}: {e}")
+            logger.error("[poller] failed to import %s: %s", issue_id, e)
 
     # Emit a summary line only when there's something interesting to report
     if imported or skipped_no_tenant or skipped_no_output:
@@ -374,6 +386,8 @@ async def poll_completed_issues():
             f"[poller] cycle: {finished} finished, {imported} imported, "
             f"{skipped_no_tenant} no_tenant, {skipped_no_output} no_output"
         )
+
+    return imported
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -384,18 +398,25 @@ async def poll_completed_issues():
 _prev_agent_status: dict[str, str] = {}
 
 
-async def sync_agent_statuses(sio):
-    """Poll Paperclip agent statuses and emit Virtual Office events."""
+async def sync_agent_statuses(sio) -> int:
+    """Poll Paperclip agent statuses and emit Virtual Office events.
+
+    Returns the number of agents whose status actually changed on this
+    tick. The background loop uses this as a signal that something is
+    happening, so it should stay in fast-poll mode rather than backing
+    off to the idle interval.
+    """
     company_id = get_company_id()
     if not company_id:
-        return
+        return 0
 
     agents = _urllib_request("GET", f"/api/companies/{company_id}/agents")
     if not agents:
-        return
+        return 0
 
     agent_list = agents if isinstance(agents, list) else agents.get("data", [])
     tenant_ids = _get_cached_tenant_ids()
+    changed = 0
 
     for agent in agent_list:
         pc_name = agent.get("name", "")
@@ -415,6 +436,7 @@ async def sync_agent_statuses(sio):
         if prev == aria_status:
             continue
         _prev_agent_status[aria_id] = aria_status
+        changed += 1
 
         current_task = "Running via Paperclip" if aria_status == "working" else ""
         payload = {
@@ -438,3 +460,5 @@ async def sync_agent_statuses(sio):
 
         if aria_status != "idle":
             logger.info(f"Virtual Office: {aria_id} → {aria_status} (from Paperclip)")
+
+    return changed
