@@ -2979,6 +2979,200 @@ def _enrich_task_desc_with_crm(task_desc: str, tenant_id: str) -> str:
         return task_desc
 
 
+def _business_name_for_template(tenant_id: str = "") -> str:
+    """Return the tenant's business name for the email template header.
+
+    Falls back to 'ARIA' if no tenant is known or the lookup fails.
+    Cached implicitly by get_tenant_config so repeated calls are cheap.
+    """
+    if not tenant_id:
+        return "ARIA"
+    try:
+        from backend.config.loader import get_tenant_config
+        tc = get_tenant_config(tenant_id)
+        return (tc.business_name or "ARIA").strip() or "ARIA"
+    except Exception:
+        return "ARIA"
+
+
+def _wrap_email_in_designed_template(
+    body_html: str,
+    *,
+    business_name: str = "ARIA",
+    subject: str = "",
+    preview_text: str = "",
+    cta_text: str | None = None,
+    cta_url: str | None = None,
+) -> str:
+    """Wrap plain HTML email content in a designed branded template.
+
+    The agent produces simple `<p>Hi Hanz,</p>...<ul><li>...</li></ul>`
+    output. To get the dark-themed branded design the user wants
+    (gradient header, card-style sections, CTA button, footer), we
+    wrap that plain content in this template shell. The agent stays
+    dumb; the backend handles the design.
+
+    Looks like: dark navy background, blue gradient header card with
+    business name + tagline, dark inner card holding the body, cyan
+    section headers, styled CTA button, muted footer with company
+    name + year.
+
+    If body_html already contains <html> or <!DOCTYPE, it's a complete
+    document and we leave it alone (assume the agent designed it
+    intentionally).
+    """
+    import re
+
+    if not body_html:
+        return ""
+
+    body_lower = body_html.lower().lstrip()
+    if body_lower.startswith(("<!doctype", "<html")):
+        return body_html  # complete document already, don't double-wrap
+
+    # Strip the outer <body> wrapper if the parser added one
+    m = re.search(r"<body[^>]*>(.*?)</body>", body_html, re.IGNORECASE | re.DOTALL)
+    if m:
+        body_html = m.group(1).strip()
+
+    # Auto-extract a CTA from common phrases if not provided
+    if not cta_text:
+        for pattern in (
+            r"(?:book|schedule|claim|get|see|try|start|book a)\s+(?:your\s+)?(?:free\s+)?(?:[a-z\-]+\s+){0,3}(?:demo|call|trial|consultation|meeting)",
+        ):
+            m = re.search(pattern, _strip_html_to_text(body_html), re.IGNORECASE)
+            if m:
+                cta_text = m.group(0).title()
+                break
+    if not cta_text:
+        cta_text = "Schedule a 15-Minute Demo"
+    if not cta_url:
+        cta_url = "#"
+
+    # Style sections that look like callouts. The agent often uses
+    # **Bold:** prefix lines for highlights -- give them card styling
+    # with a colored left border on a light background.
+    def _stylize_callout(match: "re.Match[str]") -> str:
+        label = match.group(1)
+        rest = match.group(2)
+        return (
+            f'<div style="background: #fffbeb; '
+            f'border-left: 4px solid #f59e0b; padding: 12px 16px; '
+            f'margin: 8px 0; border-radius: 4px;">'
+            f'<strong style="color: #92400e;">{label}:</strong>'
+            f'<span style="color: #1f2937;"> {rest}</span>'
+            f"</div>"
+        )
+
+    # Find <li><strong>Label:</strong> rest</li> patterns and turn into callouts
+    body_html = re.sub(
+        r"<li[^>]*>\s*<strong>([^<]+?):</strong>\s*([^<]+?)</li>",
+        _stylize_callout,
+        body_html,
+    )
+
+    # Highlight <p><strong>Result:</strong> ...</p> as a green callout
+    body_html = re.sub(
+        r"<p[^>]*>\s*<strong>(Result|Summary|Bottom Line)[^<]*:?</strong>([^<]+?)</p>",
+        lambda m: (
+            f'<div style="background: #ecfdf5; '
+            f'border-left: 4px solid #10b981; padding: 14px 18px; '
+            f'margin: 16px 0; border-radius: 4px;">'
+            f'<strong style="color: #047857;">{m.group(1)}:</strong>'
+            f'<span style="color: #064e3b;"> {m.group(2)}</span>'
+            f"</div>"
+        ),
+        body_html,
+        flags=re.IGNORECASE,
+    )
+
+    # Restyle <h2>/<h3> as blue section headers
+    body_html = re.sub(
+        r"<h2[^>]*>(.*?)</h2>",
+        r'<h2 style="color: #2563eb; font-size: 20px; font-weight: 600; margin: 28px 0 12px 0;">\1</h2>',
+        body_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    body_html = re.sub(
+        r"<h3[^>]*>(.*?)</h3>",
+        r'<h3 style="color: #2563eb; font-size: 17px; font-weight: 600; margin: 24px 0 10px 0;">\1</h3>',
+        body_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # Restyle paragraphs, lists, links, and bold text in the light theme
+    body_html = re.sub(
+        r"<p(?![^>]*style=)",
+        '<p style="color: #374151; font-size: 15px; line-height: 1.7; margin: 14px 0;"',
+        body_html,
+    )
+    body_html = re.sub(
+        r"<ul(?![^>]*style=)",
+        '<ul style="color: #374151; padding-left: 22px; margin: 14px 0;"',
+        body_html,
+    )
+    body_html = re.sub(
+        r"<li(?![^>]*style=)",
+        '<li style="margin: 8px 0; line-height: 1.6;"',
+        body_html,
+    )
+    body_html = re.sub(
+        r"<a(?![^>]*style=)",
+        '<a style="color: #2563eb; text-decoration: underline;"',
+        body_html,
+    )
+    body_html = re.sub(
+        r"<strong(?![^>]*style=)",
+        '<strong style="color: #111827;"',
+        body_html,
+    )
+
+    # Build the template
+    business_name_safe = (business_name or "ARIA").strip() or "ARIA"
+    title_text = subject.strip() if subject else f"News from {business_name_safe}"
+    tagline = preview_text.strip() if preview_text else f"From the {business_name_safe} team"
+    year = datetime.now(timezone.utc).year
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title_text}</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f3f4f6; padding: 32px 12px;">
+  <tr><td align="center">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);">
+      <!-- Header card with blue gradient -->
+      <tr><td style="background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); padding: 40px 32px; text-align: center;">
+        <h1 style="color: #ffffff; font-size: 26px; font-weight: 700; margin: 0 0 8px 0; line-height: 1.3;">{title_text}</h1>
+        <p style="color: rgba(255,255,255,0.9); font-size: 15px; margin: 0; line-height: 1.5;">{tagline}</p>
+      </td></tr>
+      <!-- Body card (light/white) -->
+      <tr><td style="background-color: #ffffff; padding: 36px 36px 24px 36px;">
+        {body_html}
+        <!-- CTA button -->
+        <div style="text-align: center; margin: 32px 0 8px 0;">
+          <a href="{cta_url}" style="display: inline-block; background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: #ffffff; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);">{cta_text}</a>
+        </div>
+      </td></tr>
+      <!-- Footer -->
+      <tr><td style="background-color: #f9fafb; padding: 24px 32px; border-top: 1px solid #e5e7eb; text-align: center;">
+        <p style="color: #6b7280; font-size: 12px; margin: 4px 0;">&copy; {year} {business_name_safe}. All rights reserved.</p>
+        <p style="color: #6b7280; font-size: 12px; margin: 4px 0;">
+          <a href="#" style="color: #6b7280; text-decoration: none;">Privacy Policy</a> &nbsp;|&nbsp;
+          <a href="#" style="color: #6b7280; text-decoration: none;">Contact Us</a> &nbsp;|&nbsp;
+          <a href="#" style="color: #6b7280; text-decoration: none;">Unsubscribe</a>
+        </p>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>"""
+
+
 def _strip_html_to_text(html: str) -> str:
     """Convert an HTML body into a plain text approximation for the
     text_body / preview_snippet fields. Not perfect -- just enough to
@@ -3095,17 +3289,20 @@ def _parse_html_email_draft(text: str, fallback_to: str = "") -> dict | None:
     m = re.search(r"<body[^>]*>(.*?)</body>", text, re.IGNORECASE | re.DOTALL)
     if m:
         html_body = m.group(1).strip()
-    # If we extracted just the body content, wrap it in a div with
-    # default styling so it renders nicely in the editor without the
-    # original document's <html><body> noise.
-    if html_body != text:
-        html_body = (
-            '<div style="font-family: -apple-system, BlinkMacSystemFont, '
-            "'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #1f2937; "
-            'max-width: 600px; margin: 0 auto;">'
-            f"{html_body}"
-            "</div>"
-        )
+
+    # Wrap in the designed branded template -- same as the markdown
+    # parser branch -- so the inbox editor renders a styled email
+    # instead of whatever raw HTML the agent produced.
+    preview_text = ""
+    pm = re.search(r"Preview\s*Text[^:]*:\s*([^\n]+)", _strip_html_to_text(text), re.IGNORECASE)
+    if pm:
+        preview_text = pm.group(1).strip().strip('"').strip("*").strip()[:120]
+    html_body = _wrap_email_in_designed_template(
+        html_body,
+        business_name=_business_name_for_template(),
+        subject=subject or "",
+        preview_text=preview_text,
+    )
 
     # text_body and preview from the rendered text
     text_body = _strip_html_to_text(text)
@@ -3312,23 +3509,37 @@ def _parse_email_draft_from_text(text: str, fallback_to: str = "") -> dict | Non
 
     # If the agent didn't emit a fenced ```html``` block, generate basic
     # HTML from the plain markdown body so the inbox UI's email editor
-    # has something to render in its Source/Preview tab. Otherwise the
-    # editor shows an empty <body> and looks broken.
+    # has something to render in its Source/Preview tab.
     if not body_html and body:
         body_html = _markdown_to_basic_html(body)
+
+    # Extract preview text if the agent included one
+    preview_text = ""
+    pm = re.search(r"\*\*\s*Preview\s*(?:Text)?[^*]*\*\*\s*[:\-]?\s*([^\n]+)", text, re.IGNORECASE)
+    if pm:
+        preview_text = pm.group(1).strip().strip('"').strip("*").strip()[:120]
+
+    # Wrap the agent's plain HTML in the designed branded template so
+    # the inbox editor renders a beautiful styled email instead of
+    # naked <p> / <ul> tags. The agent stays dumb; the backend
+    # handles the design.
+    final_html = _wrap_email_in_designed_template(
+        body_html,
+        business_name=_business_name_for_template(),
+        subject=subject or "",
+        preview_text=preview_text,
+    )
 
     # IMPORTANT: field names must match the frontend's EmailDraft
     # interface (frontend/app/(dashboard)/inbox/page.tsx) -- it reads
     # `email_draft.html_body` and `email_draft.text_body`, NOT
-    # `body_html` / `body`. The local _run_agent_to_inbox path uses
-    # this same canonical schema, so any new code that writes to
-    # email_draft must follow it or the editor renders empty.
+    # `body_html` / `body`.
     return {
         "subject": (subject or "Untitled email")[:300],
         "to": to or "",
         "send_time": send_time or "",
         "text_body": body[:5000],
-        "html_body": body_html or "",
+        "html_body": final_html,
         "preview_snippet": (body or text)[:200],
         "status": "draft_pending_approval",
     }
@@ -4199,23 +4410,25 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     sb = _get_supabase()
 
     # ── Reject confirmation/status messages ────────────────────────────
-    # Agents sometimes POST a "Saved successfully!" status message as a
-    # SECOND inbox item, immediately after they POST the real content.
-    # Detect those and short-circuit so they don't create duplicate
-    # rows next to the actual draft. Pattern markers we've seen:
-    #   "✅ Welcome email draft created for Hanz"
-    #   "Saved to ARIA Inbox [ab04f78a-...]"
-    #   "Successfully saved" / "Created and saved"
+    # Agents POST "Saved successfully!" status messages as SECOND inbox
+    # items, immediately after they POST the real content. Detect those
+    # and short-circuit so they don't create duplicate rows.
+    #
+    # No length filter -- the previous 600-char cap let through long
+    # confirmation messages like "✅ Email draft created and saved
+    # to ARIA inbox Draft ID: 023c59e9-... Email Details: <full echo
+    # of the email>" which were 1000+ chars. The pattern markers
+    # alone are reliable enough: a real email draft NEVER starts
+    # with ✅ or contains the literal phrase "saved to ARIA inbox".
     _content_lower = (body.content or "").strip().lower()
     _is_confirmation = (
-        len(body.content or "") < 600
-        and (
-            "saved to aria inbox" in _content_lower
-            or "saved to inbox" in _content_lower
-            or _content_lower.startswith(("✅", ":white_check_mark:", "[saved]", "[done]"))
-            or "successfully saved" in _content_lower
-            or "draft created and saved" in _content_lower
-        )
+        "saved to aria inbox" in _content_lower
+        or "saved to inbox" in _content_lower
+        or _content_lower.startswith(("✅", ":white_check_mark:", "[saved]", "[done]", "## task complete", "## email draft complete"))
+        or "successfully saved" in _content_lower
+        or "draft created and saved" in _content_lower
+        or "draft id:" in _content_lower
+        or _content_lower.startswith("email draft created")
     )
     if _is_confirmation:
         logging.getLogger("aria.inbox").info(
