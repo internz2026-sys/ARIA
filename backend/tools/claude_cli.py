@@ -314,11 +314,16 @@ async def call_claude(
         )
 
     if returncode != 0:
-        err = stderr.decode().strip()
+        # The CLI sometimes prints "configuration file not found" to stdout
+        # instead of stderr depending on version, so combine both streams
+        # before reporting or matching.
+        err = (stderr.decode() + "\n" + stdout.decode()).strip()
         # Self-heal the "config file not found" race: the CLI rotates its
-        # auth file and occasionally leaves only the backup. Restore from
-        # the most recent backup and retry once before giving up.
-        if "configuration file not found" in err and _try_restore_claude_config():
+        # auth file and occasionally leaves only the backup. We call the
+        # restore helper unconditionally on any non-zero exit -- it's a
+        # no-op when ~/.claude.json already exists, so it's always safe.
+        # Only retry if the restore actually did something (returns True).
+        if _try_restore_claude_config():
             logger.warning("Retrying CLI call after auto-restore of .claude.json")
             try:
                 returncode, stdout, stderr = await _run_cli()
@@ -327,7 +332,7 @@ async def call_claude(
                     "Claude CLI not found after restore. Install with: npm install -g @anthropic-ai/claude-code"
                 )
             if returncode != 0:
-                err = stderr.decode().strip()
+                err = (stderr.decode() + "\n" + stdout.decode()).strip()
                 logger.error("Claude CLI error after restore (exit %d): %s", returncode, err)
                 raise RuntimeError(f"Claude CLI error: {err}")
         else:

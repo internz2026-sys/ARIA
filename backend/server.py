@@ -155,6 +155,20 @@ async def lifespan(app: FastAPI):
     Paperclip's UI and ARIA only does runtime lookups via the helpers in
     backend/orchestrator.py.
     """
+    # Proactive Claude CLI auth health check. The CLI's config-rotation
+    # race can leave ~/.claude.json missing on container startup (only the
+    # backup survives), and the reactive auto-heal in call_claude only
+    # fires after the first failed request. Run the restore here so the
+    # very first chat call after a rebuild is guaranteed to work.
+    try:
+        from backend.tools.claude_cli import _try_restore_claude_config
+        if _try_restore_claude_config():
+            logger.warning("Startup: auto-restored ~/.claude.json from backup")
+        else:
+            logger.info("Startup: ~/.claude.json is healthy (no restore needed)")
+    except Exception as e:
+        logger.warning("Startup .claude.json check failed: %s", e)
+
     # Initialize semantic cache (Qdrant)
     try:
         from backend.services.semantic_cache import ensure_collection
