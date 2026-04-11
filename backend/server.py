@@ -3752,26 +3752,100 @@ class CreateInboxItem(BaseModel):
     priority: str = "medium"
     status: str = "needs_review"
     email_draft: dict | None = None
+    paperclip_issue_id: str | None = None
 
 
 @app.post("/api/inbox/{tenant_id}/items")
 async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
-    """Create an inbox item — used by Paperclip agents to store their output."""
+    """Create an inbox item — used by Paperclip agents to store their output.
+
+    Two paths can hit this endpoint:
+      1. The agent's aria-backend-api skill curl from inside Paperclip
+         (the agent's own POST after generating content)
+      2. The watcher's _save_inbox_item fallback when its placeholder
+         update fails
+
+    For path 1, the agent rarely populates email_draft itself, so we
+    parse the content here for the same email/social structured fields
+    the watcher extracts. This is what makes the Approve & Send /
+    Publish to X / Publish to LinkedIn buttons render in the inbox
+    regardless of which write path created the row.
+
+    Dedupe: if paperclip_issue_id is provided AND a row already exists
+    for that issue (created by the watcher's placeholder), we UPDATE
+    that row instead of creating a duplicate. The agent doesn't
+    currently send paperclip_issue_id, but we accept it for the future
+    when the skill MD is updated.
+    """
     sb = _get_supabase()
+
+    # Apply the same parser the watcher uses, so the rich fields
+    # populate even when the agent skipped them in its POST body.
+    title = body.title
+    content_type = body.type
+    status = body.status
+    email_draft = body.email_draft
+
+    if body.agent == "email_marketer" and not email_draft:
+        parsed = _parse_email_draft_from_text(body.content)
+        if parsed:
+            email_draft = parsed
+            content_type = "email_sequence"
+            status = "draft_pending_approval"
+            if parsed.get("subject") and parsed["subject"] != "Untitled email":
+                # Only override the title if the agent's own title is generic
+                if not title or title.lower().startswith(("draft", "marketing email", "email", "untitled")):
+                    title = f"Email: {parsed['subject']}"
+
+    if body.agent in ("content_writer", "social_manager"):
+        social = _parse_social_drafts_from_text(body.content)
+        if social or any(k in body.content.lower()[:500] for k in ("**twitter:**", "**linkedin:**", "**x:**", "**x/twitter:**")):
+            content_type = "social_post"
+
     row = {
         "tenant_id": tenant_id,
-        "title": body.title,
+        "title": title,
         "content": body.content,
-        "type": body.type,
+        "type": content_type,
         "agent": body.agent,
         "priority": body.priority,
-        "status": body.status,
+        "status": status,
     }
-    if body.email_draft:
-        row["email_draft"] = body.email_draft
+    if email_draft:
+        row["email_draft"] = email_draft
+    if body.paperclip_issue_id:
+        row["paperclip_issue_id"] = body.paperclip_issue_id
 
-    result = sb.table("inbox_items").insert(row).execute()
-    item = result.data[0] if result.data else None
+    # Dedupe with the watcher's placeholder when we have an issue id
+    item = None
+    if body.paperclip_issue_id:
+        try:
+            existing = (
+                sb.table("inbox_items")
+                .select("id")
+                .eq("tenant_id", tenant_id)
+                .eq("paperclip_issue_id", body.paperclip_issue_id)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                placeholder_id = existing.data[0]["id"]
+                update_data = {k: v for k, v in row.items() if k not in ("tenant_id",)}
+                update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                sb.table("inbox_items").update(update_data).eq("id", placeholder_id).execute()
+                item = {"id": placeholder_id, **row}
+                logging.getLogger("aria.inbox").info(
+                    "[inbox-create] updated existing placeholder %s for paperclip_issue_id=%s",
+                    placeholder_id, body.paperclip_issue_id,
+                )
+        except Exception as e:
+            logging.getLogger("aria.inbox").warning(
+                "[inbox-create] dedupe lookup failed: %s -- inserting fresh row", e,
+            )
+
+    if item is None:
+        result = sb.table("inbox_items").insert(row).execute()
+        item = result.data[0] if result.data else None
 
     # Emit real-time notification
     if item and tenant_id:
@@ -3780,7 +3854,7 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
         try:
             sb.table("notifications").insert({
                 "tenant_id": tenant_id,
-                "title": f"New from {body.agent}: {body.title}",
+                "title": f"New from {body.agent}: {title}",
                 "body": body.content[:200],
                 "category": "inbox",
                 "href": "/inbox",
