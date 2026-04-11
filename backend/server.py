@@ -3520,15 +3520,39 @@ def _summarize_ceo_assistant_message(content: str) -> str:
     return f"[CEO: {first_line}]"
 
 
-def _format_history_message(m: dict) -> str:
+def _format_history_message(m: dict, *, keep_verbatim: bool = False) -> str:
     """Render one prior message for the history block.
 
     User messages stay verbatim so the model knows what was actually asked.
-    CEO assistant messages get summarised to break verbatim-copying priming.
+    CEO assistant messages get summarised to break verbatim-copying priming
+    UNLESS keep_verbatim is True, which the caller sets for the immediately
+    prior CEO turn so follow-ups like 'go with number 1' have the actual
+    options in context.
     """
     if m.get("role") == "user":
         return f"User: {m.get('content', '')}"
-    return _summarize_ceo_assistant_message(m.get("content", ""))
+    content = m.get("content", "")
+    if keep_verbatim:
+        return f"CEO (previous response — keep this in mind for the user's reply): {content}"
+    return _summarize_ceo_assistant_message(content)
+
+
+# Threshold for keeping the most recent CEO response verbatim. Anything under
+# this size is treated as a conversational reply (clarifying question, brief
+# delegation announcement, short status update) and the next user message
+# almost certainly refers back to its content. Anything over this size is a
+# long-form artifact (GTM review, multi-section report) and including it
+# verbatim primes the model to plagiarise its own prior output, which was
+# the original reason _summarize_ceo_assistant_message exists.
+_KEEP_VERBATIM_MAX_CHARS = 2000
+
+
+def _last_assistant_index(history: list[dict]) -> int | None:
+    """Index in history of the most recent assistant (CEO) message, or None."""
+    for i in range(len(history) - 1, -1, -1):
+        if history[i].get("role") == "assistant":
+            return i
+    return None
 
 
 @app.post("/api/ceo/chat")
@@ -3765,7 +3789,24 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         recent = history[-_RECENT_WINDOW:]
         older = history[:-_RECENT_WINDOW][-_MAX_SUMMARY_MSGS:]
 
-        recent_text = "\n".join(_format_history_message(m) for m in recent)
+        # The most recent CEO response is critical context for the user's
+        # follow-up ("go with number 1" only makes sense if option 1 is in
+        # context). Find its index within `recent` so we can keep it
+        # verbatim — but only if it's short enough to not re-trigger the
+        # plagiarism bug that the summarizer was originally added for.
+        last_ceo_idx_in_recent = _last_assistant_index(recent)
+        keep_last_verbatim = (
+            last_ceo_idx_in_recent is not None
+            and len(recent[last_ceo_idx_in_recent].get("content", "")) <= _KEEP_VERBATIM_MAX_CHARS
+        )
+
+        recent_text = "\n".join(
+            _format_history_message(
+                m,
+                keep_verbatim=(keep_last_verbatim and i == last_ceo_idx_in_recent),
+            )
+            for i, m in enumerate(recent)
+        )
         history_block_parts = []
         if older:
             older_text = "\n".join(_format_history_message(m) for m in older)
