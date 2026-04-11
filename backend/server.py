@@ -3370,6 +3370,47 @@ async def _dispatch_paperclip_and_watch_to_inbox(
             )
             break
 
+        # If Paperclip says the issue is FINISHED but pick_agent_output
+        # returned nothing usable, something is wrong with comment filtering.
+        # Dump a sample of the comment shapes (author + length + body
+        # preview) so we can see what the watcher is rejecting and why.
+        # This logs at most ONCE per watcher run -- gated on `output is None`
+        # AND `_is_finished(issue_status)` so we don't spam during normal
+        # in-progress polling.
+        if isinstance(issue_data, dict) and _is_finished(issue_status) and not output:
+            try:
+                sample = []
+                for c in (comments or [])[:8]:
+                    body = (c.get("body") or c.get("content") or "").strip()
+                    author_field = c.get("author") or c.get("agent") or c.get("authorName") or "?"
+                    if isinstance(author_field, dict):
+                        author_field = (
+                            author_field.get("name")
+                            or author_field.get("displayName")
+                            or author_field.get("slug")
+                            or "?"
+                        )
+                    sample.append(
+                        f"author={author_field!r} len={len(body)} preview={body[:80]!r}"
+                    )
+                _logger.warning(
+                    "[paperclip-watch] issue %s status=%s but no usable comment "
+                    "from pick_agent_output (expected_agent=%s); %d comments seen: %s",
+                    paperclip_issue_id, issue_status, agent_id, len(comments), " | ".join(sample),
+                )
+            except Exception as diag_err:
+                _logger.warning(
+                    "[paperclip-watch] diagnostic dump failed: %s", diag_err,
+                )
+            # Issue is finished and we still got nothing -- bail with a
+            # clearer failure reason than the generic timeout.
+            failure_reason = (
+                f"Paperclip marked the issue {issue_status!r} but no agent reply "
+                f"was found in the comments. Check the watcher diagnostic log line "
+                f"for what comments were seen."
+            )
+            break
+
     # Phase 4: write the result to inbox. Either we have output (success)
     # or we have a failure_reason (timeout / failed status / outage).
     if not output:

@@ -58,29 +58,35 @@ def pick_agent_output(
 ) -> str | None:
     """Return the longest comment that's a real agent reply.
 
-    Skips:
+    Skips (always):
     - Empty/whitespace-only comments
     - The exact `exclude_text` (the user's original message, prefixed)
     - Anything starting with an ARIA framing prefix like `[tenant_id=`,
       `[wake]`, or `TENANT_ID:` -- those are our own wrappers, never the agent
-    - Any comment authored by the CEO when expected_agent is set to a
-      non-CEO slug -- otherwise the CEO's own staging dump can win the
-      length contest and get imported as the sub-agent's output
 
-    When `expected_agent` is provided AND any comment matches it, the
-    longest matching comment wins (preferred path). If no comment matches
-    the expected agent, fall back to the legacy "longest non-excluded"
-    behavior so we never return None when an agent reply exists but is
-    mislabeled.
+    Selection priority:
+    1. If a comment is explicitly authored by the expected agent slug,
+       use the longest such comment (highest-signal match).
+    2. Otherwise, fall back to the longest comment that is NOT authored
+       by the CEO (when expected_agent is set to a non-CEO slug). This
+       prevents the CEO's own non-framing-prefix posts from being
+       imported as a sub-agent's reply.
+    3. If even that yields nothing (every candidate is CEO-tagged or
+       has no author info), fall back to the longest comment overall.
+       Better to occasionally import a CEO comment than to drop the
+       agent's actual reply because of an author-tag mismatch -- we
+       saw this happen in production when claude_local agents shared
+       the CEO's auth context and Paperclip tagged their replies as
+       CEO-authored.
 
-    Returns None if no usable comment was found.
+    Returns None if no usable comment was found at all.
     """
     needle = exclude_text.strip() if exclude_text else ""
-    best = ""
-    best_authored = ""
+    best_overall = ""           # any usable comment, regardless of author
+    best_non_ceo = ""           # longest non-CEO-authored comment
+    best_authored = ""          # longest comment authored by expected agent
 
     expected_norm = (expected_agent or "").lower()
-    skip_ceo = expected_norm and expected_norm not in {"ceo", "aria_ceo"}
 
     for c in comments:
         body = (c.get("body") or c.get("content") or "").strip()
@@ -94,11 +100,16 @@ def pick_agent_output(
         author = _comment_author_id(c)
         author_norm = author.lower() if isinstance(author, str) else ""
 
-        # Hard skip: don't import CEO comments as the delegated agent's reply
-        if skip_ceo and author in _CEO_AUTHOR_MARKERS:
-            continue
-        if skip_ceo and author_norm in {"ceo", "aria_ceo", "aria ceo"}:
-            continue
+        # Track the overall longest as the absolute fallback
+        if len(body) > len(best_overall):
+            best_overall = body
+
+        is_ceo_authored = (
+            author in _CEO_AUTHOR_MARKERS
+            or author_norm in {"ceo", "aria_ceo", "aria ceo"}
+        )
+        if not is_ceo_authored and len(body) > len(best_non_ceo):
+            best_non_ceo = body
 
         # Preferred: comment authored by the expected agent (highest signal)
         if expected_norm and author_norm and (
@@ -109,9 +120,5 @@ def pick_agent_output(
             if len(body) > len(best_authored):
                 best_authored = body
 
-        if len(body) > len(best):
-            best = body
-
-    # Prefer the agent-authored match when we have one; fall back to the
-    # longest non-CEO comment otherwise.
-    return best_authored or best or None
+    # Three-tier fallback: agent-authored -> non-CEO -> anything usable
+    return best_authored or best_non_ceo or best_overall or None
