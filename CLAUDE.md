@@ -336,16 +336,61 @@ The `aria-backend-api` skill MD lives **inside Paperclip's instance** (Skills �
 1. **Do NOT include any other auth-protected ARIA endpoint** (`/api/dashboard/...`, `/api/crm/...`, etc.) The agent doesn't have JWT credentials and will fail on the first auth-protected call, then give up before reaching the inbox write. The only HTTP call the skill should reference is the `POST /api/inbox/{tenant_id}/items` write.
 2. **Use `http://172.17.0.1:8000`, not the public IP.** Docker host IP from inside Paperclip's container goes straight to FastAPI on port 8000 and bypasses nginx.
 
-### CEO chat → Paperclip → inbox flow
+### CEO chat flow (LOCAL — does NOT go through Paperclip anymore)
+
+As of 2026-04-11 (commit `5c4f16d`), CEO chat replies are generated directly via local `call_claude` with Haiku, not routed through Paperclip. Reason: Paperclip subprocess cold-start + polling added 8-25s of latency for nothing — the chat reply itself doesn't need any of Paperclip's orchestration features. Reply latency dropped from ~10-30s to ~1-4s.
 
 1. User types in CEO chat widget → `POST /api/ceo/chat`
-2. Chat handler tries Paperclip first via `orchestrator.run_agent_via_paperclip_sync` (creates an issue assigned to CEO, posts the user message as a comment, polls for the reply with adaptive intervals 1s→4s, 60s timeout)
-3. Posting a comment on the issue auto-wakes the CEO via Paperclip's `wakeOnDemand` mechanism. **Do NOT also call `/heartbeat/invoke`** — that creates a second On-demand run racing the Automation one, and `maxConcurrentRuns: 1` cancels one of them.
-4. CEO reads the comment, may delegate to a sub-agent by creating its own Paperclip issue + comment
-5. Sub-agent runs, writes its output as a comment on the issue
-6. The comment fires Path A (skill curl) AND/OR is scraped by Path B (poller) on the next 5s tick → inbox row appears
-7. Chat handler returns the CEO's reply text to the frontend
-8. **Local fallback:** if Paperclip is unreachable or times out, the chat handler falls back to `call_claude` directly so chat keeps working when Paperclip is down
+2. Per-session `asyncio.Lock` (`_chat_session_locks`) prevents two concurrent requests for the same `session_id` from interleaving and corrupting history
+3. Chat handler builds the system prompt + conversation history (last CEO turn kept verbatim if under 2KB) and calls `call_claude(system_prompt, conversation, model=MODEL_HAIKU)` directly
+4. Semantic cache is **disabled for CEO chat** (`agent_id == "ceo"`) — the 0.92 cosine threshold caused false positives where similar-but-different messages collapsed to the same cached reply
+5. CEO reply parsed for ` ```delegate ` and ` ```action ` blocks via `_parse_codeblock_json` (which recovers from common Haiku JSON mistakes: trailing commas, JS comments, prose padding)
+6. Action blocks (`create_contact`, `read_deals`, etc.) execute synchronously via `execute_action`, wrapped in try/except so handler crashes don't 500 the whole chat
+7. Delegate blocks fire `_dispatch_paperclip_and_watch_to_inbox` as a background task (see next section)
+
+### Sub-agent delegation: `_dispatch_paperclip_and_watch_to_inbox`
+
+When the CEO emits a delegate block, the chat handler spawns this background task via `_safe_background` (which adds an error callback so silent crashes get logged instead of disappearing as "Task exception was never retrieved"). The watcher does dispatch + placeholder + active polling + inbox write as one unit:
+
+1. **CRM enrichment** — `_enrich_task_desc_with_crm` looks up CRM contacts mentioned by name in the task description and appends their emails to the task. Closes the gap where the CEO's CRM-context heuristic doesn't fire on phrases like "create marketing email for Hanz".
+2. **Dispatch via `dispatch_agent`** which calls `_dispatch_via_paperclip` → creates a Paperclip issue with `status: "todo"` (NOT default `backlog`, which is excluded from `inbox-lite` and causes the agent to ask "which task should I work on?")
+3. **Wake the agent via comment post** — `_dispatch_via_paperclip` posts a verbose directive comment ("AUTONOMOUS TASK -- execute immediately, do not ask for clarification...") on the issue. The comment fires `issue.comment` event → `wakeOnDemand=true` → Automation run starts. **Do NOT call `/heartbeat/invoke`** — heartbeat returns 200 OK but doesn't actually trigger an Automation run for `claude_local` agents (issues just sit in `backlog` forever). This was a hard-won lesson on 2026-04-11.
+4. **Create a placeholder inbox row** with `paperclip_issue_id` baked in so the global poller can't race and create a duplicate
+5. **Adaptive polling** of THIS specific issue via `_urllib_request("GET", f"/api/issues/{id}/comments", strict=True)` with intervals (1s, 1s, 1.5s, 2s, 2s, 3s, 4s) up to 600s timeout. Bails fast on `_is_failed` status or `PaperclipUnreachable` outage (5 consecutive failures = ~10s).
+6. **When the agent's reply comment arrives** — `pick_agent_output` filters by `expected_agent` and skips CEO-authored comments. If found and substantive (≥50 chars), proceed to step 7.
+7. **Skill-curl dedupe** — Check for existing inbox rows from the same tenant + agent in the last 5 min that have substantial content (>200 chars, status not `processing`). If found → the agent's `aria-backend-api` skill curl already wrote the canonical row → **delete the watcher's placeholder** so only one row exists per delegation. Sentinel `skill_row_already_exists` prevents the fresh-row fallback from re-creating it.
+8. **If no skill curl row exists** → update the placeholder with the parsed `email_draft` (or `social_draft` for content_writer/social_manager) and content
+
+### Inbox CREATE endpoint: `POST /api/inbox/{tenant_id}/items`
+
+The agent's `aria-backend-api` skill curls this endpoint directly from inside Paperclip. The endpoint is in `_PUBLIC_PREFIXES` so no JWT needed. Critical behaviors:
+
+- **Confirmation rejection** — content matching `✅` / `Saved to ARIA Inbox` / `Successfully saved` / `draft created and saved` / `Draft ID:` / `## Task Complete` is short-circuited with `{item: null, skipped: "confirmation_message"}`. Catches the agent's "I'm done!" follow-up POSTs that would otherwise create duplicate rows.
+- **Always run the parser** — even when the agent provides `email_draft` itself, `_parse_email_draft_from_text` (or `_parse_html_email_draft` for raw HTML content) runs and merges. Agent's fields win where set; parser fills gaps. Subject/recipient that look like raw HTML (`<html><body style=`) get overridden by the parser's clean values.
+- **Type normalization** — any `email_marketer` content with parsed `email_draft` is forced to `type='email_sequence'` regardless of what the agent sent. This is the canonical type the frontend's `EmailEditor` component renders the editable form for.
+- **Recent-row dedupe** — when no `paperclip_issue_id` is provided, look back 5 minutes for inbox rows with the same tenant + agent + first 100 chars of content. Update existing instead of inserting a duplicate.
+- **Email template wrapper** — `_wrap_email_in_designed_template` is applied as a fallback only when `_agent_html_already_designed(html_body)` returns False (no inline styles, no tables, no gradients). Plain unstyled HTML gets wrapped in a light-themed branded template (gradient header, card sections, CTA button, footer) so the inbox UI shows a beautiful email instead of naked `<p>` tags. Designed HTML the agent already styled passes through unchanged.
+
+### email_draft schema (must match the frontend `EmailDraft` interface)
+
+The frontend's `EmailDraft` interface at [frontend/app/(dashboard)/inbox/page.tsx](frontend/app/(dashboard)/inbox/page.tsx) uses these field names:
+
+```typescript
+{ to, subject, html_body, text_body, preview_snippet, status }
+```
+
+**Critical:** use `html_body` and `text_body`, NOT `body_html` / `body`. The contenteditable iframe loads `srcDoc={draft.html_body}` so wrong field names render an empty editor. The `EmailEditor` component buttons (Approve & Send / Schedule / Save changes / Cancel draft) only render when `email_draft != null` AND `type == 'email_sequence'` AND `status == 'draft_pending_approval'`.
+
+### `~/.claude.json` auto-restore
+
+The Claude CLI rotates its auth file periodically and occasionally leaves only the backup at `~/.claude/backups/.claude.json.backup.<timestamp>`. Without auto-recovery the only fix was SSH+manual `cp`. Now handled by `_try_restore_claude_config` in `backend/tools/claude_cli.py`:
+
+- **Startup check** in `lifespan` — runs once at backend boot, restores from latest backup if `~/.claude.json` is missing or zero-bytes
+- **Reactive heal** in `call_claude` — on any non-zero CLI exit, calls `_try_restore_claude_config()` (no-op if file exists) and retries the CLI call once if a restore actually happened
+- **Process-wide RLock** prevents two concurrent calls from racing to copy the same backup
+- **Atomic rename** — copies to `.json.tmp` first, then `os.replace()` so a process death mid-write never leaves a half-written file
+
+The fix self-heals on every container restart and on every mid-runtime failure. If you ever see `Auto-restored ~/.claude.json from backup` warnings firing more than a few times a day, the underlying CLI rotation race is happening too often — investigate via `docker exec aria-backend ls -la /root/.claude/backups/`.
 
 ### Background loops in `server.py:lifespan`
 - `_gmail_sync_loop` — every 2 min, Gmail inbound reply sync
@@ -353,9 +398,11 @@ The `aria-backend-api` skill MD lives **inside Paperclip's instance** (Skills �
 - `_paperclip_office_sync_loop` — every 5s, calls `poll_completed_issues()` (Path B inbox importer) then `sync_agent_statuses(sio)` (Virtual Office walking sprites)
 
 ### Where things live
-- `backend/orchestrator.py` — `dispatch_agent`, `run_agent_via_paperclip_sync`, plus the Paperclip lookup helpers (`_urllib_request`, `get_company_id`, `get_paperclip_agent_id`, `paperclip_connected`)
-- `backend/paperclip_office_sync.py` — `poll_completed_issues` (Path B) + `sync_agent_statuses` (Virtual Office)
-- `backend/services/paperclip_chat.py` — `pick_agent_output`, `normalize_comments` (shared comment-parsing helpers used by both the chat sync route and the poller; filters out ARIA's own framing wrappers like `[tenant_id=...`)
+- `backend/orchestrator.py` — `dispatch_agent`, `_dispatch_via_paperclip` (creates issue + posts wake comment), `run_agent_via_paperclip_sync` (legacy CEO chat path, mostly unused now), `PaperclipUnreachable` exception, `_sanitize_error_message`, plus the Paperclip lookup helpers (`_urllib_request`, `get_company_id`, `get_paperclip_agent_id`, `paperclip_connected`)
+- `backend/paperclip_office_sync.py` — `poll_completed_issues` (5s global poller, safety net for direct Paperclip Timer runs) + `sync_agent_statuses` (Virtual Office), `_add_processed`, `_is_finished`/`_is_failed`
+- `backend/services/paperclip_chat.py` — `pick_agent_output` (with `expected_agent` filter + 3-tier fallback), `normalize_comments`
+- `backend/server.py` — `_dispatch_paperclip_and_watch_to_inbox`, `_parse_email_draft_from_text`, `_parse_html_email_draft`, `_parse_social_drafts_from_text`, `_markdown_to_basic_html`, `_wrap_email_in_designed_template`, `_agent_html_already_designed`, `_business_name_for_template`, `_enrich_task_desc_with_crm`, `_safe_background`, `_parse_codeblock_json`
+- `backend/tools/claude_cli.py` — `call_claude`, `_try_restore_claude_config`, `_safe_decode`
 - `docs/agents/ceo.md` — CEO agent identity (role, sub-agents, delegation rules, CRUD action set, refusal rules). The Paperclip CEO reads this via `--append-system-prompt-file`.
 
 ---
@@ -369,10 +416,22 @@ The `aria-backend-api` skill MD lives **inside Paperclip's instance** (Skills �
 | Paperclip not connecting | Run `npx paperclipai onboard --yes` first, then restart backend |
 | Agent not dispatching | Check agent is in tenant's `active_agents` list |
 | **Agent runs hang for 9-10 min then exit 143** | Missing `--dangerously-skip-permissions` in Extra args. The "Skip permissions" toggle is broken; set the flag in Extra args manually for every agent. |
-| **Inbox row never appears** | Agent's first call was probably `/api/dashboard/...` which 401's. Update the `aria-backend-api` skill MD in Paperclip to remove all curls except the inbox write. Path B (poller) will catch it as a fallback within 5s. |
+| **Inbox row never appears** | Agent's first call was probably `/api/dashboard/...` which 401's. Update the `aria-backend-api` skill MD in Paperclip to remove all curls except the inbox write. The watcher's active polling will catch it within ~1-2s of the agent finishing. |
 | **`fetch failed (adapter_failed)` on Timer runs** | Agent is on the HTTP adapter. Flip Adapter type back to `Claude (local)` in Paperclip Configuration. |
 | **`Paperclip cannot manage skills for this adapter yet`** | Same as above — agent is on HTTP. Flip back to claude_local. |
-| **One chat creates two Paperclip runs (one cancelled)** | The chat dispatcher is calling both `/heartbeat/invoke` and posting a comment. Only post the comment — the comment alone wakes the agent via `wakeOnDemand`. Already fixed in `orchestrator.run_agent_via_paperclip_sync`. |
-| **CEO chat returns the framing block as its reply** | `pick_agent_output` is supposed to filter out comments starting with `[tenant_id=`. Verify the filter is intact in `services/paperclip_chat.py`. |
+| **Delegated agent issues sit in `backlog` forever, watcher times out** | Two causes: (a) `_dispatch_via_paperclip` is calling `/heartbeat/invoke` instead of posting a wake comment (heartbeat doesn't trigger Automation runs for `claude_local` — only comments do via `wakeOnDemand`), or (b) issue was created with default `status: backlog` instead of `status: todo`. The agent's `inbox-lite` endpoint excludes backlog tasks, so the agent sees 0 assignments and asks "which task should I work on?" instead of executing. Both fixed in `_dispatch_via_paperclip` since 2026-04-11. |
+| **Agent asks "Which task would you prefer?" instead of executing** | Wake comment is too vague. Use a verbose directive comment ("AUTONOMOUS TASK -- execute immediately, do not ask for clarification. Do NOT list other assignments..."). The directive style is in `_dispatch_via_paperclip:wake_body`. |
+| **Two inbox rows per delegation (placeholder + agent skill curl)** | Watcher's `_dispatch_paperclip_and_watch_to_inbox` is supposed to delete its placeholder when the agent's skill curl row exists. Verify the dedupe block (lookup recent rows from same tenant + agent within 5 min, content > 200 chars, status != processing → delete placeholder) is intact. |
+| **Inbox row has empty body editor / Source tab shows `<body contenteditable="true"></body>`** | Field name mismatch: backend wrote `body_html` / `body` but frontend reads `email_draft.html_body` / `text_body`. Fix in `_parse_email_draft_from_text` return dict — must match the `EmailDraft` interface in `frontend/app/(dashboard)/inbox/page.tsx`. |
+| **Email subject shows raw HTML like `<html><body style="font-family: -apple-system,...`** | Agent posted raw HTML as content; the markdown parser ran instead of `_parse_html_email_draft` and grabbed the opening `<html>` tag as the first sentence. Fix: ensure `_looks_like_html` detection in `_parse_email_draft_from_text` routes HTML to the HTML parser. |
+| **Subject is "Untitled email"** | Agent's reply has no `**Subject:**` line. Parser falls back to Preview Text → first non-greeting sentence → "Untitled". Sometimes this is the agent's prompt at fault — the agent should always emit a subject. As a backend-side band-aid, the parser's three-tier fallback usually finds something usable. |
+| **Confirmation message rows like "✅ Email draft saved to ARIA inbox" appearing in inbox** | The agent is POSTing a status confirmation as a second inbox item. The `create_inbox_item` rejection patterns (`✅`, `Saved to ARIA Inbox`, `draft created and saved`, `Draft ID:`, etc.) should catch it. If a new pattern slips through, add it to the `_is_confirmation` block in `create_inbox_item`. |
+| **`Claude CLI error: configuration file not found at /root/.claude.json`** | The CLI rotates its auth file and sometimes leaves only the backup. `_try_restore_claude_config` should auto-recover from `~/.claude/backups/`. If it isn't firing, check the lifespan startup log for `Startup: auto-restored ~/.claude.json from backup` and verify the backup directory exists. |
+| **CEO chat returns "Reached max turns (1)"** | `--max-turns 1` was too restrictive after switching to Haiku (which is more eager to use tools). Bumped to `--max-turns 5` in `claude_cli.py`. Don't lower it again. |
+| **"Task exception was never retrieved" warnings or silent watcher crashes** | A background coroutine is being spawned via bare `_aio.create_task(...)` instead of `_safe_background(...)`. Wrap it so the error callback logs the crash. |
+| **Docker rebuild "succeeded" but new code isn't running (`grep -c <new_helper>` returns 0)** | Layer cache is stale — `=> CACHED [6/7] COPY backend/ backend/` reused an old snapshot. Force rebuild with `docker compose build --no-cache backend && docker compose up -d backend`. |
+| **Recursion errors in poller / `RecursionError: maximum recursion depth exceeded`** | Don't `replace_all` rename `_processed_issues.add` → `_add_processed` — it'll catch the line inside the helper itself and turn it into infinite recursion. Add a comment warning future-you. |
+| **One chat creates two Paperclip runs (one cancelled)** | The chat dispatcher is calling both `/heartbeat/invoke` and posting a comment. Only post the comment — the comment alone wakes the agent via `wakeOnDemand`. Already fixed in `orchestrator._dispatch_via_paperclip`. |
+| **CEO chat returns the framing block as its reply** | `pick_agent_output` is supposed to filter out comments starting with `[tenant_id=` / `[wake]`. Verify the filter is intact in `services/paperclip_chat.py`. |
 | Next.js route conflict | Route group pages can't resolve to the same URL path — rename the folder |
 | `asChild` prop warning | Button component must import `Slot` from `@radix-ui/react-slot` |

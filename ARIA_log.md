@@ -2,6 +2,128 @@
 
 ---
 
+## 2026-04-11 — Massive Paperclip integration overhaul (CEO chat speed, sub-agent dispatch, inbox plumbing, audit sweep)
+
+A full-day debugging arc that started with "CEO chat is slow" and ended with a hardened end-to-end Paperclip + watcher + inbox pipeline. ~15 commits, the chat reply path is now ~3x faster, sub-agent delegations actually land in the inbox with structured email_draft fields, and ~26 latent failure modes from a code audit are closed.
+
+### Phase 1 — Speed up CEO chat (commits `5c4f16d`, `bf4fe1c`, `be16e4c`, `04e4b81`)
+
+**Problem:** CEO chat replies were taking 10-30 seconds. Diagnosed: the chat handler was routing through `run_agent_via_paperclip_sync` which (1) created a Paperclip issue, (2) posted a comment, (3) waited for the agent to spin up a `claude` CLI subprocess inside the Paperclip docker container, (4) polled for the reply with adaptive 1-4s intervals.
+
+The Paperclip detour was adding 8-25s per chat for nothing — the chat reply itself doesn't need any of Paperclip's orchestration features.
+
+**Fixes:**
+- `backend/server.py:ceo_chat` — Removed the Paperclip routing block entirely. Chat now calls `call_claude(model=MODEL_HAIKU)` directly. Result: chat reply latency dropped from 10-30s → 1-4s.
+- `backend/tools/claude_cli.py` — Disabled the semantic cache for CEO chat (`agent_id == "ceo"`). The 0.92 cosine threshold was producing false positives, returning the wrong cached reply for similar-but-different messages (e.g. "create a lead for Hanz" → "create an email for Hanz" had 0.93 similarity and collapsed to the same response).
+- `backend/tools/claude_cli.py` — `--max-turns 1` was failing on complex chat ("Reached max turns" error) because Haiku was eager to use tools. Bumped to `--max-turns 5`.
+- `backend/tools/claude_cli.py` — Added `_try_restore_claude_config()` helper that detects the CLI's "configuration file not found at /root/.claude.json" race and atomically restores from `~/.claude/backups/`. The CLI rotates its auth file periodically and occasionally leaves only the backup; without auto-recovery the only fix was SSH+manual cp. Wired into `lifespan` startup AND into `call_claude`'s exception path so it self-heals on every container restart and on every mid-runtime failure. Process-wide RLock prevents two concurrent calls from racing to copy the same backup.
+
+### Phase 2 — Sub-agent delegation watcher (commits `788a732`, `40b547b`, `a415094`)
+
+**Problem:** When CEO emitted a delegate block, `dispatch_agent` was fire-and-forget. Sub-agents would run in Paperclip but their results sometimes never reached the ARIA inbox (Path A skill curl failed silently, or Path B 5s global poller missed the comment).
+
+**Fixes:**
+- `backend/server.py:_dispatch_paperclip_and_watch_to_inbox` — New helper that wraps dispatch + placeholder + active polling + inbox write in one background task. Spawns immediately when a delegate block fires. Creates a placeholder inbox row right away so the user sees activity, then polls THIS specific issue with adaptive 1-4s intervals (not the global 5s loop) and updates the placeholder when the agent's reply lands. Marks the issue in `_processed_issues` so the global poller doesn't double-import.
+- `backend/server.py:ceo_chat` dispatch block now calls this helper instead of `dispatch_agent` directly.
+- `backend/paperclip_office_sync.py` — Fixed an infinite recursion regression in `_add_processed` from a `replace_all` rename gone wrong. Documented the trap with a comment so future-me doesn't repeat it.
+
+### Phase 3 — Wake mechanism (commits `a412864`, `13f6fef`)
+
+**Problem:** Even with the watcher, delegated agent issues were sitting in `backlog` forever. The `[paperclip-heartbeat] OK` log line was misleading — heartbeat returns 200 but doesn't actually trigger an Automation run for `claude_local` agents.
+
+**Diagnosis:** Direct API query showed `STATUS: backlog, COMMENT COUNT: 0` for issues the watcher was polling.
+
+**Fixes:**
+- `backend/orchestrator.py:_dispatch_via_paperclip` — Removed the `heartbeat/invoke` call entirely. Replaced with a comment post (the agent's `wakeOnDemand=true` fires on `issue.comment` events, which is the canonical wake mechanism the CEO chat path was already using). Memory file warned about this explicitly: *"Do NOT call /heartbeat/invoke -- that creates a second On-demand run racing the Automation one."* I had misread that originally as "don't call BOTH."
+- `backend/orchestrator.py:_dispatch_via_paperclip` — Added `"status": "todo"` to the issue create payload. Default Paperclip status is `backlog`, but the agent's `inbox-lite` endpoint (which the heartbeat skill queries first) only returns `todo`/`in_progress`/`blocked`. Without this the agent saw 0 assignments and asked the user "which task should I work on?" instead of executing.
+- Wake comment is now verbose and directive: *"AUTONOMOUS TASK -- execute immediately, do not ask for clarification. ... Do NOT list other assignments. Generate the requested content. POST result to ARIA inbox via skill."* The previous short body let the agent's autonomy mode interpret it as a clarification request.
+
+### Phase 4 — Audit sweep (commit `40aeb70`)
+
+Ran an audit subagent to find latent failure modes. 26 issues found across HIGH/MEDIUM/LOW severity. All fixed in one bundled commit:
+
+**`backend/tools/claude_cli.py`:**
+- Subprocess kill now followed by `await proc.wait()` so timeouts don't leak zombie `claude` processes
+- `_safe_decode` wrapper around bytes→str so corrupted CLI output doesn't crash the handler with `UnicodeDecodeError`
+- Combined stdout+stderr for both error display and config-restore trigger
+- `_try_restore_claude_config` uses atomic-rename + RLock to prevent two concurrent calls from both truncating the same backup mid-copy
+
+**`backend/orchestrator.py`:**
+- New `PaperclipUnreachable` exception + `strict=True` flag on `_urllib_request` so the watcher can fail-fast on outages instead of treating "no data" the same as "Paperclip is down"
+- New `_sanitize_error_message` helper redacts secrets (JWT, supabase URLs, API keys) from raw exception messages before they hit `agent_logs` or API responses
+- Separated `HTTPError`, `URLError`, `ConnectionError`, `TimeoutError`, `SSLError` from generic Exception
+
+**`backend/services/paperclip_chat.py`:**
+- `pick_agent_output` now takes optional `expected_agent` and skips comments authored by CEO when looking for a delegated agent's reply
+- Added `[wake]` to the framing-prefix filter list
+- Three-tier fallback: agent-authored → non-CEO authored → longest comment overall (later relaxed because too aggressive)
+
+**`backend/paperclip_office_sync.py`:**
+- `_processed_issues` bounded at 5000 entries with eviction
+- New `_is_failed` helper for failed/cancelled status detection
+- `tenant_id` validated against active tenants before insert (prevents orphan rows)
+- **Removed** the dangerous "fall back to issue.body as content" path that was making failed runs look successful by importing the user's own prompt as the agent's reply
+- Socket.IO emit failures now log at debug level instead of bare pass
+
+**`backend/server.py` (ceo_chat + watcher):**
+- Per-session `asyncio.Lock` so two concurrent requests for the same `session_id` don't interleave their `session.append()` calls and corrupt history (covers double-click send, two open tabs)
+- New `_safe_background` wrapper around `create_task` adds an error callback so silent crashes show up in logs instead of "Task exception was never retrieved" at GC time. **This caught the recursion bug in production.**
+- `execute_action` calls wrapped in try/except so action handler crashes don't 500 the whole chat after the CEO already replied
+- Generic error message to user, sanitized errors in logs
+- Forbidden-request override only fires when CEO didn't already refuse AND user message clearly asks for forbidden action
+- `_parse_codeblock_json` helper recovers from common Haiku JSON mistakes (trailing commas, JS comments, prose padding)
+
+**`backend/server.py` (`_run_agent_to_inbox`):**
+- Outer except now UPDATES the placeholder with error content instead of creating a duplicate "Failed:" row
+- Sanitizes error message before storing/displaying
+
+### Phase 5 — Email parser + template wrapper (commits `19c8611`, `b80b749`, `aba24a5`, `a2ad072`, `8d639ba`, `44f66bd`, `472d6e2`, `a7e466e`, `d42236e`)
+
+The watcher was creating placeholder rows that had no `email_draft` field, so the inbox UI didn't render the Approve & Send / Schedule / Cancel draft buttons. The agent's skill curl POST was creating a SECOND row with the actual content but ALSO without `email_draft`. Two rows per delegation, neither correct.
+
+**Fixes (iterated through several false starts):**
+- `backend/server.py:_parse_email_draft_from_text` — New helper that extracts `subject`, `to`, `text_body`, `html_body`, `preview_snippet` from the agent's plain markdown OR HTML reply. Three subject formats supported (`**Subject:**`, A/B test variants, plain `Subject:`). Three fallbacks (Preview Text, first non-greeting sentence, "Untitled email"). The recipient regex strips HTML attributes first so `style="font-family: ...@..."` doesn't false-match.
+- `backend/server.py:_parse_html_email_draft` — Separate branch for raw HTML content. Extracts subject from `<title>` → `<h1>` → `<h2>` → "Subject Line:" markers in stripped text → first non-greeting `<p>`. The first version of the watcher was grabbing `<html><body style="font-family: -apple-system, ...` as the subject because the markdown parser was treating HTML as plain text.
+- `backend/server.py:_parse_social_drafts_from_text` — Detects Twitter/LinkedIn sections so content_writer/social_manager output gets `type=social_post` (which renders the Publish to X / Publish to LinkedIn buttons).
+- `backend/server.py:_markdown_to_basic_html` — Quick markdown→HTML converter (bold, italic, headers, lists, links, paragraph wrapping). Used as a fallback for `html_body` when the agent didn't include a fenced ```html``` block. Without this the editor's contenteditable iframe was loading an empty `srcDoc` and looking broken.
+- `backend/server.py:_enrich_task_desc_with_crm` — Looks up CRM contacts mentioned in the task description by name token, appends matched contacts (with emails) so the agent has the right recipient address. The CEO's CRM-context heuristic doesn't fire on phrases like "create marketing email for Hanz" (no CRM noun), so this closes that gap by doing a cheap CRM lookup right before dispatch.
+- `backend/server.py:_wrap_email_in_designed_template` — Light-themed branded email template (600px max-width, blue gradient header, white body card, blue section headers, callout cards with colored left borders, styled CTA button, footer with copyright). Auto-styles plain `<p>`/`<ul>`/`<strong>` tags with inline styles. Used as a **fallback** only when the agent's HTML is plain unstyled — gated by `_agent_html_already_designed` so emails the agent designed itself stay untouched.
+- `backend/server.py:_business_name_for_template` — Reads the tenant config to get `business_name` for the template header.
+
+**Field name fix (commit `44f66bd`):** I was writing `body_html` and `body` to the email_draft dict, but the frontend's `EmailDraft` interface (`frontend/app/(dashboard)/inbox/page.tsx:13`) expects `html_body` and `text_body`. The contenteditable iframe loaded `draft.html_body` which was undefined. Also added `status: "draft_pending_approval"` to the dict so the badge renders correctly.
+
+### Phase 6 — Inbox CREATE endpoint hardening (commits `b80b749`, `d140762`)
+
+**Problem:** The agent posts via `/api/inbox/{tenant_id}/items` AND the watcher writes to inbox separately. Two paths, two rows per delegation. Plus the agent often sends a "Saved successfully!" confirmation message as a SECOND POST, creating a third row.
+
+**Fixes in `create_inbox_item`:**
+- **Reject confirmation messages** — short content with markers like `✅`, `Saved to ARIA Inbox`, `Successfully saved`, `draft created and saved`, `Draft ID:` gets short-circuited with `{item: null, skipped: "confirmation_message"}`. Removed the 600-char length filter (was letting through long status messages that echoed the email).
+- **Always run the parser, even when agent provides email_draft** — agent's fields win where set, parser fills gaps. Subject/recipient that look like raw HTML (`<html><body style=`) get overridden by the parser's clean values.
+- **Type normalization** — any email_marketer content with parsed `email_draft` is forced to `type='email_sequence'` regardless of what the agent sent (`email`, `email_draft`, etc.). This is the canonical type the frontend renders the editable form for.
+- **Recent-row dedupe** — when no `paperclip_issue_id` is provided, look back 5 minutes for inbox rows from the same tenant + agent with the same first 100 chars of content. If found, UPDATE that row instead of inserting a duplicate. Catches the watcher placeholder + agent skill curl race.
+
+### Phase 7 — Watcher placeholder deletion (commit `472d6e2`)
+
+User explicitly asked: *"I want only one inbox message from the subagent not the draft, and then the final output is that possible?"*
+
+**Fix in `_dispatch_paperclip_and_watch_to_inbox`:**
+- After detecting the agent's reply comment, the watcher looks for any existing row from the same tenant + agent in the last 5 minutes that ISN'T the placeholder AND has substantial content (>200 chars, status not `processing`)
+- If found → the agent's skill curl already wrote the canonical row → **deletes the watcher's placeholder**
+- Sentinel `skill_row_already_exists` prevents the fallback branch from re-creating a fresh row after the delete
+- Result: one row per delegation when the agent uses the skill curl path
+
+### Lessons / Things to Watch
+
+1. **Heartbeat does NOT wake claude_local agents.** Use comment posts. Memory file warned about this explicitly; I misread it the first time.
+2. **Default Paperclip issue status is `backlog`**, which is excluded from `inbox-lite`. Always set `status: "todo"` when creating issues you want the agent to work on.
+3. **`_safe_background` is essential.** Bare `_aio.create_task(...)` swallows exceptions until GC; the recursion bug in `_add_processed` would have been invisible without the error callback.
+4. **Frontend field names matter.** `EmailDraft.html_body` not `body_html`, `text_body` not `body`. Match the frontend interface or the editor renders empty.
+5. **Docker layer caching can lie.** `git pull` showing "Already up to date" combined with `=> CACHED [6/7] COPY backend/ backend/` means the new code is NOT in the running image. Verify with `docker exec aria-backend grep -c <new_helper_name> /app/backend/server.py` and force `--no-cache` rebuild if needed.
+6. **The CLI's config-rotation race fires on every container restart.** Auto-restore is now in lifespan + reactive in call_claude, so it self-heals; never need to manually `cp` again.
+7. **Two write paths to the same inbox row need explicit dedupe.** Watcher placeholder + agent skill curl will always race; the watcher now deletes its own placeholder when the skill curl row exists.
+
+---
+
 ## 2026-03-26 — Onboarding-to-Dashboard Data Flow
 
 ### Problem
