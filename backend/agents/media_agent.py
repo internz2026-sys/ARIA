@@ -155,22 +155,37 @@ Do NOT include any explanation — just the image prompt."""
     # ── Run-pipeline helpers ────────────────────────────────────────────────
 
     async def _refine_prompt(self, tenant_id: str, raw_prompt: str) -> str:
-        """Use Claude (Haiku) to expand a short request into a detailed image prompt."""
+        """Use Claude (Haiku) to expand a short request into a detailed image prompt.
+
+        Falls back to the raw prompt verbatim if Claude is unavailable
+        (rate-limited, CLI timeout, etc.) -- the image generators can
+        still produce something usable from the original request.
+        """
         from backend.tools.claude_cli import call_claude
 
-        config = get_tenant_config(tenant_id)
-        system_prompt = self.build_system_prompt(config, "generate_image")
-        refined = await call_claude(
-            system_prompt,
-            f"Create an image prompt for: {raw_prompt}",
-            max_tokens=self.MAX_TOKENS,
-            tenant_id=tenant_id,
-            model=self.MODEL,
-            agent_id=self.AGENT_NAME,
-        )
-        refined = (refined or "").strip()
-        logger.info("[media] Refined prompt: %s", refined[:100])
-        return refined
+        try:
+            config = get_tenant_config(tenant_id)
+            system_prompt = self.build_system_prompt(config, "generate_image")
+            refined = await call_claude(
+                system_prompt,
+                f"Create an image prompt for: {raw_prompt}",
+                max_tokens=self.MAX_TOKENS,
+                tenant_id=tenant_id,
+                model=self.MODEL,
+                agent_id=self.AGENT_NAME,
+            )
+            refined = (refined or "").strip()
+            if not refined:
+                logger.warning("[media] Claude returned empty prompt -- using raw")
+                return raw_prompt
+            logger.info("[media] Refined prompt: %s", refined[:100])
+            return refined
+        except Exception as e:
+            logger.warning(
+                "[media] _refine_prompt failed (%s: %s) -- falling back to raw prompt",
+                type(e).__name__, e,
+            )
+            return raw_prompt
 
     async def _generate_image(self, refined_prompt: str) -> tuple[bytes | None, str | None]:
         """Try providers in order; return (bytes, provider_name) or (None, None)."""

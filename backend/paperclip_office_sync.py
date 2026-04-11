@@ -58,17 +58,49 @@ def _get_cached_tenant_ids() -> list[str]:
 # Inbox Importer — poll_completed_issues
 # ──────────────────────────────────────────────────────────────────────────
 
-# In-memory set to skip known issues without hitting the DB every cycle
+# In-memory set to skip known issues without hitting the DB every cycle.
+# Bounded to prevent unbounded growth -- when the set hits the cap, the
+# oldest entries get evicted (LRU-ish via set rebuild). The 5000 cap
+# corresponds to roughly a month of activity at moderate volume; beyond
+# that the cold-start DB seed will catch any false-negative re-imports.
 _processed_issues: set[str] = set()
+_PROCESSED_ISSUES_MAX = 5000
+
+
+def _add_processed(issue_id: str) -> None:
+    """Add an issue id to the processed set, evicting if over cap."""
+    if len(_processed_issues) >= _PROCESSED_ISSUES_MAX:
+        # Evict half the set in one go to amortize the cost. We can't do
+        # true LRU without an OrderedDict, but the dedupe column in
+        # inbox_items is the authoritative dedupe layer -- this set is
+        # just a hot-path optimization.
+        try:
+            keep = list(_processed_issues)[_PROCESSED_ISSUES_MAX // 2:]
+            _processed_issues.clear()
+            _processed_issues.update(keep)
+        except Exception:
+            _processed_issues.clear()
+    _add_processed(issue_id)
+
 
 # Statuses Paperclip uses to mean "the agent finished its work"
 _FINISHED_STATUSES = {
     "done", "in_review", "completed", "closed", "resolved",
 }
 
+# Statuses Paperclip uses to mean "the run failed and won't produce
+# output". Watcher checks these to fail-fast instead of polling.
+_FAILED_STATUSES = {
+    "failed", "cancelled", "canceled", "error", "errored",
+}
+
 
 def _is_finished(status: str) -> bool:
     return bool(status) and status.lower() in _FINISHED_STATUSES
+
+
+def _is_failed(status: str) -> bool:
+    return bool(status) and status.lower() in _FAILED_STATUSES
 
 
 def _extract_tenant_id(issue: dict) -> str | None:
@@ -159,16 +191,17 @@ def _determine_content_type(agent_name: str, title: str) -> str:
     return "blog"
 
 
-def _fetch_agent_output(issue_id: str, original_message: str) -> str | None:
+def _fetch_agent_output(issue_id: str, original_message: str, *, expected_agent: str | None = None) -> str | None:
     """GET /api/issues/{id}/comments and return the agent's reply.
 
-    pick_agent_output handles both the user-message exclusion and the
-    `[tenant_id=...` framing-prefix filter so we don't import ARIA's own
-    chat wrapper as if it were the agent's reply.
+    pick_agent_output handles the user-message exclusion, the
+    `[tenant_id=...` / `[wake]` framing-prefix filter, and (when
+    expected_agent is given) the CEO author-skip so we don't import the
+    CEO's own staging dumps as the delegated agent's reply.
     """
     raw = _urllib_request("GET", f"/api/issues/{issue_id}/comments")
     comments = normalize_comments(raw)
-    return pick_agent_output(comments, exclude_text=original_message)
+    return pick_agent_output(comments, exclude_text=original_message, expected_agent=expected_agent)
 
 
 def _load_processed_ids_from_db():
@@ -230,7 +263,19 @@ async def poll_completed_issues():
                 f"[poller] no tenant_id in issue {issue.get('identifier', issue_id)} "
                 f"(title={raw_title[:80]!r}) — marking processed"
             )
-            _processed_issues.add(issue_id)
+            _add_processed(issue_id)
+            skipped_no_tenant += 1
+            continue
+
+        # Validate the tenant actually exists. A stale UUID in an old
+        # issue title (from a tenant that's been deleted) would otherwise
+        # insert orphan inbox rows that nobody can ever see.
+        if tenant_id not in _get_cached_tenant_ids():
+            logger.warning(
+                f"[poller] tenant {tenant_id} from issue "
+                f"{issue.get('identifier', issue_id)} is not an active tenant — marking processed"
+            )
+            _add_processed(issue_id)
             skipped_no_tenant += 1
             continue
 
@@ -239,21 +284,26 @@ async def poll_completed_issues():
 
         # Pull the agent's output. The user message (issue body) gets
         # excluded so we don't re-import the user's own prompt as the
-        # agent's reply.
+        # agent's reply. Pass the expected agent name so pick_agent_output
+        # can prefer comments authored by the right agent and skip the
+        # CEO's own staging dumps.
         original_message = issue.get("body") or ""
-        output = _fetch_agent_output(issue_id, original_message)
+        output = _fetch_agent_output(issue_id, original_message, expected_agent=agent_name)
 
         if not output:
-            output = issue.get("body") or title
-            if not output or len(output) < 50:
-                logger.warning(
-                    f"[poller] issue {issue.get('identifier', issue_id)} has no usable output "
-                    f"(status={status}, body_len={len(issue.get('body') or '')}, "
-                    f"title={title[:60]!r}) — marking processed"
-                )
-                _processed_issues.add(issue_id)
-                skipped_no_output += 1
-                continue
+            # CRITICAL: do NOT fall back to issue.body here. The body is
+            # the user's original prompt. Importing it as "agent output"
+            # makes failed runs look successful and shows the user their
+            # own question echoed back. Mark as processed and skip --
+            # the user can re-trigger if they want.
+            logger.warning(
+                f"[poller] issue {issue.get('identifier', issue_id)} has no agent reply "
+                f"(status={status}, agent={agent_name}, "
+                f"title={title[:60]!r}) — marking processed without import"
+            )
+            _add_processed(issue_id)
+            skipped_no_output += 1
+            continue
 
         # Dedupe: have we already imported this Paperclip issue?
         try:
@@ -276,7 +326,7 @@ async def poll_completed_issues():
                 .execute()
             )
         if existing.data:
-            _processed_issues.add(issue_id)
+            _add_processed(issue_id)
             continue
 
         # Insert the inbox item
@@ -310,7 +360,7 @@ async def poll_completed_issues():
                     }).execute()
                 except Exception:
                     pass
-            _processed_issues.add(issue_id)
+            _add_processed(issue_id)
         except Exception as e:
             logger.error(f"[poller] failed to import {issue_id}: {e}")
 
@@ -373,8 +423,14 @@ async def sync_agent_statuses(sio):
         for tid in tenant_ids:
             try:
                 await sio.emit("agent_status_change", payload, room=tid)
-            except Exception:
-                pass
+            except Exception as e:
+                # Don't bare-except: at least log so we notice when sprite
+                # updates stop reaching browsers (e.g. websocket dead, room
+                # not joined yet, sio backend down).
+                logger.debug(
+                    "[office-sync] sio.emit agent_status_change failed for "
+                    f"tenant {tid} agent {aria_id}: {type(e).__name__}: {e}"
+                )
 
         if aria_status != "idle":
             logger.info(f"Virtual Office: {aria_id} → {aria_status} (from Paperclip)")

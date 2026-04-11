@@ -22,6 +22,7 @@ import json as _json
 import logging
 import os
 import ssl
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -53,11 +54,25 @@ _KNOWN_AGENT_IDS = {
 }
 
 
-def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | list | None:
+class PaperclipUnreachable(Exception):
+    """Raised when Paperclip is unreachable at the network level (connection
+    refused, DNS, timeout). Distinct from "Paperclip returned an empty list"
+    so callers can fail-fast on outages instead of polling for 10 minutes."""
+
+
+def _urllib_request(method: str, path: str, data: dict | None = None, *, strict: bool = False) -> dict | list | None:
     """Make a request to Paperclip using urllib (bypasses httpx cookie issues).
 
-    Used by the Paperclip poller and skill manager. Authenticates via the
-    PAPERCLIP_SESSION_COOKIE or PAPERCLIP_API_TOKEN env var.
+    Used by the Paperclip poller, watcher, and skill manager. Authenticates
+    via the PAPERCLIP_SESSION_COOKIE or PAPERCLIP_API_TOKEN env var.
+
+    Returns None on any failure by default (backward-compatible). When
+    `strict=True`, connection-level failures (network unreachable, DNS,
+    timeout) raise PaperclipUnreachable so callers can distinguish an
+    outage from "no data yet" -- the watcher uses this to fail-fast.
+    JSON decode errors and HTTP 4xx/5xx still return None even in strict
+    mode because those mean Paperclip *is* reachable, just answering
+    badly for this particular request.
     """
     session_cookie = os.environ.get("PAPERCLIP_SESSION_COOKIE", "")
     token = os.environ.get("PAPERCLIP_API_TOKEN", "")
@@ -76,9 +91,30 @@ def _urllib_request(method: str, path: str, data: dict | None = None) -> dict | 
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         r = urllib.request.urlopen(req, timeout=15, context=ctx)
-        return _json.loads(r.read().decode())
+        try:
+            return _json.loads(r.read().decode())
+        except (_json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.warning(f"urllib {method} {path} returned non-JSON: {e}")
+            return None
+    except urllib.error.HTTPError as e:
+        # 4xx / 5xx -- Paperclip IS reachable, just unhappy with this
+        # specific request. Don't treat as outage.
+        logger.warning(f"urllib {method} {path} HTTP {e.code}: {e.reason}")
+        return None
+    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError, ssl.SSLError) as e:
+        # Network-level failure -- Paperclip is unreachable or DNS broken
+        # or the connection died. THIS is the case the watcher needs to
+        # bail on instead of waiting 10 minutes for nothing.
+        logger.warning(f"urllib {method} {path} unreachable: {type(e).__name__}: {e}")
+        if strict:
+            raise PaperclipUnreachable(f"{type(e).__name__}: {e}") from e
+        return None
     except Exception as e:
+        # Catch-all for anything we didn't anticipate. Log loudly so we
+        # notice new failure modes; never raise for non-strict callers.
         logger.warning(f"urllib {method} {path} failed: {type(e).__name__}: {e}")
+        if strict:
+            raise PaperclipUnreachable(f"{type(e).__name__}: {e}") from e
         return None
 
 
@@ -270,20 +306,32 @@ async def _dispatch_via_paperclip(
             json=heartbeat_payload,
         )
 
-    if resp and resp.status_code in (200, 201, 202):
+    heartbeat_ok = bool(resp and resp.status_code in (200, 201, 202))
+    if heartbeat_ok:
         logger.warning(f"[paperclip-heartbeat] OK {agent_name} (issue {identifier})")
     else:
         status = resp.status_code if resp else "no response"
         body = resp.text[:300] if resp else ""
         logger.error(
             f"[paperclip-heartbeat] FAILED {agent_name} ({status}) body={body} — "
-            f"agent will pick up issue on next scheduled timer instead"
+            f"posting wake comment as fallback"
         )
+        # Heartbeat failed -- post a comment on the issue as a fallback
+        # wake mechanism. wakeOnDemand fires on issue.comment events too,
+        # so this kicks the agent without needing the heartbeat endpoint.
+        try:
+            _urllib_request("POST", f"/api/issues/{issue_id}/comments", data={
+                "body": f"[wake] {task_desc[:500]}",
+                "content": f"[wake] {task_desc[:500]}",
+            })
+        except Exception as e:
+            logger.warning(f"[paperclip-dispatch] fallback wake comment failed: {e}")
 
     await log_agent_action(tenant_id, agent_name, "paperclip_dispatch", {
         "status": "dispatched",
         "paperclip_issue": identifier,
         "paperclip_issue_id": issue_id,
+        "heartbeat_ok": heartbeat_ok,
         "task": task_desc[:200],
     })
 
@@ -291,6 +339,7 @@ async def _dispatch_via_paperclip(
         "status": "dispatched_to_paperclip",
         "paperclip_issue": identifier,
         "paperclip_issue_id": issue_id,
+        "heartbeat_ok": heartbeat_ok,
         "agent": agent_name,
         "message": f"Task assigned to {agent_name} via Paperclip ({identifier}). Results will appear in your inbox.",
     }
@@ -436,6 +485,21 @@ async def _poll_for_agent_reply(
             return reply
 
 
+def _sanitize_error_message(exc: Exception, max_len: int = 200) -> str:
+    """Strip raw exception details that may contain secrets before storing
+    in agent_logs or returning to API callers. Supabase exceptions can
+    include connection strings and JWT bits in their str() repr; we'd
+    rather lose detail than leak credentials into logs/DB rows users
+    can read.
+    """
+    msg = f"{type(exc).__name__}: {exc}"
+    redact_markers = ("eyJ", "supabase", "postgres://", "postgresql://", "Bearer ", "sk-", "API_KEY", "SECRET")
+    for marker in redact_markers:
+        if marker.lower() in msg.lower():
+            return f"{type(exc).__name__}: [redacted -- check backend logs for full error]"
+    return msg[:max_len]
+
+
 async def _dispatch_local(tenant_id: str, agent_name: str, agent_module, context: dict | None) -> dict:
     """Direct local dispatch without Paperclip coordination."""
     try:
@@ -447,9 +511,9 @@ async def _dispatch_local(tenant_id: str, agent_name: str, agent_module, context
         await log_agent_action(tenant_id, agent_name, "run", result)
         return result
     except Exception as e:
-        error_result = {"status": "error", "error": str(e)}
+        error_result = {"status": "error", "error": _sanitize_error_message(e)}
         await log_agent_action(tenant_id, agent_name, "run", error_result, status="error")
-        logger.error(f"Agent {agent_name} failed for tenant {tenant_id}: {e}")
+        logger.error(f"Agent {agent_name} failed for tenant {tenant_id}: {type(e).__name__}: {e}")
         return error_result
 
 

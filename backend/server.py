@@ -2759,6 +2759,75 @@ async def cron_trigger():
 
 # ─── Inbox helpers ───
 
+def _parse_codeblock_json(block: str, kind: str) -> dict | None:
+    """Parse a ```delegate or ```action JSON block, with recovery for the
+    most common LLM mistakes.
+
+    Returns the parsed dict, or None if parsing fails after recovery.
+    Logs the failure with the original block for debugging. Was previously
+    a bare json.loads in two places that silently dropped malformed
+    delegations -- the CEO would promise delegation in prose but nothing
+    fired, and the user saw text but no inbox row.
+    """
+    import json as _json_inner
+    import re as _re_inner
+    raw = block.strip()
+    if not raw:
+        return None
+    # First attempt: literal parse
+    try:
+        return _json_inner.loads(raw)
+    except _json_inner.JSONDecodeError:
+        pass
+    # Recovery: strip JS-style comments and trailing commas (Haiku
+    # occasionally hallucinates these from training-data drift).
+    cleaned = _re_inner.sub(r"//[^\n]*", "", raw)
+    cleaned = _re_inner.sub(r"/\*.*?\*/", "", cleaned, flags=_re_inner.DOTALL)
+    cleaned = _re_inner.sub(r",(\s*[}\]])", r"\1", cleaned)  # trailing commas
+    try:
+        return _json_inner.loads(cleaned)
+    except _json_inner.JSONDecodeError:
+        pass
+    # Recovery: try extracting just the {...} substring in case the model
+    # padded the block with extra prose
+    match = _re_inner.search(r"\{.*\}", cleaned, _re_inner.DOTALL)
+    if match:
+        try:
+            return _json_inner.loads(match.group(0))
+        except _json_inner.JSONDecodeError:
+            pass
+    logging.getLogger("aria.ceo_chat").warning(
+        "[%s-parse] all recovery attempts failed for block: %s",
+        kind, raw[:300],
+    )
+    return None
+
+
+def _safe_background(coro, *, label: str = "background"):
+    """Spawn an asyncio task with an error callback so silent crashes show
+    up in logs. Without this, exceptions raised inside _aio.create_task(...)
+    coroutines only surface at GC time as 'Task exception was never
+    retrieved' -- the user sees the chat reply but the inbox row never
+    arrives and there's no error in any log you'd think to check.
+    """
+    import asyncio as _aio
+    task = _aio.create_task(coro)
+
+    def _on_done(t: _aio.Task) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            import traceback
+            logging.getLogger("aria.background").error(
+                "[%s] task crashed: %s\n%s",
+                label, exc, "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            )
+
+    task.add_done_callback(_on_done)
+    return task
+
+
 def _infer_content_type(agent: str, content: str) -> str:
     """Infer the content type from the agent slug and output."""
     type_map = {
@@ -2797,6 +2866,7 @@ def _save_inbox_item(
     chat_session_id: str | None = None,
     status: str = "ready",
     email_draft: dict | None = None,
+    paperclip_issue_id: str | None = None,
 ) -> dict | None:
     """Save an agent output to the inbox_items table. Returns the saved row."""
     _logger = logging.getLogger("aria.inbox")
@@ -2817,6 +2887,11 @@ def _save_inbox_item(
             row["chat_session_id"] = chat_session_id
         if email_draft:
             row["email_draft"] = email_draft
+        if paperclip_issue_id:
+            # Setting this at insert time prevents the race where the
+            # global poller imports a duplicate row in the gap between
+            # placeholder creation and the watcher's later UPDATE.
+            row["paperclip_issue_id"] = paperclip_issue_id
         result = sb.table("inbox_items").insert(row).execute()
         _logger.info("Saved inbox item: agent=%s title=%s status=%s", agent, title[:60], status)
         return result.data[0] if result.data else None
@@ -2840,6 +2915,12 @@ async def _run_agent_to_inbox(
          (no auto-idle — task board is the source of truth)
     """
     import asyncio
+
+    # Hoist placeholder_id outside the try so the except handler at the
+    # bottom can update it instead of creating a duplicate "Failed:" row.
+    # Without this, an error mid-run leaves the placeholder orphaned at
+    # "processing" forever.
+    placeholder_id: str | None = None
 
     try:
         # Phase 1: Meeting (CEO + agent already walking to meeting room via caller)
@@ -3033,21 +3114,52 @@ async def _run_agent_to_inbox(
                     pass
 
     except Exception as e:
-        logging.getLogger("aria.inbox").error("Agent %s failed for tenant %s: %s", agent_id, tenant_id, e)
-        # Save error to inbox so user can see what went wrong
-        _save_inbox_item(
-            tenant_id=tenant_id,
-            agent=agent_id,
-            title=f"Failed: {task_desc[:60]}",
-            content=f"The {agent_id} agent encountered an error while processing this task:\n\n"
-                    f"**Task:** {task_desc}\n\n"
-                    f"**Error:** {e}\n\n"
-                    "Please try again. If this persists, check Settings > Integrations to ensure Gmail is connected.",
-            content_type="error",
-            priority=priority,
-            task_id=task_id,
-            chat_session_id=session_id,
+        logging.getLogger("aria.inbox").error(
+            "Agent %s failed for tenant %s: %s", agent_id, tenant_id, e, exc_info=True,
         )
+        # Sanitize the error -- don't leak raw exception details (may
+        # include API keys / connection strings) into the user-visible
+        # inbox row.
+        from backend.orchestrator import _sanitize_error_message
+        error_summary = _sanitize_error_message(e)
+        error_content = (
+            f"The {agent_id} agent encountered an error while processing this task:\n\n"
+            f"**Task:** {task_desc}\n\n"
+            f"**Error:** {error_summary}\n\n"
+            "Please try again. If this persists, check Settings > Integrations "
+            "to ensure required credentials (Gmail, X/Twitter, etc.) are connected."
+        )
+        error_title = f"Failed: {task_desc[:60]}"
+        # Update the placeholder if we have one (don't orphan it). Fall
+        # back to creating a fresh row only if the placeholder update fails
+        # or no placeholder was ever created.
+        updated = False
+        if placeholder_id:
+            try:
+                sb = _get_supabase()
+                sb.table("inbox_items").update({
+                    "title": error_title,
+                    "content": error_content,
+                    "type": "error",
+                    "status": "needs_review",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", placeholder_id).execute()
+                updated = True
+            except Exception as upd_err:
+                logging.getLogger("aria.inbox").error(
+                    "Failed to update placeholder %s with error: %s", placeholder_id, upd_err,
+                )
+        if not updated:
+            _save_inbox_item(
+                tenant_id=tenant_id,
+                agent=agent_id,
+                title=error_title,
+                content=error_content,
+                content_type="error",
+                priority=priority,
+                task_id=task_id,
+                chat_session_id=session_id,
+            )
         # Mark task as done so it doesn't stay stuck in_progress
         if task_id:
             try:
@@ -3089,27 +3201,44 @@ async def _dispatch_paperclip_and_watch_to_inbox(
       2. Sometimes silently misses runs (issue status not transitioning,
          output not picked up by pick_agent_output, etc.)
 
-    This function fires immediately when the CEO emits a delegate block:
-      1. Creates a placeholder inbox row right away so the user sees activity
-      2. Calls dispatch_agent to create the Paperclip issue
-      3. Polls THIS specific issue with adaptive intervals (1s -> 4s)
-      4. As soon as an agent reply comment shows up, updates the placeholder
-         with the real content -> instant arrival in the user's inbox
-      5. Marks the issue in the global poller's _processed_issues set so
-         the safety-net poller doesn't double-import the same row
+    Phases:
+      1. Dispatch first to get the paperclip_issue_id (cheap, ~0.5-1s)
+      2. Create the placeholder inbox row WITH the issue id baked in --
+         this closes the dedupe race where the global poller could
+         insert a duplicate before the watcher's later UPDATE
+      3. Poll THIS specific issue with adaptive intervals (1s -> 4s)
+      4. Bail fast on failed/cancelled status or PaperclipUnreachable
+         outage instead of waiting the full 10 min
+      5. As soon as a substantive agent reply comment shows up, update
+         the placeholder with the real content -> instant arrival
 
-    The global poller still runs as a backstop for direct Paperclip Timer
-    runs, edge cases where this watcher times out, and any race we haven't
-    thought of.
+    The global poller still runs as a backstop for direct Paperclip
+    Timer runs and edge cases this watcher times out on.
     """
     import asyncio as _aio_inner
-    from backend.orchestrator import dispatch_agent, _urllib_request
+    from backend.orchestrator import dispatch_agent, _urllib_request, PaperclipUnreachable
     from backend.services.paperclip_chat import normalize_comments, pick_agent_output
+    from backend.paperclip_office_sync import _is_finished, _is_failed, _add_processed
 
     _logger = logging.getLogger("aria.paperclip_watch")
 
-    # Phase 1: placeholder inbox row so the UI shows activity immediately.
-    # Mirrors the same UX pattern as _run_agent_to_inbox for the local path.
+    # Phase 1: dispatch FIRST. Cheap (~0.5-1s) and gives us the issue id
+    # we need to bake into the placeholder so the global poller can't
+    # race us and insert a duplicate.
+    try:
+        result = await dispatch_agent(tenant_id, agent_id, context={
+            "task": task_desc,
+            "priority": priority,
+            "session_id": session_id,
+        })
+    except Exception as e:
+        _logger.error("[paperclip-watch] dispatch_agent raised for %s: %s", agent_id, e)
+        result = {}
+
+    paperclip_issue_id = result.get("paperclip_issue_id") if isinstance(result, dict) else None
+
+    # Phase 2: create the placeholder inbox row. If we got an issue id,
+    # bake it in so the dedupe column is set from the start.
     placeholder_content_type = _infer_content_type(agent_id, "")
     placeholder = _save_inbox_item(
         tenant_id=tenant_id,
@@ -3121,6 +3250,7 @@ async def _dispatch_paperclip_and_watch_to_inbox(
         task_id=task_id,
         chat_session_id=session_id,
         status="processing",
+        paperclip_issue_id=paperclip_issue_id,
     )
     placeholder_id = placeholder["id"] if placeholder else None
     if placeholder and tenant_id:
@@ -3134,25 +3264,12 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                 "priority": priority,
                 "created_at": placeholder.get("created_at", ""),
             }, room=tenant_id)
-        except Exception:
-            pass
+        except Exception as e:
+            _logger.debug("[paperclip-watch] sio.emit inbox_new_item failed: %s", e)
 
-    # Phase 2: actually create the Paperclip issue (this is where the agent
-    # gets woken up). dispatch_agent returns the paperclip_issue_id we need
-    # for the watch loop.
-    try:
-        result = await dispatch_agent(tenant_id, agent_id, context={
-            "task": task_desc,
-            "priority": priority,
-            "session_id": session_id,
-        })
-    except Exception as e:
-        _logger.error("[paperclip-watch] dispatch_agent failed for %s: %s", agent_id, e)
-        result = {}
-
-    paperclip_issue_id = result.get("paperclip_issue_id") if isinstance(result, dict) else None
+    # If dispatch failed, surface the error in the placeholder and bail
     if not paperclip_issue_id:
-        _logger.error("[paperclip-watch] no paperclip_issue_id from dispatch — falling back to placeholder error")
+        _logger.error("[paperclip-watch] no paperclip_issue_id from dispatch -- marking placeholder failed")
         if placeholder_id:
             try:
                 sb = _get_supabase()
@@ -3162,9 +3279,13 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                     "status": "needs_review",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }).eq("id", placeholder_id).execute()
-            except Exception:
-                pass
+            except Exception as e:
+                _logger.error("[paperclip-watch] failed to update placeholder on dispatch error: %s", e)
         return
+
+    # Mark in global poller's processed set right away so the 5s poller
+    # never imports this issue independently. We own this issue now.
+    _add_processed(paperclip_issue_id)
 
     _logger.warning(
         "[paperclip-watch] watching issue %s for %s output (timeout %ds)",
@@ -3177,11 +3298,16 @@ async def _dispatch_paperclip_and_watch_to_inbox(
     interval_idx = 0
     start = _aio_inner.get_event_loop().time()
     output: str | None = None
-    issue_status = ""
+    failure_reason: str | None = None
+    consecutive_outage_errors = 0
+    _MAX_CONSECUTIVE_OUTAGES = 5  # ~10s of consecutive failures before bailing
 
     while True:
         elapsed = _aio_inner.get_event_loop().time() - start
         if elapsed >= timeout_sec:
+            failure_reason = (
+                f"Timeout: agent did not respond within {timeout_sec // 60} minutes."
+            )
             _logger.warning(
                 "[paperclip-watch] timeout after %.1fs waiting for %s (issue %s)",
                 elapsed, agent_id, paperclip_issue_id,
@@ -3192,11 +3318,48 @@ async def _dispatch_paperclip_and_watch_to_inbox(
         await _aio_inner.sleep(delay)
         interval_idx += 1
 
-        # Cheap check: just fetch comments. Status check is optional —
-        # if there's a real agent reply, that's enough.
-        raw_comments = _urllib_request("GET", f"/api/issues/{paperclip_issue_id}/comments")
+        # Check the issue's current status. If Paperclip says the run
+        # failed/cancelled, bail fast instead of polling for 10 minutes.
+        try:
+            issue_data = _urllib_request("GET", f"/api/issues/{paperclip_issue_id}", strict=True)
+            consecutive_outage_errors = 0
+        except PaperclipUnreachable as e:
+            consecutive_outage_errors += 1
+            _logger.warning(
+                "[paperclip-watch] Paperclip unreachable on poll %d for issue %s: %s",
+                consecutive_outage_errors, paperclip_issue_id, e,
+            )
+            if consecutive_outage_errors >= _MAX_CONSECUTIVE_OUTAGES:
+                failure_reason = (
+                    "Paperclip is unreachable. The agent may still be running --"
+                    " the global 5s poller will catch the result if Paperclip recovers."
+                )
+                break
+            continue  # transient -- try again
+
+        if isinstance(issue_data, dict):
+            issue_status = (issue_data.get("status") or "").lower()
+            if _is_failed(issue_status):
+                failure_reason = (
+                    f"Paperclip marked the run {issue_status!r}. The agent failed "
+                    f"or was cancelled. Check Paperclip for the run logs."
+                )
+                _logger.warning(
+                    "[paperclip-watch] issue %s entered failed state %s -- bailing",
+                    paperclip_issue_id, issue_status,
+                )
+                break
+
+        # Cheap check: fetch comments and look for a substantive reply.
+        try:
+            raw_comments = _urllib_request(
+                "GET", f"/api/issues/{paperclip_issue_id}/comments", strict=True,
+            )
+        except PaperclipUnreachable:
+            # Already counted above; just retry
+            continue
         comments = normalize_comments(raw_comments)
-        candidate = pick_agent_output(comments, exclude_text=task_desc)
+        candidate = pick_agent_output(comments, exclude_text=task_desc, expected_agent=agent_id)
 
         # Need a substantive reply, not a one-liner status update
         if candidate and len(candidate) >= 50:
@@ -3207,40 +3370,21 @@ async def _dispatch_paperclip_and_watch_to_inbox(
             )
             break
 
-    # Phase 4: dedupe — tell the global poller to skip this issue so it
-    # doesn't import a second copy on its next 5s tick.
-    try:
-        from backend.paperclip_office_sync import _processed_issues
-        _processed_issues.add(paperclip_issue_id)
-    except Exception:
-        pass
-
-    # Phase 5: write the result to inbox. Either we have output (success)
-    # or we timed out (failure mode — leave a clear placeholder).
+    # Phase 4: write the result to inbox. Either we have output (success)
+    # or we have a failure_reason (timeout / failed status / outage).
     if not output:
+        msg = failure_reason or "Agent run did not produce output."
         if placeholder_id:
             try:
                 sb = _get_supabase()
                 sb.table("inbox_items").update({
-                    "title": f"Timeout: {task_desc[:80]}",
-                    "content": (
-                        f"The {agent_id} agent did not respond within "
-                        f"{timeout_sec // 60} minutes. Check Paperclip for "
-                        f"the run status — the global poller will catch it "
-                        f"if the agent eventually finishes."
-                    ),
+                    "title": f"Failed: {task_desc[:80]}",
+                    "content": msg,
                     "status": "needs_review",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }).eq("id", placeholder_id).execute()
-            except Exception:
-                pass
-        # Don't add to _processed_issues — let the global poller catch
-        # the late finish if it eventually arrives.
-        try:
-            from backend.paperclip_office_sync import _processed_issues as _pi
-            _pi.discard(paperclip_issue_id)
-        except Exception:
-            pass
+            except Exception as e:
+                _logger.error("[paperclip-watch] failed to update placeholder on failure: %s", e)
         return
 
     # Success path: write real content to the placeholder
@@ -3691,6 +3835,25 @@ for _f in _AGENTS_DIR.glob("*.md"):
 _chat_sessions: dict[str, list[dict]] = {}
 _MAX_CACHED_SESSIONS = 100
 
+# Per-session asyncio.Lock so two concurrent ceo_chat requests for the
+# same session_id don't interleave their session.append(user) /
+# session.append(assistant) calls and corrupt the conversation history.
+# Created lazily on first use; lifecycle matches _chat_sessions.
+_chat_session_locks: dict[str, "asyncio.Lock"] = {}
+
+
+def _get_chat_session_lock(session_id: str) -> "asyncio.Lock":
+    """Return the asyncio.Lock for this session_id, creating one if needed.
+
+    Safe to call from any coroutine on the main event loop -- dict.setdefault
+    is atomic in CPython for the GIL-protected modify-or-create case.
+    """
+    lock = _chat_session_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _chat_session_locks[session_id] = lock
+    return lock
+
 
 def _evict_chat_sessions():
     """Remove oldest sessions if cache exceeds max size."""
@@ -3698,6 +3861,8 @@ def _evict_chat_sessions():
         excess = len(_chat_sessions) - _MAX_CACHED_SESSIONS
         for key in list(_chat_sessions.keys())[:excess]:
             del _chat_sessions[key]
+            # Drop the lock too if no longer needed
+            _chat_session_locks.pop(key, None)
 
 
 def _save_chat_message(session_id: str, tenant_id: str, role: str, content: str, delegations: list | None = None):
@@ -3832,7 +3997,22 @@ def _last_assistant_index(history: list[dict]) -> int | None:
 @app.post("/api/ceo/chat")
 async def ceo_chat(body: CEOChatMessage):
     """Send a message to the CEO agent. The CEO reads its own .md file and all sub-agent .md files,
-    then responds and may delegate tasks to sub-agents."""
+    then responds and may delegate tasks to sub-agents.
+
+    Per-session asyncio.Lock prevents two concurrent requests for the same
+    session_id from interleaving their session.append() calls and
+    corrupting history. Without the lock, a user double-clicking send or
+    having the chat open in two tabs could send 2 ceo_chat() calls that
+    both call session.append(user) -> call_claude() -> session.append(assistant)
+    in interleaved order, producing garbled history and possibly duplicate
+    messages saved to Supabase.
+    """
+    lock = _get_chat_session_lock(body.session_id)
+    async with lock:
+        return await _ceo_chat_impl(body)
+
+
+async def _ceo_chat_impl(body: CEOChatMessage):
     from backend.tools.claude_cli import call_claude, MODEL_HAIKU
     import json as _json
 
@@ -3870,10 +4050,10 @@ async def ceo_chat(body: CEOChatMessage):
             "Your team: content_writer, email_marketer, social_manager, ad_strategist, media."
         )
 
-    # Load tenant config once — reused for business context + integration checks
+    # Load tenant config once — reused for business context + integration checks.
+    # tenant_id was already set above from body.tenant_id; don't reassign here.
     business_context = ""
     tc = None
-    tenant_id = body.tenant_id
     if tenant_id:
         try:
             tc = get_tenant_config(tenant_id)
@@ -3890,8 +4070,13 @@ Positioning: {tc.gtm_playbook.positioning}
 Voice: {tc.brand_voice.tone}
 Channels: {', '.join(tc.channels)}
 """
-        except Exception:
-            pass
+        except Exception as e:
+            # Log loudly so we know when the CEO is replying without
+            # business context (would otherwise be a silent generic-advice bug)
+            logging.getLogger("aria.ceo_chat").warning(
+                "[ceo-chat] get_tenant_config(%s) failed: %s -- CEO will reply without business context",
+                tenant_id, e,
+            )
 
     # Check connected integrations for this tenant (reuse tc from above).
     # Compact one-line notes only — the CEO doesn't need a paragraph per
@@ -3910,8 +4095,10 @@ Channels: {', '.join(tc.channels)}
                     f"X/Twitter connected (@{handle}) — for social posts, delegate to social_manager. "
                     f"Output goes to Inbox for approval; never auto-publish."
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger("aria.ceo_chat").debug(
+                "[ceo-chat] integration check failed for %s: %s", tenant_id, e,
+            )
     integration_notes = ("\n" + "\n".join(integration_lines)) if integration_lines else ""
 
     # ── CRM context injection (only when message references contacts/deals/companies) ──
@@ -4135,14 +4322,25 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         )
     except Exception as exc:
         import traceback
-        _ceo_logger.error(f"CEO chat error: {exc}\n{traceback.format_exc()}")
-        raw = f"I encountered an error: {str(exc)[:200]}. Please try again."
+        _ceo_logger.error(f"CEO chat error: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+        # Don't leak raw exception messages (may include API keys, connection
+        # strings, JWT bits). Generic message + log the real error.
+        raw = (
+            "I had trouble processing that just now. Please try again in a moment "
+            "-- if it keeps failing, check the backend logs for the error details."
+        )
 
-    # Check for forbidden requests
+    # Check for forbidden requests. The check is intentionally narrow:
+    # we only override the CEO's reply if (a) the user message clearly
+    # asks for a forbidden action AND (b) the CEO's response doesn't
+    # already contain a refusal phrase. The double gate prevents the
+    # naive substring match from nuking legitimate replies that happen
+    # to mention sensitive words ("don't touch the database schema").
     from backend.ceo_actions import is_forbidden_request, REFUSAL_MESSAGE
     if is_forbidden_request(body.message):
-        # The CEO should already refuse in its response, but double-check
-        if "can't" not in raw.lower() and "cannot" not in raw.lower() and "don't have access" not in raw.lower():
+        refusal_markers = ("can't", "cannot", "don't have access", "i'm not able", "i won't")
+        raw_lower = raw.lower()
+        if not any(marker in raw_lower for marker in refusal_markers):
             raw = REFUSAL_MESSAGE
 
     # Parse delegation blocks
@@ -4152,13 +4350,9 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         import re
         blocks = re.findall(r"```delegate\s*\n(.*?)\n```", raw, re.DOTALL)
         for block in blocks:
-            try:
-                d = _json.loads(block.strip())
-                if d.get("agent") in ("content_writer", "email_marketer", "social_manager", "ad_strategist", "media"):
-                    delegations.append(d)
-            except _json.JSONDecodeError as je:
-                logger = logging.getLogger("aria.ceo_chat")
-                logger.warning(f"Failed to parse delegate block: {je}. Block was: {block[:200]}")
+            d = _parse_codeblock_json(block, "delegate")
+            if d and d.get("agent") in ("content_writer", "email_marketer", "social_manager", "ad_strategist", "media"):
+                delegations.append(d)
         clean_response = re.sub(r"```delegate\s*\n.*?\n```", "", raw, flags=re.DOTALL).strip()
 
     # Defensive: if the model promised delegation in prose but forgot the block,
@@ -4178,12 +4372,9 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         import re
         action_blocks = re.findall(r"```action\s*\n(.*?)\n```", clean_response, re.DOTALL)
         for block in action_blocks:
-            try:
-                a = _json.loads(block.strip())
-                if a.get("action"):
-                    ceo_actions.append(a)
-            except _json.JSONDecodeError:
-                pass
+            a = _parse_codeblock_json(block, "action")
+            if a and a.get("action"):
+                ceo_actions.append(a)
         clean_response = re.sub(r"```action\s*\n.*?\n```", "", clean_response, flags=re.DOTALL).strip()
 
     # Execute non-confirmation actions immediately; queue confirmations for frontend
@@ -4194,11 +4385,23 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         for a in ceo_actions:
             action_name = a.get("action", "")
             params = a.get("params", {})
-            result = await execute_action(tenant_id, action_name, params, confirmed=False)
-            if result["status"] == "needs_confirmation":
+            try:
+                result = await execute_action(tenant_id, action_name, params, confirmed=False)
+            except Exception as exec_exc:
+                # Don't let an action handler crash kill the whole chat
+                # response after the CEO has already replied. Log it,
+                # surface a sanitized error to the user, and keep going.
+                logging.getLogger("aria.ceo_chat.actions").error(
+                    "[ceo-action] %s raised: %s", action_name, exec_exc, exc_info=True,
+                )
+                action_results.append({
+                    "status": "error",
+                    "action": action_name,
+                    "message": f"Action {action_name!r} failed -- check backend logs.",
+                })
+                continue
+            if result.get("status") == "needs_confirmation":
                 pending_confirmations.append(result)
-            elif result["status"] == "executed":
-                action_results.append(result)
             else:
                 action_results.append(result)
 
@@ -4288,14 +4491,20 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 # placeholder + adaptive polling + inbox write in one task,
                 # so the result lands in the inbox within ~1-2s of the agent
                 # finishing instead of waiting up to 5s for the global poller.
-                _aio.create_task(_dispatch_paperclip_and_watch_to_inbox(
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    task_desc=task_desc,
-                    session_id=body.session_id,
-                    task_id=saved_tasks[-1]["id"] if saved_tasks else None,
-                    priority=d.get("priority", "medium"),
-                ))
+                # Wrapped in _safe_background so any crash inside the task
+                # gets logged instead of disappearing as "Task exception
+                # was never retrieved".
+                _safe_background(
+                    _dispatch_paperclip_and_watch_to_inbox(
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        task_desc=task_desc,
+                        session_id=body.session_id,
+                        task_id=saved_tasks[-1]["id"] if saved_tasks else None,
+                        priority=d.get("priority", "medium"),
+                    ),
+                    label=f"paperclip-watch-{agent_id}",
+                )
             else:
                 _dispatch_logger.warning(
                     "[ceo-dispatch] FALLING BACK to local for %s "
@@ -4306,12 +4515,15 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 from backend.agents import AGENT_REGISTRY
                 agent_module = AGENT_REGISTRY.get(agent_id)
                 if agent_module:
-                    _aio.create_task(_run_agent_to_inbox(
-                        agent_module, agent_id, tenant_id, task_desc,
-                        body.session_id,
-                        saved_tasks[-1]["id"] if saved_tasks else None,
-                        d.get("priority", "medium"),
-                    ))
+                    _safe_background(
+                        _run_agent_to_inbox(
+                            agent_module, agent_id, tenant_id, task_desc,
+                            body.session_id,
+                            saved_tasks[-1]["id"] if saved_tasks else None,
+                            d.get("priority", "medium"),
+                        ),
+                        label=f"local-agent-{agent_id}",
+                    )
                 else:
                     _dispatch_logger.error(
                         "[ceo-dispatch] no agent_module for %s in AGENT_REGISTRY", agent_id,

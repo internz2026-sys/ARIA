@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import shutil
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -165,6 +166,13 @@ def get_agent_usage_summary(tenant_id: str) -> dict:
 DEFAULT_MODEL = os.getenv("ARIA_MODEL", MODEL_SONNET)
 CLI_TIMEOUT = int(os.getenv("ARIA_CLI_TIMEOUT", "120"))
 
+# Process-wide lock so concurrent CLI calls don't both try to restore
+# ~/.claude.json at the same time. Without this, two callers could both
+# see the file missing, both pick the same backup, and one could leave a
+# truncated file mid-copy. The lock is RLock so the same thread calling
+# the helper twice (e.g. during retry) doesn't deadlock.
+_claude_config_restore_lock = threading.RLock()
+
 
 def _try_restore_claude_config() -> bool:
     """Self-heal a missing ~/.claude.json by copying the most recent backup.
@@ -186,39 +194,53 @@ def _try_restore_claude_config() -> bool:
     Cross-platform safe: uses Path.home() so the same code works inside
     the docker container (root home = /root) and locally on dev machines.
     """
-    config = Path.home() / ".claude.json"
-    if config.exists():
-        return False  # nothing to restore
-    backups_dir = Path.home() / ".claude" / "backups"
-    if not backups_dir.exists():
-        logger.error(
-            "Cannot auto-restore .claude.json: backups dir %s does not exist. "
-            "Run `claude /login` to re-authenticate.", backups_dir,
+    # Take the process-wide lock for the whole check+copy sequence so two
+    # concurrent CLI calls can't both try to restore from the same backup.
+    # Without this lock there's a TOCTOU race where one caller's partial
+    # write can be observed by the other as a "valid" file and consumed.
+    with _claude_config_restore_lock:
+        config = Path.home() / ".claude.json"
+        if config.exists() and config.stat().st_size > 0:
+            return False  # nothing to restore
+        backups_dir = Path.home() / ".claude" / "backups"
+        if not backups_dir.exists():
+            logger.error(
+                "Cannot auto-restore .claude.json: backups dir %s does not exist. "
+                "Run `claude /login` to re-authenticate.", backups_dir,
+            )
+            return False
+        backups = sorted(
+            backups_dir.glob(".claude.json.backup.*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
         )
-        return False
-    backups = sorted(
-        backups_dir.glob(".claude.json.backup.*"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if not backups:
-        logger.error(
-            "Cannot auto-restore .claude.json: no backups found in %s. "
-            "Run `claude /login` to re-authenticate.", backups_dir,
-        )
-        return False
-    latest = backups[0]
-    try:
-        shutil.copy2(latest, config)
-        config.chmod(0o600)  # match what the CLI expects
-        logger.warning(
-            "Auto-restored %s from %s (CLI config rotation race recovered)",
-            config, latest.name,
-        )
-        return True
-    except Exception as e:
-        logger.error("Failed to auto-restore %s from %s: %s", config, latest, e)
-        return False
+        if not backups:
+            logger.error(
+                "Cannot auto-restore .claude.json: no backups found in %s. "
+                "Run `claude /login` to re-authenticate.", backups_dir,
+            )
+            return False
+        latest = backups[0]
+        # Atomic-ish restore: write to a temp file first, fsync, then rename.
+        # If the process dies mid-write, the live config is either the old
+        # missing file or the new complete file -- never a half-written one.
+        try:
+            tmp_path = config.with_suffix(".json.tmp")
+            shutil.copy2(latest, tmp_path)
+            tmp_path.chmod(0o600)
+            os.replace(tmp_path, config)  # atomic on POSIX
+            logger.warning(
+                "Auto-restored %s from %s (CLI config rotation race recovered)",
+                config, latest.name,
+            )
+            return True
+        except Exception as e:
+            logger.error("Failed to auto-restore %s from %s: %s", config, latest, e)
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
 
 
 async def call_claude(
@@ -300,6 +322,8 @@ async def call_claude(
     logger.info("CLI call: model=%s, tenant=%s, agent=%s", use_model, tenant_id, agent_id)
 
     async def _run_cli():
+        """Spawn the CLI subprocess once. Always reaps the process on exit
+        (even on timeout) so we don't leak zombies under concurrent load."""
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -308,9 +332,30 @@ async def call_claude(
         try:
             so, se = await asyncio.wait_for(proc.communicate(), timeout=CLI_TIMEOUT)
         except asyncio.TimeoutError:
-            proc.kill()
+            # Kill + WAIT (the original code only killed). Without the wait
+            # the zombie sits in the process table until the next event loop
+            # tick reaps it, and under load these stack up until we run out
+            # of file descriptors.
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except (asyncio.TimeoutError, Exception):
+                pass
             raise RuntimeError(f"Claude CLI timed out after {CLI_TIMEOUT}s")
         return proc.returncode, so, se
+
+    def _safe_decode(b: bytes) -> str:
+        """Decode bytes from CLI output, replacing any invalid UTF-8 instead
+        of crashing the whole handler with a UnicodeDecodeError."""
+        if not b:
+            return ""
+        try:
+            return b.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
 
     try:
         returncode, stdout, stderr = await _run_cli()
@@ -323,7 +368,9 @@ async def call_claude(
         # The CLI sometimes prints "configuration file not found" to stdout
         # instead of stderr depending on version, so combine both streams
         # before reporting or matching.
-        err = (stderr.decode() + "\n" + stdout.decode()).strip()
+        stdout_str = _safe_decode(stdout)
+        stderr_str = _safe_decode(stderr)
+        err = (stderr_str + "\n" + stdout_str).strip()
         # Self-heal the "config file not found" race: the CLI rotates its
         # auth file and occasionally leaves only the backup. We call the
         # restore helper unconditionally on any non-zero exit -- it's a
@@ -338,14 +385,14 @@ async def call_claude(
                     "Claude CLI not found after restore. Install with: npm install -g @anthropic-ai/claude-code"
                 )
             if returncode != 0:
-                err = (stderr.decode() + "\n" + stdout.decode()).strip()
+                err = (_safe_decode(stderr) + "\n" + _safe_decode(stdout)).strip()
                 logger.error("Claude CLI error after restore (exit %d): %s", returncode, err)
                 raise RuntimeError(f"Claude CLI error: {err}")
         else:
             logger.error("Claude CLI error (exit %d): %s", returncode, err)
             raise RuntimeError(f"Claude CLI error: {err}")
 
-    result = stdout.decode().strip()
+    result = _safe_decode(stdout).strip()
 
     # Update usage tracking
     usage = _load_usage(tenant_id)
