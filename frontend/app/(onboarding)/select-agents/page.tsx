@@ -14,6 +14,14 @@ const agents = [
   { slug: "media", name: "Media Designer", role: "Visual Content", description: "Marketing images via AI, social media visuals, ad creatives, blog headers", color: "#E4407B", required: false },
 ];
 
+// Tier quotas from CLAUDE.md pricing table.
+// content_pieces is the monthly content limit; null = unlimited.
+const PRICING_TIERS = [
+  { key: "starter", label: "Starter ($49/mo)", agents: 2, content_pieces: 10 },
+  { key: "growth", label: "Growth ($149/mo)", agents: 4, content_pieces: 30 },
+  { key: "scale", label: "Scale ($299/mo)", agents: null, content_pieces: null },
+] as const;
+
 export default function SelectAgentsPage() {
   const router = useRouter();
   const [enabled, setEnabled] = useState<Record<string, boolean>>(
@@ -21,6 +29,10 @@ export default function SelectAgentsPage() {
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Selected pricing tier -- shows a quota warning when the user
+  // enables more agents than the tier allows. Default to Growth as
+  // a sensible middle ground; user can change before launching.
+  const [selectedTier, setSelectedTier] = useState<(typeof PRICING_TIERS)[number]["key"]>("growth");
 
   function toggle(slug: string) {
     const agent = agents.find(a => a.slug === slug);
@@ -29,6 +41,11 @@ export default function SelectAgentsPage() {
   }
 
   const activeCount = Object.values(enabled).filter(Boolean).length;
+  // Subtract the required CEO from the count vs tier limit, since
+  // CEO is included in every tier and doesn't count against the limit.
+  const billableCount = activeCount - (enabled.ceo ? 1 : 0);
+  const tier = PRICING_TIERS.find((t) => t.key === selectedTier)!;
+  const overQuota = tier.agents !== null && billableCount > tier.agents;
 
   // Flush Google OAuth tokens saved during signup to the backend
   async function flushGoogleTokens(tenantId: string) {
@@ -189,7 +206,52 @@ export default function SelectAgentsPage() {
         ))}
       </div>
 
-      <p className="text-sm text-[#5F5E5A] text-center mb-6">{activeCount} of {agents.length} agents active</p>
+      <p className="text-sm text-[#5F5E5A] text-center mb-4">{activeCount} of {agents.length} agents active</p>
+
+      {/* Tier picker -- shows the user how their selection maps to a
+          pricing tier and warns when they're enabling more agents than
+          their tier allows. Was a problem before: Starter tier users
+          would default to all 6 agents enabled and only find out at
+          billing time that they were over quota. */}
+      <div className="mb-6 bg-[#F8F8F6] rounded-xl border border-[#E0DED8] p-4">
+        <p className="text-xs font-semibold text-[#2C2C2A] mb-2">Pricing tier</p>
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          {PRICING_TIERS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setSelectedTier(t.key)}
+              className={`px-3 py-2 rounded-lg text-xs font-medium border transition-colors text-left ${
+                selectedTier === t.key
+                  ? "bg-[#EEEDFE] border-[#534AB7] text-[#534AB7]"
+                  : "bg-white border-[#E0DED8] text-[#5F5E5A] hover:border-[#C5C3BC]"
+              }`}
+            >
+              <div className="font-semibold">{t.label.split(" ")[0]}</div>
+              <div className="text-[10px] mt-0.5 opacity-80">
+                {t.agents === null ? "Unlimited agents" : `Up to ${t.agents} agents`}
+              </div>
+            </button>
+          ))}
+        </div>
+        {overQuota ? (
+          <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+            <svg className="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+            </svg>
+            <div>
+              <strong>{tier.label}</strong> only includes {tier.agents} agents (CEO is always free).
+              You've selected {billableCount}. Either turn off {billableCount - tier.agents!} agent{billableCount - tier.agents! === 1 ? "" : "s"} or upgrade.
+            </div>
+          </div>
+        ) : (
+          <div className="text-[11px] text-[#5F5E5A]">
+            {tier.content_pieces ? `Includes ${tier.content_pieces} content pieces/month` : "Unlimited content"}
+            {" · "}
+            {billableCount}/{tier.agents === null ? "∞" : tier.agents} agents used
+          </div>
+        )}
+      </div>
 
       {error && (
         <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700 text-center">

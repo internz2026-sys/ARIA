@@ -6,6 +6,12 @@ import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useNotifications } from "@/lib/use-notifications";
 
+// Sidebar grouped into 4 sections to reduce the cognitive load of the
+// previous flat 14-item list. The "Chat with CEO" duplicate nav link
+// was removed -- the FloatingChat widget + Cmd+K shortcut already
+// provide chat access from every page, so the sidebar entry was
+// redundant and confused first-time users about which to click.
+
 const navItems = [
   {
     label: "Dashboard",
@@ -22,16 +28,6 @@ const navItems = [
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M2.25 21h19.5m-18-18v18m10.5-18v18m6-13.5V21M6.75 6.75h.75m-.75 3h.75m-.75 3h.75m3-6h.75m-.75 3h.75m-.75 3h.75M6.75 21v-3.375c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21M3 3h12m-.75 4.5H21m-3.75 3H21m-3.75 3H21" />
-      </svg>
-    ),
-  },
-  {
-    label: "Chat with CEO",
-    href: "/chat",
-    highlight: true,
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
       </svg>
     ),
   },
@@ -177,37 +173,79 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {navItems.map((item) => {
-          const isActive = pathname === item.href || pathname?.startsWith(item.href + "/");
+      {/* Navigation -- grouped into sections to reduce the cognitive
+          load of a 13-item flat list. Each item is matched to its
+          group via href prefix; everything else falls into "Workspace". */}
+      <nav className="flex-1 px-3 py-4 overflow-y-auto">
+        {(() => {
+          // Group definitions: section label -> matching href set
+          const groups: { label: string; hrefs: string[] }[] = [
+            { label: "Workspace", hrefs: ["/dashboard", "/office", "/projects"] },
+            { label: "Activity", hrefs: ["/inbox", "/conversations", "/calendar"] },
+            { label: "Marketing", hrefs: ["/crm", "/campaigns", "/agents"] },
+            { label: "Insights", hrefs: ["/analytics", "/reports", "/usage"] },
+          ];
+          // Items not matching any group are appended at the end
+          const groupedHrefs = new Set(groups.flatMap((g) => g.hrefs));
+          const ungrouped = navItems.filter((i) => !groupedHrefs.has(i.href));
+
+          const renderItem = (item: typeof navItems[number]) => {
+            const isActive = pathname === item.href || pathname?.startsWith(item.href + "/");
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  isActive
+                    ? "bg-[#EEEDFE] text-[#534AB7]"
+                    : (item as any).highlight
+                    ? "text-[#534AB7] bg-[#534AB7]/5 hover:bg-[#EEEDFE] border border-[#534AB7]/20"
+                    : "text-[#5F5E5A] hover:bg-[#F8F8F6] hover:text-[#2C2C2A]"
+                }`}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+                {(() => {
+                  const key = (item as any).badgeKey as keyof typeof badges | undefined;
+                  const count = key ? badges[key] || 0 : 0;
+                  if (!count) return null;
+                  return (
+                    <span className="ml-auto bg-[#D85A30] text-white text-xs font-semibold px-2 py-0.5 rounded-full min-w-[20px] text-center">
+                      {count > 99 ? "99+" : count}
+                    </span>
+                  );
+                })()}
+              </Link>
+            );
+          };
+
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                isActive
-                  ? "bg-[#EEEDFE] text-[#534AB7]"
-                  : (item as any).highlight
-                  ? "text-[#534AB7] bg-[#534AB7]/5 hover:bg-[#EEEDFE] border border-[#534AB7]/20"
-                  : "text-[#5F5E5A] hover:bg-[#F8F8F6] hover:text-[#2C2C2A]"
-              }`}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-              {(() => {
-                const key = (item as any).badgeKey as keyof typeof badges | undefined;
-                const count = key ? badges[key] || 0 : 0;
-                if (!count) return null;
+            <>
+              {groups.map((g) => {
+                const items = g.hrefs
+                  .map((h) => navItems.find((i) => i.href === h))
+                  .filter(Boolean) as typeof navItems;
+                if (items.length === 0) return null;
                 return (
-                  <span className="ml-auto bg-[#D85A30] text-white text-xs font-semibold px-2 py-0.5 rounded-full min-w-[20px] text-center">
-                    {count > 99 ? "99+" : count}
-                  </span>
+                  <div key={g.label} className="mb-4">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-[#9E9C95] px-3 mb-1.5">
+                      {g.label}
+                    </p>
+                    <div className="space-y-0.5">{items.map(renderItem)}</div>
+                  </div>
                 );
-              })()}
-            </Link>
+              })}
+              {ungrouped.length > 0 && (
+                <div className="mb-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[#9E9C95] px-3 mb-1.5">
+                    System
+                  </p>
+                  <div className="space-y-0.5">{ungrouped.map(renderItem)}</div>
+                </div>
+              )}
+            </>
           );
-        })}
+        })()}
       </nav>
 
       {/* Bottom section — user profile + sign out */}

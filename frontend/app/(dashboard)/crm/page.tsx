@@ -47,10 +47,95 @@ const selectCls = inputCls;
 
 type Tab = "contacts" | "companies" | "deals";
 
+// Generic table sort state
+type SortDir = "asc" | "desc";
+interface SortState {
+  key: string;
+  dir: SortDir;
+}
+
+function sortRows<T extends Record<string, any>>(rows: T[], sort: SortState | null): T[] {
+  if (!sort) return rows;
+  const { key, dir } = sort;
+  const mult = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const av = a[key];
+    const bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1; // nulls last
+    if (bv == null) return -1;
+    if (typeof av === "number" && typeof bv === "number") return (av - bv) * mult;
+    return String(av).localeCompare(String(bv)) * mult;
+  });
+}
+
+function SortHeader({ label, sortKey, sort, onSort }: { label: string; sortKey: string; sort: SortState | null; onSort: (key: string) => void }) {
+  const active = sort?.key === sortKey;
+  return (
+    <button
+      onClick={() => onSort(sortKey)}
+      className="flex items-center gap-1 text-left text-xs font-semibold text-[#5F5E5A] hover:text-[#2C2C2A] transition-colors w-full"
+    >
+      {label}
+      {active && (
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d={sort?.dir === "asc" ? "M5 15l7-7 7 7" : "M19 9l-7 7-7-7"} />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+const CRM_PAGE_SIZE = 25;
+
+function CrmPagination({ total, page, onPage }: { total: number; page: number; onPage: (p: number) => void }) {
+  const totalPages = Math.max(1, Math.ceil(total / CRM_PAGE_SIZE));
+  if (total <= CRM_PAGE_SIZE) return null;
+  return (
+    <div className="flex items-center justify-between px-4 py-3 border-t border-[#E0DED8] bg-[#F8F8F6]">
+      <span className="text-xs text-[#5F5E5A]">
+        Showing {(page - 1) * CRM_PAGE_SIZE + 1}–{Math.min(page * CRM_PAGE_SIZE, total)} of {total}
+      </span>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onPage(Math.max(1, page - 1))}
+          disabled={page <= 1}
+          className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          Prev
+        </button>
+        <span className="text-xs text-[#5F5E5A] px-2">Page {page} of {totalPages}</span>
+        <button
+          onClick={() => onPage(Math.min(totalPages, page + 1))}
+          disabled={page >= totalPages}
+          className="px-2 py-1 text-xs rounded-md border border-[#E0DED8] text-[#5F5E5A] hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function CRMPage() {
   const { showToast } = useNotifications();
   const { confirm } = useConfirm();
   const [tab, setTab] = useState<Tab>("contacts");
+
+  // Per-tab sort + page state
+  const [contactSort, setContactSort] = useState<SortState | null>({ key: "created_at", dir: "desc" });
+  const [contactPage, setContactPage] = useState(1);
+  const [companySort, setCompanySort] = useState<SortState | null>({ key: "created_at", dir: "desc" });
+  const [companyPage, setCompanyPage] = useState(1);
+  const [dealSort, setDealSort] = useState<SortState | null>({ key: "value", dir: "desc" });
+  const [dealPage, setDealPage] = useState(1);
+
+  function toggleSort(current: SortState | null, key: string): SortState {
+    if (current?.key === key) {
+      return { key, dir: current.dir === "asc" ? "desc" : "asc" };
+    }
+    return { key, dir: "asc" };
+  }
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
   // ─── Contacts state ───
@@ -364,17 +449,17 @@ export default function CRMPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Name</th>
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Email</th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Name" sortKey="name" sort={contactSort} onSort={(k) => { setContactSort(toggleSort(contactSort, k)); setContactPage(1); }} /></th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Email" sortKey="email" sort={contactSort} onSort={(k) => { setContactSort(toggleSort(contactSort, k)); setContactPage(1); }} /></th>
                     <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Phone</th>
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Status</th>
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Source</th>
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Added</th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Status" sortKey="status" sort={contactSort} onSort={(k) => { setContactSort(toggleSort(contactSort, k)); setContactPage(1); }} /></th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Source" sortKey="source" sort={contactSort} onSort={(k) => { setContactSort(toggleSort(contactSort, k)); setContactPage(1); }} /></th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Added" sortKey="created_at" sort={contactSort} onSort={(k) => { setContactSort(toggleSort(contactSort, k)); setContactPage(1); }} /></th>
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {contacts.map(c => {
+                  {sortRows(contacts, contactSort).slice((contactPage - 1) * CRM_PAGE_SIZE, contactPage * CRM_PAGE_SIZE).map(c => {
                     const sc = getStatusConfig(c.status);
                     return (
                       <tr key={c.id} className="border-b border-[#F0EFEC] hover:bg-[#F8F8F6] transition-colors">
@@ -402,6 +487,7 @@ export default function CRMPage() {
                 </tbody>
               </table>
             )}
+            <CrmPagination total={contacts.length} page={contactPage} onPage={setContactPage} />
           </div>
         </>
       )}
@@ -425,16 +511,16 @@ export default function CRMPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Name</th>
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Domain</th>
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Industry</th>
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Size</th>
-                    <th className="text-left px-4 py-3 font-semibold text-[#5F5E5A]">Added</th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Name" sortKey="name" sort={companySort} onSort={(k) => { setCompanySort(toggleSort(companySort, k)); setCompanyPage(1); }} /></th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Domain" sortKey="domain" sort={companySort} onSort={(k) => { setCompanySort(toggleSort(companySort, k)); setCompanyPage(1); }} /></th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Industry" sortKey="industry" sort={companySort} onSort={(k) => { setCompanySort(toggleSort(companySort, k)); setCompanyPage(1); }} /></th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Size" sortKey="size" sort={companySort} onSort={(k) => { setCompanySort(toggleSort(companySort, k)); setCompanyPage(1); }} /></th>
+                    <th className="text-left px-4 py-3"><SortHeader label="Added" sortKey="created_at" sort={companySort} onSort={(k) => { setCompanySort(toggleSort(companySort, k)); setCompanyPage(1); }} /></th>
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {companies.map(c => (
+                  {sortRows(companies, companySort).slice((companyPage - 1) * CRM_PAGE_SIZE, companyPage * CRM_PAGE_SIZE).map(c => (
                     <tr key={c.id} className="border-b border-[#F0EFEC] hover:bg-[#F8F8F6] transition-colors">
                       <td className="px-4 py-3 font-medium text-[#2C2C2A]">{c.name}</td>
                       <td className="px-4 py-3 text-[#534AB7]">{c.domain || "—"}</td>
@@ -451,6 +537,7 @@ export default function CRMPage() {
                 </tbody>
               </table>
             )}
+            <CrmPagination total={companies.length} page={companyPage} onPage={setCompanyPage} />
           </div>
         </>
       )}
