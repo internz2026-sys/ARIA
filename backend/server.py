@@ -3535,7 +3535,7 @@ def _format_history_message(m: dict) -> str:
 async def ceo_chat(body: CEOChatMessage):
     """Send a message to the CEO agent. The CEO reads its own .md file and all sub-agent .md files,
     then responds and may delegate tasks to sub-agents."""
-    from backend.tools.claude_cli import call_claude
+    from backend.tools.claude_cli import call_claude, MODEL_HAIKU
     import json as _json
 
     _evict_chat_sessions()
@@ -3788,15 +3788,14 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             f"User: {current_msg['content']}"
         )
 
-    # Route the CEO through Paperclip first so the same CEO that handles
-    # Timer runs and skill-based work also answers chat messages — single
-    # source of truth for CEO behavior. The Paperclip path can be slow
-    # (10-30s) but the CEO has its full identity from docs/agents/ceo.md,
-    # access to the aria-backend-api skill, and persistent workspace memory.
-    #
-    # If Paperclip is unreachable, the issue can't be created, the agent
-    # times out, or anything else fails — fall back to the local call_claude
-    # path so chat keeps working even when Paperclip is down.
+    # CEO chat reply uses local call_claude with Haiku — fast (~1-4s vs
+    # 10-30s through Paperclip). Paperclip routing was removed because the
+    # subprocess cold start + polling overhead added 8-25s for nothing:
+    # the chat reply itself doesn't need any of Paperclip's orchestration
+    # features. Sub-agent delegation (the ```delegate block parser below)
+    # still routes through Paperclip via dispatch_agent — that path is
+    # untouched, so Email Marketer / Content Writer / Social / Ads / Media
+    # all still run inside Paperclip with their full skill MD setup.
     _ceo_logger = logging.getLogger("aria.ceo_chat")
     # Token-budget visibility: log the rendered system prompt + conversation
     # sizes so we can see token-optimization wins (or regressions) live in
@@ -3811,34 +3810,18 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         len(crm_context),
         len(integration_notes),
     )
-    raw = ""
-    paperclip_used = False
     try:
-        from backend.orchestrator import paperclip_connected, run_agent_via_paperclip_sync
-        if paperclip_connected():
-            _ceo_logger.warning("[ceo-chat] routing through Paperclip CEO")
-            raw = await run_agent_via_paperclip_sync(
-                tenant_id=tenant_id or "global",
-                agent_name="ceo",
-                message=conversation,
-                poll_timeout_sec=60,
-            )
-            paperclip_used = True
-            _ceo_logger.warning("[ceo-chat] Paperclip CEO returned %d chars", len(raw))
-    except Exception as paperclip_exc:
-        _ceo_logger.warning(
-            "[ceo-chat] Paperclip path failed (%s), falling back to local call_claude",
-            paperclip_exc,
+        raw = await call_claude(
+            system_prompt,
+            conversation,
+            tenant_id=tenant_id or "global",
+            agent_id="ceo",
+            model=MODEL_HAIKU,
         )
-
-    if not raw:
-        try:
-            raw = await call_claude(system_prompt, conversation, tenant_id=tenant_id or "global", agent_id="ceo")
-            _ceo_logger.info("[ceo-chat] used local call_claude (paperclip_used=%s)", paperclip_used)
-        except Exception as exc:
-            import traceback
-            _ceo_logger.error(f"CEO chat error: {exc}\n{traceback.format_exc()}")
-            raw = f"I encountered an error: {str(exc)[:200]}. Please try again."
+    except Exception as exc:
+        import traceback
+        _ceo_logger.error(f"CEO chat error: {exc}\n{traceback.format_exc()}")
+        raw = f"I encountered an error: {str(exc)[:200]}. Please try again."
 
     # Check for forbidden requests
     from backend.ceo_actions import is_forbidden_request, REFUSAL_MESSAGE
