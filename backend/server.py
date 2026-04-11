@@ -2828,6 +2828,157 @@ def _safe_background(coro, *, label: str = "background"):
     return task
 
 
+def _markdown_to_basic_html(text: str) -> str:
+    """Quick markdown -> HTML converter for email body rendering.
+
+    This is the fallback used when the agent's reply doesn't include a
+    fenced ```html``` block. The frontend's email editor renders this in
+    its Source / Preview tab so users see the body content instead of
+    an empty editor. Not a full markdown parser -- just covers the
+    common cases that show up in agent output: bold, italic, headers,
+    bullet/numbered lists, paragraph breaks, and inline links.
+    """
+    import html as _html
+    import re
+
+    if not text:
+        return ""
+
+    # HTML-escape first so user content can never inject tags
+    out = _html.escape(text)
+
+    # Inline links: [text](url)  -- do BEFORE bold/italic so the brackets
+    # don't get eaten by the asterisk parser
+    out = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', out)
+
+    # Bold ** ** and italic * *
+    out = re.sub(r"\*\*([^*\n]+?)\*\*", r"<strong>\1</strong>", out)
+    out = re.sub(r"(?<!\*)\*([^*\n]+?)\*(?!\*)", r"<em>\1</em>", out)
+
+    # Headers (H1-H3)
+    out = re.sub(r"(?m)^###\s+(.+)$", r"<h3>\1</h3>", out)
+    out = re.sub(r"(?m)^##\s+(.+)$", r"<h2>\1</h2>", out)
+    out = re.sub(r"(?m)^#\s+(.+)$", r"<h1>\1</h1>", out)
+
+    # Horizontal rule
+    out = re.sub(r"(?m)^---+\s*$", "<hr/>", out)
+
+    # Lists -- group consecutive bullet/numbered lines into <ul>/<ol>
+    lines = out.split("\n")
+    rendered: list[str] = []
+    in_ul = False
+    in_ol = False
+    for line in lines:
+        bullet = re.match(r"^\s*[-*]\s+(.+)$", line)
+        ordered = re.match(r"^\s*\d+\.\s+(.+)$", line)
+        if bullet:
+            if not in_ul:
+                if in_ol:
+                    rendered.append("</ol>")
+                    in_ol = False
+                rendered.append("<ul>")
+                in_ul = True
+            rendered.append(f"<li>{bullet.group(1)}</li>")
+        elif ordered:
+            if not in_ol:
+                if in_ul:
+                    rendered.append("</ul>")
+                    in_ul = False
+                rendered.append("<ol>")
+                in_ol = True
+            rendered.append(f"<li>{ordered.group(1)}</li>")
+        else:
+            if in_ul:
+                rendered.append("</ul>")
+                in_ul = False
+            if in_ol:
+                rendered.append("</ol>")
+                in_ol = False
+            rendered.append(line)
+    if in_ul:
+        rendered.append("</ul>")
+    if in_ol:
+        rendered.append("</ol>")
+    out = "\n".join(rendered)
+
+    # Paragraph wrapping: split on blank lines, wrap text-only blocks in <p>
+    paragraphs = re.split(r"\n\s*\n", out)
+    wrapped: list[str] = []
+    for p in paragraphs:
+        p = p.strip()
+        if not p:
+            continue
+        # If the block already starts with a tag, don't double-wrap
+        if re.match(r"^\s*<(h\d|ul|ol|li|hr|p|div|table|blockquote)", p):
+            wrapped.append(p)
+        else:
+            # Convert single newlines inside paragraphs to <br/>
+            wrapped.append("<p>" + p.replace("\n", "<br/>") + "</p>")
+    body_html = "\n".join(wrapped)
+
+    return f'<div style="font-family: -apple-system, system-ui, sans-serif; line-height: 1.5; color: #1f2937;">{body_html}</div>'
+
+
+def _enrich_task_desc_with_crm(task_desc: str, tenant_id: str) -> str:
+    """If task_desc mentions a contact name from the CRM, append their email
+    so the delegated agent can use it as the recipient. Otherwise return
+    the task description unchanged.
+
+    The CEO's CRM-context heuristic only triggers on "send email to <name>"
+    style phrasing -- "create marketing email for Hanz" doesn't include a
+    CRM noun, so the system prompt doesn't get the CRM dump and the CEO
+    has no email to pass through to the email_marketer. This helper
+    closes that gap by doing a cheap CRM lookup right before dispatch
+    and inlining matched contacts into the task description.
+    """
+    if not task_desc or not tenant_id:
+        return task_desc
+    try:
+        sb = _get_supabase()
+        contacts = (
+            sb.table("crm_contacts")
+            .select("name,email,company_id,status")
+            .eq("tenant_id", tenant_id)
+            .order("created_at", desc=True)
+            .limit(100)
+            .execute()
+        )
+        if not contacts.data:
+            return task_desc
+
+        task_lower = task_desc.lower()
+        matches: list[dict] = []
+        for c in contacts.data:
+            name = (c.get("name") or "").strip()
+            if not name:
+                continue
+            # Match on full name OR first token (handle "Hanz" vs "Hanz Smith")
+            tokens = [name.lower()] + [t.lower() for t in name.split() if len(t) >= 3]
+            if any(t in task_lower for t in tokens):
+                matches.append(c)
+                if len(matches) >= 3:  # cap to avoid flooding the prompt
+                    break
+
+        if not matches:
+            return task_desc
+
+        # Append matched contacts to the task description so the agent
+        # has the email address (and any status info) when generating.
+        contact_lines = []
+        for c in matches:
+            email = c.get("email") or "(no email)"
+            status = c.get("status") or ""
+            contact_lines.append(f"  - {c['name']} <{email}>" + (f" [{status}]" if status else ""))
+        return (
+            f"{task_desc}\n\n"
+            f"CRM contacts mentioned in this task (use as recipient):\n"
+            + "\n".join(contact_lines)
+        )
+    except Exception as e:
+        logging.getLogger("aria.crm").debug("CRM enrichment failed: %s", e)
+        return task_desc
+
+
 def _parse_email_draft_from_text(text: str, fallback_to: str = "") -> dict | None:
     """Extract structured email fields from a free-form agent reply.
 
@@ -2943,8 +3094,15 @@ def _parse_email_draft_from_text(text: str, fallback_to: str = "") -> dict | Non
 
     # Bail if nothing useful was extracted -- the watcher's plain content
     # field is a better fallback than an empty email_draft.
-    if not (subject or body_html):
+    if not (subject or body_html or body):
         return None
+
+    # If the agent didn't emit a fenced ```html``` block, generate basic
+    # HTML from the plain markdown body so the inbox UI's email editor
+    # has something to render in its Source/Preview tab. Otherwise the
+    # editor shows an empty <body> and looks broken.
+    if not body_html and body:
+        body_html = _markdown_to_basic_html(body)
 
     return {
         "subject": (subject or "Untitled email")[:300],
@@ -4766,6 +4924,16 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     for d in delegations:
         agent_id = d["agent"]
         task_desc = d.get("task", "")
+
+        # Enrich the task description with CRM contact info before
+        # dispatch. The CEO's CRM-context heuristic doesn't fire on
+        # phrases like "create marketing email for Hanz" (no CRM noun),
+        # so the CEO has no email address to pass through to the
+        # email_marketer. This helper looks up the CRM directly and
+        # appends matched contacts (with emails) to the task_desc, so
+        # the agent can use the right recipient instead of a placeholder.
+        if tenant_id and agent_id in ("email_marketer", "social_manager", "ad_strategist", "content_writer"):
+            task_desc = _enrich_task_desc_with_crm(task_desc, tenant_id)
 
         # Save to Supabase tasks table — always start as in_progress
         if tenant_id:
