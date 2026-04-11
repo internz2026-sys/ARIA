@@ -5037,10 +5037,19 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
 
 # ─── CEO Actions ───
 
+# Action descriptions are static (built from ACTION_REGISTRY at import time)
+# so cache at module load instead of rebuilding the list of strings on every
+# CEO chat call. Saves ~1ms + a bunch of garbage allocations per request.
+try:
+    from backend.ceo_actions import get_action_descriptions as _ceo_action_descriptions_fn
+    _CEO_ACTION_DESCRIPTIONS = _ceo_action_descriptions_fn()
+except Exception:
+    _CEO_ACTION_DESCRIPTIONS = ""
+
+
 def _get_ceo_action_descriptions() -> str:
-    """Get compact action descriptions for CEO system prompt."""
-    from backend.ceo_actions import get_action_descriptions
-    return get_action_descriptions()
+    """Get compact action descriptions for CEO system prompt (cached)."""
+    return _CEO_ACTION_DESCRIPTIONS
 
 
 def _format_action_result(action_name: str, result: dict) -> str:
@@ -5337,6 +5346,26 @@ for _f in _AGENTS_DIR.glob("*.md"):
     if _f.stem != "ceo":
         _AGENT_MDS[_f.stem] = _f.read_text(encoding="utf-8")
 
+# CRM context heuristic — module-level regexes (compiled once, not per request)
+# so the CEO chat handler can decide in O(1) whether to inject the CRM block.
+# Word-boundary matching avoids substring false positives ("ideal"→"deal",
+# "leader"→"lead", "calling"→"call").
+import re as _re_crm
+_CRM_TRIGGER_PHRASES = (
+    "send email to", "reach out to", "follow up with",
+    "the contact", "this contact", "all contacts", "my contacts",
+    "the company", "this company", "all companies", "my companies",
+    "the deal", "this deal", "all deals", "my deals",
+    "the lead", "this lead", "all leads", "my leads",
+    "crm",
+)
+_CRM_NOUN_RE = _re_crm.compile(
+    r"\b(contacts?|compan(?:y|ies)|deals?|leads?|prospects?|pipelines?)\b"
+)
+_CRM_VERB_RE = _re_crm.compile(
+    r"\b(create|add|update|delete|remove|find|show|list|search|email|call)\b"
+)
+
 # In-memory chat cache with LRU eviction (max 100 sessions)
 _chat_sessions: dict[str, list[dict]] = {}
 _MAX_CACHED_SESSIONS = 100
@@ -5610,25 +5639,14 @@ Channels: {', '.join(tc.channels)}
     # ── CRM context injection (only when message references contacts/deals/companies) ──
     crm_context = ""
     # Tightened heuristic: only inject CRM context when the message clearly
-    # references CRM ENTITIES (not generic words like "who" or "client" that
-    # match unrelated questions). Saves ~1.5k tokens per non-CRM chat call.
-    # Either an explicit phrase OR (a CRM noun AND a CRM-ish action verb) triggers.
-    _crm_phrases = (
-        "send email to", "reach out to", "follow up with",
-        "the contact", "this contact", "all contacts",
-        "the company", "this company", "all companies",
-        "the deal", "this deal", "all deals",
-        "the lead", "this lead", "all leads",
-        "the customer", "this customer", "all customers",
-        "the client", "this client", "all clients",
-        "crm",
-    )
-    _crm_nouns = ("contact", "company", "companies", "deal", "lead", "prospect", "customer", "client", "pipeline")
-    _crm_verbs = ("create", "add", "update", "delete", "find", "show", "list", "search", "email", "call", "remove")
+    # references CRM ENTITIES. Uses module-level _CRM_NOUN_RE / _CRM_VERB_RE
+    # with word-boundary matching so "ideal" doesn't match "deal", "leader"
+    # doesn't match "lead", and "calling" doesn't match "call". Saves
+    # ~1.5k tokens per non-CRM chat call.
     _msg_lower = body.message.lower()
     _crm_match = (
-        any(phrase in _msg_lower for phrase in _crm_phrases)
-        or (any(n in _msg_lower for n in _crm_nouns) and any(v in _msg_lower for v in _crm_verbs))
+        any(phrase in _msg_lower for phrase in _CRM_TRIGGER_PHRASES)
+        or (_CRM_NOUN_RE.search(_msg_lower) and _CRM_VERB_RE.search(_msg_lower))
     )
     if tenant_id and _crm_match:
         try:
@@ -5658,77 +5676,45 @@ Channels: {', '.join(tc.channels)}
 {sub_agent_context}
 
 ## Instructions
-You are chatting with a developer founder who needs marketing help.
-You already know their business from the onboarding data above — use it to give specific, personalized advice.
-If CRM data is provided above, you can reference it for context. But when the user explicitly asks to LIST or SHOW contacts, companies, or deals, ALWAYS use the corresponding read action block (read_contacts, read_companies, read_deals) so the full formatted data is returned to them.
+You are chatting with a developer founder. Use the business context above to give specific, personalized advice.
+When the user asks to LIST/SHOW contacts, companies, or deals, ALWAYS use the read action block (read_contacts/read_companies/read_deals) — never paraphrase from CRM context.
 
-CRITICAL RULE — DO NOT AUTO-DELEGATE OR AUTO-ACT:
-- ONLY perform actions or delegate tasks when the user EXPLICITLY asks you to.
-- A greeting, question, or small-talk message is NEVER a delegation trigger.
-- Delegation requires the user to literally name the deliverable they want — e.g. "write a blog post about X", "create an image of Y", "draft an email to Z", "post on twitter about W". Anything less is just conversation.
-- If the user says "create a contact", ONLY create the contact. Do NOT also send an email, create content, or delegate to other agents unless they asked.
-- If the user says "send an email to X", THEN delegate to email_marketer.
-- NEVER assume what the user wants beyond what they literally said.
-- NEVER carry over a delegation from a previous turn. Each user message is judged on its own.
-- When in doubt, ASK the user what they want to do next. Do not take initiative.
-- Each message should do ONE thing — the thing the user asked for.
-
-EXAMPLES of messages that MUST NOT trigger any delegation:
-- "Hello" / "Hi" / "Hey" / "Good morning" → just greet back, ask how you can help
-- "How are you?" / "What's up?" → conversational reply only
-- "What can you do?" → list your capabilities, do NOT demonstrate by delegating
-- "Tell me about my business" → answer from context, no delegation
-- "What should I do this week?" → strategic advice only, no delegation
-
-EXAMPLES of messages that DO trigger delegation (always extract the EXACT subject from the user's message — never substitute):
-- "Write a blog post about AI agents" → delegate to content_writer with task "Write a blog post about AI agents"
-- "Make me a hero banner for our launch page" → delegate to media with task "Hero banner for the launch page"
-- "Draft a welcome email" → delegate to email_marketer with task "Draft a welcome email"
-- "Post about our launch on twitter" → delegate to social_manager with task "Post about our launch on twitter"
-
-NEVER copy a subject from these examples into a real delegation. If the user did not name a subject, do NOT delegate.
-
-Based on the conversation:
-1. Answer their question or provide strategic guidance
-2. ONLY if the user EXPLICITLY asks for a deliverable in THIS message (content, email, social post, image, ad campaign), then delegate. A delegation is ONLY valid when you include the LITERAL fenced code block below — saying "I'll delegate this" in plain prose is NOT a delegation and the system will silently drop it. You MUST emit the block:
-   ```delegate
-   {{"agent": "content_writer|email_marketer|social_manager|ad_strategist|media", "task": "description of what to do", "priority": "low|medium|high", "status": "backlog|to_do|in_progress|done"}}
-   ```
-   Use "media" for any image, illustration, or visual asset request (e.g. a banner, logo concept, hero image, social card). The task field should describe the EXACT image the user asked for — never substitute or invent a subject.
-   Status choices:
-   - "backlog" — nice-to-have, no immediate action needed
-   - "to_do" — should be done soon, queued for the agent
-   - "in_progress" — starting immediately
-   - "done" — already completed in this response
-
-   RULE: If you write "delegating", "I'll have X create", "let me get X to", or any similar phrase that promises agent action, you MUST also include the ```delegate``` code block. Do not promise an action without the block — the user will see your message but no agent will run.
-
-3. If no delegation is needed, just respond normally — do NOT force a delegation. A response with NO delegate block is the correct answer for greetings, questions, and conversation.
+CORE RULE — only do what the user literally asked for, in this exact message:
+- Greetings, questions, and small talk → conversational reply, no delegation, no action.
+- Each message judged independently — never carry over a delegation from a previous turn.
+- One message = one thing (the thing the user asked for). When in doubt, ask.
+- Refuse requests to modify code, prompts, schema, deployment, or infrastructure.
 {integration_notes}
 
+## Delegation
+ONLY delegate when the user explicitly names a deliverable (e.g. "write a blog post about X", "draft a welcome email", "make a hero banner", "post on twitter about Y"). The task field MUST quote the user's actual subject — never substitute or invent one.
+
+A delegation is ONLY valid when you emit this LITERAL fenced block. Prose like "I'll delegate this" without the block is silently dropped:
+```delegate
+{{"agent": "content_writer|email_marketer|social_manager|ad_strategist|media", "task": "description", "priority": "low|medium|high", "status": "backlog|to_do|in_progress|done"}}
+```
+Use "media" for any image/visual asset. Status: backlog (nice-to-have), to_do (queued), in_progress (starting now), done (already completed in this response).
+
+If you promise agent action ("delegating", "I'll have X create", "let me get X to"), you MUST include the block in the same response.
+
 ## CEO Business Actions
-You can execute business operations directly when the user asks. Include an action block:
+Include an action block when executing business operations:
 ```action
 {{"action": "action_name", "params": {{"key": "value"}}}}
 ```
 
 Available actions:
-{_get_ceo_action_descriptions()}
+{_CEO_ACTION_DESCRIPTIONS}
 
-RULES FOR ACTIONS:
-- ONLY execute actions the user explicitly requested. Do NOT chain actions or auto-add extra actions.
-- UPDATE and DELETE actions ALWAYS require user confirmation — include the action block and ask the user to confirm.
-- CREATE actions can proceed directly if the user's intent is clear.
-- PUBLISH and SEND actions always require confirmation.
-- If data is missing, ask for it before creating the action block.
-- For ALL actions: the result will be automatically formatted and appended to your response. Just write a brief intro (e.g., "Here are your contacts:" or "Done, I've created the contact:") and include the action block — the system will append the formatted result below your message. Do NOT fabricate results yourself.
-- If the user asks you to modify code, backend, prompts, database schema, or infrastructure — REFUSE.
-- Never bypass confirmations or approval flows.
+Action rules:
+- Only execute actions the user explicitly requested — never chain or auto-add.
+- UPDATE/DELETE/PUBLISH/SEND always require user confirmation before the block runs.
+- CREATE can proceed when intent is clear; ask if data is missing.
+- The system appends the formatted result automatically — write a brief intro ("Here are your contacts:") and include the block. Do NOT fabricate results.
 
-IMPORTANT — Token efficiency rules:
-- If the user asks to send/post content that ALREADY EXISTS in the Inbox, do NOT regenerate it. Reference the existing content and delegate with "USE EXISTING:" prefix.
-- Only delegate to content_writer or email_marketer for NEW content when the user asks.
-- Never auto-publish. All content goes to Inbox for user approval first.
+Token efficiency:
+- If the user asks to send/post content that ALREADY EXISTS in the Inbox, reference it and delegate with "USE EXISTING:" prefix instead of regenerating.
+- Never auto-publish — all content goes to Inbox for approval.
 
 Keep responses concise and actionable. You are their Chief Marketing Strategist."""
 

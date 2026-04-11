@@ -1,10 +1,14 @@
 """Helpers for parsing Paperclip /comments responses.
 
-Used by orchestrator.run_agent_via_paperclip_sync() to find the agent's
-reply among the comments on an issue. Originally also shared with the
-inbox-importer poller, but that was deleted in favor of Path A (agent
-uses aria-backend-api skill to write inbox items directly), so only
-the chat-side helpers remain.
+Used by:
+  - paperclip_office_sync.poll_completed_issues() — Path B inbox importer
+    that scrapes finished agent replies from issue comments and writes them
+    to the ARIA inbox as a safety net for when the agent's skill curl fails.
+  - server.py chat-sync routes that read agent comments out of Paperclip.
+
+`pick_agent_output` filters out ARIA's own framing wrappers (any comment
+that starts with `[tenant_id=`) so we never echo the framing back as the
+agent's reply.
 """
 from __future__ import annotations
 
