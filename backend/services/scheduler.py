@@ -322,6 +322,33 @@ async def _execute_send_email(tenant_id: str, payload: dict) -> dict:
         except Exception:
             pass
 
+    # Write a persistent notification on successful send so the user
+    # gets a bell badge + history record even if their browser was
+    # closed when the executor loop fired. Previously this was
+    # only fired by _execute_follow_up / _execute_reminder, which
+    # meant scheduled emails sent silently with only an ephemeral
+    # Socket.IO toast (no record after-the-fact). The approval gate
+    # in execute_task is unchanged -- this fires AFTER successful
+    # send, so the user still has to approve manually before any
+    # email actually goes out.
+    if not result.get("error"):
+        try:
+            sb = get_db()
+            sb.table("notifications").insert({
+                "tenant_id": tenant_id,
+                "title": f"Email sent: {subject[:80]}",
+                "body": f"Delivered to {to}",
+                "category": "email",
+                "href": "/inbox",
+            }).execute()
+        except Exception as e:
+            # Don't let notification write failure mask a successful send
+            import logging
+            logging.getLogger("aria.scheduler").warning(
+                "Failed to write notification for sent email %s: %s",
+                payload.get("inbox_item_id"), e,
+            )
+
     return result
 
 
@@ -373,6 +400,25 @@ async def _execute_publish_post(tenant_id: str, payload: dict) -> dict:
             sb.table("inbox_items").update({"status": "sent"}).eq("id", payload["inbox_item_id"]).execute()
         except Exception:
             pass
+
+    # Persistent notification on successful publish (mirror of
+    # _execute_send_email's notification write so social posts also
+    # get a bell badge + history entry).
+    if not results.get("error"):
+        try:
+            sb = get_db()
+            sb.table("notifications").insert({
+                "tenant_id": tenant_id,
+                "title": f"{platform.title()} post published",
+                "body": text[:200],
+                "category": "social",
+                "href": "/inbox",
+            }).execute()
+        except Exception as e:
+            import logging
+            logging.getLogger("aria.scheduler").warning(
+                "Failed to write notification for published post: %s", e,
+            )
 
     return results
 

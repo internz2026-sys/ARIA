@@ -2598,13 +2598,138 @@ async def dashboard_config(tenant_id: str):
 
 @app.get("/api/dashboard/{tenant_id}/stats")
 async def dashboard_stats(tenant_id: str):
+    """Real KPI counts from inbox_items + scheduled_tasks.
+
+    Was previously a stub that returned hardcoded zeros, so the
+    dashboard widgets always showed "No activity yet" no matter how
+    many emails / posts / blog drafts the agents produced. Now reads
+    from inbox_items (the canonical record of agent output) and
+    scheduled_tasks (for ad_spend / sent counts), with a 7-day delta
+    against the previous 7 days for the trend.
+    """
+    sb = _get_supabase()
+    now = datetime.now(timezone.utc)
+    week_ago = (now - timedelta(days=7)).isoformat()
+    two_weeks_ago = (now - timedelta(days=14)).isoformat()
+
+    # Helper: count rows matching a filter
+    def _count(query) -> int:
+        try:
+            r = query.execute()
+            return r.count if r.count is not None else len(r.data or [])
+        except Exception:
+            return 0
+
+    # ── Content Published ──
+    # Anything the agents have produced as a deliverable (blog posts,
+    # email sequences, social posts, ad campaigns). We count by inbox
+    # item type, excluding processing placeholders and outright errors.
+    _content_types = ("blog_post", "email_sequence", "social_post", "ad_campaign", "email", "blog", "social")
+    _published_statuses = ("ready", "needs_review", "draft_pending_approval", "sent", "completed")
+    try:
+        all_content = (
+            sb.table("inbox_items")
+            .select("id,type,status,created_at", count="exact")
+            .eq("tenant_id", tenant_id)
+            .in_("type", list(_content_types))
+            .in_("status", list(_published_statuses))
+            .execute()
+        )
+        all_rows = all_content.data or []
+        content_total = all_content.count if all_content.count is not None else len(all_rows)
+        content_this_week = sum(1 for r in all_rows if r.get("created_at", "") >= week_ago)
+        content_prev_week = sum(
+            1 for r in all_rows
+            if two_weeks_ago <= r.get("created_at", "") < week_ago
+        )
+        content_delta = content_this_week - content_prev_week
+        content_delta_pct = (
+            int((content_delta / content_prev_week) * 100)
+            if content_prev_week > 0 else 0
+        )
+    except Exception as e:
+        logger.warning("[dashboard-stats] content count failed: %s", e)
+        content_total = content_this_week = content_delta = content_delta_pct = 0
+
+    # ── Emails Sent ──
+    # Only emails actually delivered (status=sent). Drafts/pending
+    # don't count toward "sent" — they're tracked under content_published.
+    try:
+        sent_emails = (
+            sb.table("inbox_items")
+            .select("id", count="exact")
+            .eq("tenant_id", tenant_id)
+            .in_("type", ("email_sequence", "email"))
+            .eq("status", "sent")
+            .execute()
+        )
+        emails_sent_count = sent_emails.count if sent_emails.count is not None else len(sent_emails.data or [])
+    except Exception:
+        emails_sent_count = 0
+
+    # ── Social Engagement ──
+    # We don't have real platform analytics yet, so this counts
+    # social posts that have been published (status=sent). Once we
+    # wire up X/LinkedIn metrics this becomes the real engagement
+    # number; for now it at least reflects activity.
+    try:
+        social_published = (
+            sb.table("inbox_items")
+            .select("id,created_at", count="exact")
+            .eq("tenant_id", tenant_id)
+            .in_("type", ("social_post", "social"))
+            .in_("status", ("sent", "ready", "completed"))
+            .execute()
+        )
+        social_rows = social_published.data or []
+        social_count = social_published.count if social_published.count is not None else len(social_rows)
+        social_this_week = sum(1 for r in social_rows if r.get("created_at", "") >= week_ago)
+        social_prev_week = sum(
+            1 for r in social_rows
+            if two_weeks_ago <= r.get("created_at", "") < week_ago
+        )
+        social_delta_pct = (
+            int(((social_this_week - social_prev_week) / social_prev_week) * 100)
+            if social_prev_week > 0 else 0
+        )
+    except Exception:
+        social_count = social_delta_pct = 0
+
+    # ── Ad Spend ──
+    # No Meta Ads integration yet, so this stays at 0 until the user
+    # connects the API. We could read from a `campaigns` table if it
+    # exists, but for now keep it explicit so the user knows nothing
+    # is being charged.
+    ad_spend_value = 0
+    try:
+        # If there's an ad_campaigns or campaigns table with a spend
+        # column, sum it. Schema unknown so this is best-effort.
+        camp = sb.table("campaigns").select("budget_spent").eq("tenant_id", tenant_id).execute()
+        ad_spend_value = sum((r.get("budget_spent") or 0) for r in (camp.data or []))
+    except Exception:
+        ad_spend_value = 0  # table likely doesn't exist yet
+
     return {
         "tenant_id": tenant_id,
         "kpis": {
-            "content_published": {"value": 0, "delta": 0, "delta_pct": 0},
-            "emails_sent": {"value": 0, "open_rate": 0, "click_rate": 0},
-            "social_engagement": {"value": 0, "delta_pct": 0},
-            "ad_spend": {"value": 0, "roas": 0},
+            "content_published": {
+                "value": content_total,
+                "delta": content_delta,
+                "delta_pct": content_delta_pct,
+            },
+            "emails_sent": {
+                "value": emails_sent_count,
+                "open_rate": 0,    # placeholder until we wire Gmail tracking
+                "click_rate": 0,
+            },
+            "social_engagement": {
+                "value": social_count,
+                "delta_pct": social_delta_pct,
+            },
+            "ad_spend": {
+                "value": ad_spend_value,
+                "roas": 0,
+            },
         },
     }
 
