@@ -80,7 +80,11 @@ def _add_processed(issue_id: str) -> None:
             _processed_issues.update(keep)
         except Exception:
             _processed_issues.clear()
-    _add_processed(issue_id)
+    # NOTE: must call .add() on the set directly here -- a previous
+    # global rename of `_processed_issues.add` -> `_add_processed` caught
+    # this line too and turned it into infinite recursion. Easy mistake
+    # to repeat. Don't.
+    _processed_issues.add(issue_id)
 
 
 # Statuses Paperclip uses to mean "the agent finished its work"
