@@ -273,65 +273,44 @@ async def _dispatch_via_paperclip(
     identifier = issue.get("identifier", issue_id)
     logger.info(f"Paperclip issue created for {agent_name}: {identifier}")
 
-    # Trigger heartbeat — try the agent's own API key first, then fall back
-    # to the master session cookie / token if Paperclip rejects with 401/403.
-    # The per-agent key is the cleanest path but only works if the user
-    # actually pasted a valid agent key into .env.
-    heartbeat_payload = {
-        "metadata": {
-            "tenant_id": tenant_id,
-            "agent_name": agent_name,
-            "issue_id": issue_id,
-            "triggered_at": datetime.now(timezone.utc).isoformat(),
-        },
-    }
-    agent_key = AGENT_API_KEYS.get(agent_name, "")
-    resp = await _paperclip_api(
-        "POST",
-        f"/api/agents/{paperclip_id}/heartbeat/invoke",
-        agent_key=agent_key,
-        json=heartbeat_payload,
-    )
-    if resp is not None and resp.status_code in (401, 403):
-        logger.warning(
-            f"Heartbeat for {agent_name} rejected with {resp.status_code} using agent key — "
-            f"retrying with master session/token"
-        )
-        # Retry with no agent key — _paperclip_api will fall through to
-        # PAPERCLIP_API_TOKEN or PAPERCLIP_SESSION_COOKIE.
-        resp = await _paperclip_api(
-            "POST",
-            f"/api/agents/{paperclip_id}/heartbeat/invoke",
-            agent_key="",
-            json=heartbeat_payload,
-        )
-
-    heartbeat_ok = bool(resp and resp.status_code in (200, 201, 202))
-    if heartbeat_ok:
-        logger.warning(f"[paperclip-heartbeat] OK {agent_name} (issue {identifier})")
+    # Wake the agent by posting a comment on the issue. This is the
+    # SAME mechanism the CEO chat path (run_agent_via_paperclip_sync)
+    # uses, and it's the only one that actually works for claude_local
+    # agents -- the comment fires Paperclip's `issue.comment` event
+    # which triggers the Automation run via wakeOnDemand=true (the
+    # claude_local default).
+    #
+    # We used to call /heartbeat/invoke here, but heartbeat doesn't
+    # actually trigger an Automation run for claude_local agents
+    # (it just succeeds at the HTTP level), so issues stayed in
+    # `backlog` forever and the watcher polled in vain. The memory
+    # docs warn explicitly: "Posting a comment on the issue auto-wakes
+    # the CEO via Paperclip's wakeOnDemand mechanism. Do NOT also
+    # call /heartbeat/invoke -- that creates a second On-demand run
+    # racing the Automation one."
+    #
+    # The body uses the [wake] prefix so pick_agent_output filters it
+    # out via _ARIA_FRAMING_PREFIXES (otherwise the watcher would
+    # potentially mistake the wake comment for the agent's reply).
+    wake_body = f"[wake] {task_desc[:1000]}"
+    wake_resp = _urllib_request("POST", f"/api/issues/{issue_id}/comments", data={
+        "body": wake_body,
+        "content": wake_body,
+    })
+    wake_ok = wake_resp is not None
+    if wake_ok:
+        logger.warning(f"[paperclip-wake] comment posted to wake {agent_name} (issue {identifier})")
     else:
-        status = resp.status_code if resp else "no response"
-        body = resp.text[:300] if resp else ""
         logger.error(
-            f"[paperclip-heartbeat] FAILED {agent_name} ({status}) body={body} — "
-            f"posting wake comment as fallback"
+            f"[paperclip-wake] FAILED to post wake comment for {agent_name} (issue {identifier}) -- "
+            f"agent will only run when next Timer fires"
         )
-        # Heartbeat failed -- post a comment on the issue as a fallback
-        # wake mechanism. wakeOnDemand fires on issue.comment events too,
-        # so this kicks the agent without needing the heartbeat endpoint.
-        try:
-            _urllib_request("POST", f"/api/issues/{issue_id}/comments", data={
-                "body": f"[wake] {task_desc[:500]}",
-                "content": f"[wake] {task_desc[:500]}",
-            })
-        except Exception as e:
-            logger.warning(f"[paperclip-dispatch] fallback wake comment failed: {e}")
 
     await log_agent_action(tenant_id, agent_name, "paperclip_dispatch", {
         "status": "dispatched",
         "paperclip_issue": identifier,
         "paperclip_issue_id": issue_id,
-        "heartbeat_ok": heartbeat_ok,
+        "wake_ok": wake_ok,
         "task": task_desc[:200],
     })
 
@@ -339,7 +318,7 @@ async def _dispatch_via_paperclip(
         "status": "dispatched_to_paperclip",
         "paperclip_issue": identifier,
         "paperclip_issue_id": issue_id,
-        "heartbeat_ok": heartbeat_ok,
+        "wake_ok": wake_ok,
         "agent": agent_name,
         "message": f"Task assigned to {agent_name} via Paperclip ({identifier}). Results will appear in your inbox.",
     }
