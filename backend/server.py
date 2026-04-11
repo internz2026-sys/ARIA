@@ -3072,6 +3072,266 @@ async def _run_agent_to_inbox(
                 pass
 
 
+async def _dispatch_paperclip_and_watch_to_inbox(
+    tenant_id: str,
+    agent_id: str,
+    task_desc: str,
+    session_id: str | None = None,
+    task_id: str | None = None,
+    priority: str = "medium",
+    timeout_sec: int = 600,
+):
+    """Dispatch an agent via Paperclip and actively watch the issue until it's done.
+
+    The 5-second global poll loop in paperclip_office_sync was the safety
+    net for inbox arrival, but it had two problems for active delegations:
+      1. Latency — up to 5s after the agent finishes
+      2. Sometimes silently misses runs (issue status not transitioning,
+         output not picked up by pick_agent_output, etc.)
+
+    This function fires immediately when the CEO emits a delegate block:
+      1. Creates a placeholder inbox row right away so the user sees activity
+      2. Calls dispatch_agent to create the Paperclip issue
+      3. Polls THIS specific issue with adaptive intervals (1s -> 4s)
+      4. As soon as an agent reply comment shows up, updates the placeholder
+         with the real content -> instant arrival in the user's inbox
+      5. Marks the issue in the global poller's _processed_issues set so
+         the safety-net poller doesn't double-import the same row
+
+    The global poller still runs as a backstop for direct Paperclip Timer
+    runs, edge cases where this watcher times out, and any race we haven't
+    thought of.
+    """
+    import asyncio as _aio_inner
+    from backend.orchestrator import dispatch_agent, _urllib_request
+    from backend.services.paperclip_chat import normalize_comments, pick_agent_output
+
+    _logger = logging.getLogger("aria.paperclip_watch")
+
+    # Phase 1: placeholder inbox row so the UI shows activity immediately.
+    # Mirrors the same UX pattern as _run_agent_to_inbox for the local path.
+    placeholder_content_type = _infer_content_type(agent_id, "")
+    placeholder = _save_inbox_item(
+        tenant_id=tenant_id,
+        agent=agent_id,
+        title=f"{agent_id.replace('_', ' ').title()} is working on: {task_desc[:80]}",
+        content="Agent is processing this task...",
+        content_type=placeholder_content_type,
+        priority=priority,
+        task_id=task_id,
+        chat_session_id=session_id,
+        status="processing",
+    )
+    placeholder_id = placeholder["id"] if placeholder else None
+    if placeholder and tenant_id:
+        try:
+            await sio.emit("inbox_new_item", {
+                "id": placeholder_id,
+                "agent": agent_id,
+                "type": placeholder_content_type,
+                "title": placeholder.get("title", ""),
+                "status": "processing",
+                "priority": priority,
+                "created_at": placeholder.get("created_at", ""),
+            }, room=tenant_id)
+        except Exception:
+            pass
+
+    # Phase 2: actually create the Paperclip issue (this is where the agent
+    # gets woken up). dispatch_agent returns the paperclip_issue_id we need
+    # for the watch loop.
+    try:
+        result = await dispatch_agent(tenant_id, agent_id, context={
+            "task": task_desc,
+            "priority": priority,
+            "session_id": session_id,
+        })
+    except Exception as e:
+        _logger.error("[paperclip-watch] dispatch_agent failed for %s: %s", agent_id, e)
+        result = {}
+
+    paperclip_issue_id = result.get("paperclip_issue_id") if isinstance(result, dict) else None
+    if not paperclip_issue_id:
+        _logger.error("[paperclip-watch] no paperclip_issue_id from dispatch — falling back to placeholder error")
+        if placeholder_id:
+            try:
+                sb = _get_supabase()
+                sb.table("inbox_items").update({
+                    "title": f"Failed to dispatch: {task_desc[:80]}",
+                    "content": f"Could not assign this task to {agent_id} via Paperclip. Check Paperclip is running and the agent is configured.",
+                    "status": "needs_review",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", placeholder_id).execute()
+            except Exception:
+                pass
+        return
+
+    _logger.warning(
+        "[paperclip-watch] watching issue %s for %s output (timeout %ds)",
+        paperclip_issue_id, agent_id, timeout_sec,
+    )
+
+    # Phase 3: adaptive polling on this specific issue. Times match the
+    # CEO chat sync poller — fast at first, then back off.
+    intervals = (1.0, 1.0, 1.5, 2.0, 2.0, 3.0, 4.0)
+    interval_idx = 0
+    start = _aio_inner.get_event_loop().time()
+    output: str | None = None
+    issue_status = ""
+
+    while True:
+        elapsed = _aio_inner.get_event_loop().time() - start
+        if elapsed >= timeout_sec:
+            _logger.warning(
+                "[paperclip-watch] timeout after %.1fs waiting for %s (issue %s)",
+                elapsed, agent_id, paperclip_issue_id,
+            )
+            break
+
+        delay = intervals[min(interval_idx, len(intervals) - 1)]
+        await _aio_inner.sleep(delay)
+        interval_idx += 1
+
+        # Cheap check: just fetch comments. Status check is optional —
+        # if there's a real agent reply, that's enough.
+        raw_comments = _urllib_request("GET", f"/api/issues/{paperclip_issue_id}/comments")
+        comments = normalize_comments(raw_comments)
+        candidate = pick_agent_output(comments, exclude_text=task_desc)
+
+        # Need a substantive reply, not a one-liner status update
+        if candidate and len(candidate) >= 50:
+            output = candidate
+            _logger.warning(
+                "[paperclip-watch] %s replied for issue %s (%d chars after %.1fs)",
+                agent_id, paperclip_issue_id, len(output), elapsed,
+            )
+            break
+
+    # Phase 4: dedupe — tell the global poller to skip this issue so it
+    # doesn't import a second copy on its next 5s tick.
+    try:
+        from backend.paperclip_office_sync import _processed_issues
+        _processed_issues.add(paperclip_issue_id)
+    except Exception:
+        pass
+
+    # Phase 5: write the result to inbox. Either we have output (success)
+    # or we timed out (failure mode — leave a clear placeholder).
+    if not output:
+        if placeholder_id:
+            try:
+                sb = _get_supabase()
+                sb.table("inbox_items").update({
+                    "title": f"Timeout: {task_desc[:80]}",
+                    "content": (
+                        f"The {agent_id} agent did not respond within "
+                        f"{timeout_sec // 60} minutes. Check Paperclip for "
+                        f"the run status — the global poller will catch it "
+                        f"if the agent eventually finishes."
+                    ),
+                    "status": "needs_review",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", placeholder_id).execute()
+            except Exception:
+                pass
+        # Don't add to _processed_issues — let the global poller catch
+        # the late finish if it eventually arrives.
+        try:
+            from backend.paperclip_office_sync import _processed_issues as _pi
+            _pi.discard(paperclip_issue_id)
+        except Exception:
+            pass
+        return
+
+    # Success path: write real content to the placeholder
+    content_type = _infer_content_type(agent_id, output)
+    title = _extract_title(agent_id, task_desc, output)
+    inbox_status = "draft_pending_approval" if content_type == "email_sequence" else "needs_review"
+
+    if placeholder_id:
+        try:
+            sb = _get_supabase()
+            sb.table("inbox_items").update({
+                "title": title[:200],
+                "content": output,
+                "type": content_type,
+                "status": inbox_status,
+                "paperclip_issue_id": paperclip_issue_id,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", placeholder_id).execute()
+            _logger.info("[paperclip-watch] updated placeholder %s with real content", placeholder_id)
+        except Exception as e:
+            _logger.error("[paperclip-watch] failed to update placeholder %s: %s", placeholder_id, e)
+            placeholder_id = None
+
+    # If placeholder update failed, save as a fresh row
+    if not placeholder_id:
+        saved = _save_inbox_item(
+            tenant_id=tenant_id,
+            agent=agent_id,
+            title=title[:200],
+            content=output,
+            content_type=content_type,
+            priority=priority,
+            task_id=task_id,
+            chat_session_id=session_id,
+            status=inbox_status,
+        )
+        placeholder_id = saved["id"] if saved else None
+
+    # Notify frontend so the inbox auto-refreshes the row
+    if placeholder_id and tenant_id:
+        try:
+            await sio.emit("inbox_item_updated", {
+                "id": placeholder_id,
+                "agent": agent_id,
+                "type": content_type,
+                "title": title,
+                "status": inbox_status,
+                "priority": priority,
+            }, room=tenant_id)
+            await _notify(
+                tenant_id, "inbox_new_item", title,
+                body=output[:200],
+                href="/inbox",
+                category="inbox",
+                priority=priority,
+            )
+        except Exception:
+            pass
+
+    # Mark the kanban task as done
+    if task_id:
+        try:
+            sb = _get_supabase()
+            sb.table("tasks").update({
+                "status": "done",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", task_id).execute()
+            if tenant_id:
+                await sio.emit("task_updated", {
+                    "id": task_id,
+                    "agent": agent_id,
+                    "status": "done",
+                    "task": task_desc,
+                }, room=tenant_id)
+        except Exception:
+            pass
+
+    # Return agent to idle in the Virtual Office
+    if tenant_id:
+        try:
+            sb = _get_supabase()
+            other = sb.table("tasks").select("id").eq(
+                "tenant_id", tenant_id
+            ).eq("agent", agent_id).eq("status", "in_progress").limit(1).execute()
+            if not other.data:
+                await _emit_agent_status(tenant_id, agent_id, "idle",
+                                         action="all_tasks_complete")
+        except Exception:
+            pass
+
+
 # ─── CRM API — moved to backend/routers/crm.py ───
 # ─── Inbox API — moved to backend/routers/inbox.py ───
 
@@ -4021,14 +4281,21 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
 
             if connected and paperclip_id:
                 _dispatch_logger.warning(
-                    "[ceo-dispatch] routing %s through Paperclip (id=%s)",
+                    "[ceo-dispatch] routing %s through Paperclip (id=%s) with active inbox watcher",
                     agent_id, paperclip_id,
                 )
-                _aio.create_task(dispatch_agent(tenant_id, agent_id, context={
-                    "task": task_desc,
-                    "priority": d.get("priority", "medium"),
-                    "session_id": body.session_id,
-                }))
+                # _dispatch_paperclip_and_watch_to_inbox handles dispatch +
+                # placeholder + adaptive polling + inbox write in one task,
+                # so the result lands in the inbox within ~1-2s of the agent
+                # finishing instead of waiting up to 5s for the global poller.
+                _aio.create_task(_dispatch_paperclip_and_watch_to_inbox(
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    task_desc=task_desc,
+                    session_id=body.session_id,
+                    task_id=saved_tasks[-1]["id"] if saved_tasks else None,
+                    priority=d.get("priority", "medium"),
+                ))
             else:
                 _dispatch_logger.warning(
                     "[ceo-dispatch] FALLING BACK to local for %s "
