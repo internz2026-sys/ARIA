@@ -3144,13 +3144,20 @@ def _parse_email_draft_from_text(text: str, fallback_to: str = "") -> dict | Non
     if not body_html and body:
         body_html = _markdown_to_basic_html(body)
 
+    # IMPORTANT: field names must match the frontend's EmailDraft
+    # interface (frontend/app/(dashboard)/inbox/page.tsx) -- it reads
+    # `email_draft.html_body` and `email_draft.text_body`, NOT
+    # `body_html` / `body`. The local _run_agent_to_inbox path uses
+    # this same canonical schema, so any new code that writes to
+    # email_draft must follow it or the editor renders empty.
     return {
         "subject": (subject or "Untitled email")[:300],
         "to": to or "",
         "send_time": send_time or "",
-        "body": body[:5000],
-        "body_html": body_html,
+        "text_body": body[:5000],
+        "html_body": body_html or "",
         "preview_snippet": (body or text)[:200],
+        "status": "draft_pending_approval",
     }
 
 
@@ -3824,7 +3831,7 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                 title = f"Email: {email_draft['subject']}"
             _logger.info(
                 "[paperclip-watch] parsed email_draft for issue %s (subject=%r, has_html=%s)",
-                paperclip_issue_id, email_draft.get("subject"), bool(email_draft.get("body_html")),
+                paperclip_issue_id, email_draft.get("subject"), bool(email_draft.get("html_body")),
             )
 
     elif agent_id in ("content_writer", "social_manager"):
@@ -4055,7 +4062,10 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     # the same email content twice in some cases, and without dedupe
     # we end up with two rows showing the same draft.
     try:
-        recent_window = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        # 5-minute window catches the watcher placeholder that gets
+        # updated 60-90s after the agent's skill curl posts. Previously
+        # set to 60s and missed by 11s in production.
+        recent_window = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
         recent = (
             sb.table("inbox_items")
             .select("id,content,type")
@@ -4063,14 +4073,15 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
             .eq("agent", body.agent)
             .gte("created_at", recent_window)
             .order("created_at", desc=True)
-            .limit(5)
+            .limit(8)
             .execute()
         )
         for r in (recent.data or []):
             r_content = (r.get("content") or "")[:300]
             new_prefix = (body.content or "")[:300]
-            # 200-char overlap is enough to consider them the same draft
-            if r_content and new_prefix and r_content[:200] == new_prefix[:200]:
+            # 100-char overlap (relaxed from 200) catches drafts where
+            # the agent re-formatted the same email between POSTs.
+            if r_content and new_prefix and len(r_content) > 50 and r_content[:100] == new_prefix[:100]:
                 # Same draft already exists -- update it instead of duplicating
                 update_data = {
                     "title": title,
