@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import socketio
 from dotenv import load_dotenv
@@ -3977,6 +3977,33 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     """
     sb = _get_supabase()
 
+    # ── Reject confirmation/status messages ────────────────────────────
+    # Agents sometimes POST a "Saved successfully!" status message as a
+    # SECOND inbox item, immediately after they POST the real content.
+    # Detect those and short-circuit so they don't create duplicate
+    # rows next to the actual draft. Pattern markers we've seen:
+    #   "✅ Welcome email draft created for Hanz"
+    #   "Saved to ARIA Inbox [ab04f78a-...]"
+    #   "Successfully saved" / "Created and saved"
+    _content_lower = (body.content or "").strip().lower()
+    _is_confirmation = (
+        len(body.content or "") < 600
+        and (
+            "saved to aria inbox" in _content_lower
+            or "saved to inbox" in _content_lower
+            or _content_lower.startswith(("✅", ":white_check_mark:", "[saved]", "[done]"))
+            or "successfully saved" in _content_lower
+            or "draft created and saved" in _content_lower
+        )
+    )
+    if _is_confirmation:
+        logging.getLogger("aria.inbox").info(
+            "[inbox-create] rejecting confirmation/status message from %s "
+            "(content=%r) -- not creating duplicate row",
+            body.agent, body.content[:120],
+        )
+        return {"item": None, "skipped": "confirmation_message"}
+
     # Apply the same parser the watcher uses, so the rich fields
     # populate even when the agent skipped them in its POST body.
     title = body.title
@@ -3984,10 +4011,29 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     status = body.status
     email_draft = body.email_draft
 
-    if body.agent == "email_marketer" and not email_draft:
+    # Run the parser ALWAYS for email_marketer, even if the agent
+    # provided email_draft itself -- the agent's dict is often
+    # incomplete (no body_html, no recipient, generic subject) and
+    # our parser fills in the gaps from the content text. Merge:
+    # parser fields fill any keys the agent left blank.
+    if body.agent == "email_marketer":
         parsed = _parse_email_draft_from_text(body.content)
         if parsed:
-            email_draft = parsed
+            if email_draft:
+                # Merge: agent's fields win where set, parser fills gaps
+                merged = dict(parsed)
+                for k, v in email_draft.items():
+                    if v:
+                        merged[k] = v
+                email_draft = merged
+            else:
+                email_draft = parsed
+            # Normalize the type so the frontend always renders the
+            # editable form (Approve & Send / Schedule / Save changes /
+            # Cancel draft) instead of treating one row as static
+            # 'email_draft' and another as editable 'email'. The
+            # canonical type for emails the user can review/edit is
+            # 'email_sequence'.
             content_type = "email_sequence"
             status = "draft_pending_approval"
             if parsed.get("subject") and parsed["subject"] != "Untitled email":
@@ -3999,6 +4045,56 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
         social = _parse_social_drafts_from_text(body.content)
         if social or any(k in body.content.lower()[:500] for k in ("**twitter:**", "**linkedin:**", "**x:**", "**x/twitter:**")):
             content_type = "social_post"
+
+    # ── Best-effort dedupe based on recent activity ────────────────────
+    # When the agent doesn't send paperclip_issue_id (which is most of
+    # the time today), still try to avoid creating obvious duplicates
+    # within the same delegation: same tenant + same agent + recent
+    # creation time + same content prefix = update the existing row
+    # instead of inserting another. The agent's behavior is to POST
+    # the same email content twice in some cases, and without dedupe
+    # we end up with two rows showing the same draft.
+    try:
+        recent_window = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        recent = (
+            sb.table("inbox_items")
+            .select("id,content,type")
+            .eq("tenant_id", tenant_id)
+            .eq("agent", body.agent)
+            .gte("created_at", recent_window)
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+        )
+        for r in (recent.data or []):
+            r_content = (r.get("content") or "")[:300]
+            new_prefix = (body.content or "")[:300]
+            # 200-char overlap is enough to consider them the same draft
+            if r_content and new_prefix and r_content[:200] == new_prefix[:200]:
+                # Same draft already exists -- update it instead of duplicating
+                update_data = {
+                    "title": title,
+                    "content": body.content,
+                    "type": content_type,
+                    "status": status,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if email_draft:
+                    update_data["email_draft"] = email_draft
+                sb.table("inbox_items").update(update_data).eq("id", r["id"]).execute()
+                logging.getLogger("aria.inbox").info(
+                    "[inbox-create] merged duplicate POST into existing row %s "
+                    "(agent=%s, same content prefix)", r["id"], body.agent,
+                )
+                item_data = {"id": r["id"], "tenant_id": tenant_id, **update_data}
+                if tenant_id:
+                    try:
+                        await sio.emit("inbox_updated", {"action": "updated", "item": item_data}, room=tenant_id)
+                    except Exception:
+                        pass
+                return {"item": item_data, "deduped": True}
+    except Exception as e:
+        logging.getLogger("aria.inbox").debug("[inbox-create] recent-row dedupe lookup failed: %s", e)
 
     row = {
         "tenant_id": tenant_id,
