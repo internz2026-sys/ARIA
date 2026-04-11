@@ -3049,6 +3049,46 @@ def _parse_email_draft_from_text(text: str, fallback_to: str = "") -> dict | Non
         if not subject:
             subject = None
 
+    # Fallback 1: Preview Text. Agents sometimes emit
+    # **Preview Text:** "..." instead of an explicit Subject. The preview
+    # is a marketing-style one-line summary, which is exactly what we
+    # want for a subject when nothing better exists.
+    if not subject:
+        m = re.search(
+            r"\*\*\s*Preview\s*(?:Text)?\s*(?:\([^)]*\))?\s*:?\s*\*\*\s*[:\-]?\s*(.+)",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            candidate = m.group(1).strip().splitlines()[0]
+            candidate = re.sub(r'^[\s\*"\'`]+|[\s\*"\'`]+$', "", candidate).strip()
+            if candidate and not candidate.startswith("**") and len(candidate) > 5:
+                subject = candidate[:200]
+
+    # Fallback 2: first non-trivial sentence of the email body. We strip
+    # the markdown markers we already extracted, then look for the first
+    # line that isn't a label or greeting like "Hi Hanz,".
+    if not subject:
+        cleaned = re.sub(r"\*\*[^*]+\*\*\s*[:\-]?", "", text)  # strip **Label:** markers
+        cleaned = re.sub(r"```[\s\S]*?```", "", cleaned)        # strip code blocks
+        cleaned = re.sub(r"^---+\s*$", "", cleaned, flags=re.MULTILINE)
+        for line in cleaned.split("\n"):
+            line = line.strip()
+            if not line or len(line) < 15:
+                continue
+            # Skip greetings and signoffs
+            if re.match(r"^(hi|hello|hey|dear|best|sincerely|cheers|thanks|p\.?s\.?)\b", line, re.IGNORECASE):
+                continue
+            # Skip lines that are mostly markdown noise
+            if line.startswith(("#", "-", "*", "[", ">")):
+                continue
+            # First good sentence -- truncate to 100 chars at a word boundary
+            candidate = line[:120]
+            if len(line) > 120:
+                candidate = candidate.rsplit(" ", 1)[0] + "..."
+            subject = candidate
+            break
+
     # Recipient email address
     to = fallback_to or ""
     if not to:
