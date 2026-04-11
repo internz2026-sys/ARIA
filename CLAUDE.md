@@ -395,7 +395,63 @@ The fix self-heals on every container restart and on every mid-runtime failure. 
 ### Background loops in `server.py:lifespan`
 - `_gmail_sync_loop` — every 2 min, Gmail inbound reply sync
 - `_scheduler_executor_loop` — runs scheduled tasks
-- `_paperclip_office_sync_loop` — every 5s, calls `poll_completed_issues()` (Path B inbox importer) then `sync_agent_statuses(sio)` (Virtual Office walking sprites)
+- `_paperclip_office_sync_loop` — adaptive 5s (active) → 30s (idle) backoff. Calls `poll_completed_issues()` (Path B inbox importer) then `sync_agent_statuses(sio)` (Virtual Office walking sprites). Resets to fast interval when `poke_paperclip_poller()` event fires (chat handler + inbox routes wake it when the user does something). 70–80% reduction in idle-period Paperclip hits.
+
+---
+
+## Production deployment (Hostinger VPS)
+
+The frontend lives in Docker on the VPS (not Vercel — `aria-frontend` is a real container in the stack). Backend auto-deploys via a GitHub webhook the moment you push to `main`.
+
+### Stack
+- **VPS:** `72.61.126.188` (hostname `srv1551345`), `/opt/aria` is the checkout
+- **Containers (docker compose):** `aria-backend`, `aria-frontend`, `aria-nginx`, `aria-redis`, `aria-qdrant`
+- **Webhook listener:** [adnanh/webhook](https://github.com/adnanh/webhook) 2.8.0 running on `0.0.0.0:9000`, systemd unit `webhook.service`
+- **Hook config:** `/etc/webhook.conf` — one hook `deploy-aria` that executes `/opt/aria/deploy.sh`, validates `X-Hub-Signature-256` HMAC against secret `absolutemadness`, and requires `ref == refs/heads/main`
+- **Systemd override:** `/etc/systemd/system/webhook.service.d/override.conf` runs webhook with `-hooks /etc/webhook.conf -port 9000 -verbose` so `journalctl -u webhook -f` shows every incoming request
+- **GitHub webhook:** configured on the ARIA repo → Settings → Webhooks → `http://72.61.126.188:9000/hooks/deploy-aria`, content-type `application/json`, secret `absolutemadness`, trigger on `push` only
+
+### Deploy flow
+1. `git push origin main` from your laptop
+2. GitHub fires webhook POST to the VPS with HMAC-signed payload
+3. `webhook` binary validates the signature + ref, runs `/opt/aria/deploy.sh`
+4. Deploy script does: `git pull origin main` → `docker compose up -d --build backend frontend`
+5. Redis, qdrant, nginx are left alone (only backend + frontend rebuild)
+6. Typical cycle time: ~4 seconds when nothing changed, ~20-40s for a backend-only edit, ~1-3min if `requirements.txt` / `package.json` changes
+
+### `/opt/aria/deploy.sh` (canonical version — do not let it drift)
+```bash
+#!/bin/bash
+set -euo pipefail
+cd /opt/aria
+echo "[deploy] git pull origin main"
+git pull origin main
+echo "[deploy] rebuilding backend + frontend"
+docker compose up -d --build backend frontend
+echo "[deploy] done at $(date -u +%FT%TZ)"
+```
+
+Watch out for the "runs everything twice" bug — the original had two stacked command blocks that duplicated every action. If you ever see two `Image aria-backend Built` lines back-to-back in the webhook logs, `cat /opt/aria/deploy.sh` and look for duplication.
+
+### Watching a deploy live
+```bash
+ssh root@72.61.126.188
+journalctl -u webhook -f
+```
+Expected sequence: `incoming HTTP POST` → `deploy-aria got matched` → `200 OK` → `executing /opt/aria/deploy.sh` → build output → `Container aria-backend Started` → `[deploy] done`.
+
+### Manual force-rebuild (bypassing webhook)
+```bash
+ssh root@72.61.126.188
+cd /opt/aria && docker compose build --no-cache backend && docker compose up -d backend
+```
+Only use `--no-cache` when the layer cache is stale (new code isn't actually running after a deploy). Otherwise `--build` is ~10x faster.
+
+### Testing the deploy loop end-to-end
+```bash
+git commit --allow-empty -m "test: webhook deploy" && git push origin main
+```
+Then tail `journalctl -u webhook -f` on the VPS. Should complete in ~4s with all layers CACHED.
 
 ### Where things live
 - `backend/orchestrator.py` — `dispatch_agent`, `_dispatch_via_paperclip` (creates issue + posts wake comment), `PaperclipUnreachable` exception, `_sanitize_error_message`, plus the Paperclip lookup helpers (`_urllib_request`, `get_company_id`, `get_paperclip_agent_id`, `paperclip_connected`). The CEO chat handler in `server.py` calls `call_claude` directly with Haiku — the legacy `run_agent_via_paperclip_sync` blocking path was removed in favor of fire-and-forget delegation via `dispatch_agent`.
@@ -430,6 +486,12 @@ The fix self-heals on every container restart and on every mid-runtime failure. 
 | **CEO chat returns "Reached max turns (1)"** | `--max-turns 1` was too restrictive after switching to Haiku (which is more eager to use tools). Bumped to `--max-turns 5` in `claude_cli.py`. Don't lower it again. |
 | **"Task exception was never retrieved" warnings or silent watcher crashes** | A background coroutine is being spawned via bare `_aio.create_task(...)` instead of `_safe_background(...)`. Wrap it so the error callback logs the crash. |
 | **Docker rebuild "succeeded" but new code isn't running (`grep -c <new_helper>` returns 0)** | Layer cache is stale — `=> CACHED [6/7] COPY backend/ backend/` reused an old snapshot. Force rebuild with `docker compose build --no-cache backend && docker compose up -d backend`. |
+| **Backend container crash-loops with `NameError: name '_re_crm' is not defined`** | Module-level code is referencing `_re_crm` (or any shared import alias) BEFORE the `import re as _re_crm` line. `py_compile` won't catch it because names only fail at module-execution time, not parse time. Fix: move `import re as _re_crm` above every block that uses it. Happened in batch 4 perf work on 2026-04-11 — the pre-compiled `_DELEGATE_BLOCK_RE` / `_ACTION_BLOCK_RE` block ended up above the import. |
+| **Frontend sidebar renders but pages spin forever** | Backend is down / crash-looping. Check `docker compose ps` for `Restarting (1)` next to `aria-backend`, then `docker compose logs backend --tail 80` to find the traceback. Never assume it's a frontend bug until backend health is confirmed. |
+| **`docker compose ps` says "no configuration file provided: not found"** | You're not in `/opt/aria` on the VPS. `cd /opt/aria` first — the compose file lives there. |
+| **Webhook `curl http://IP:9000/hooks/deploy-aria` returns `Hook rules were not satisfied`** | That's the CORRECT response to a bare GET (the hook requires HMAC + push event). Means the listener is up and serving. A real deploy from GitHub will pass rules because it carries `X-Hub-Signature-256`. |
+| **`systemctl edit webhook` seems to save but `systemctl cat webhook` doesn't show the override** | The interactive editor can silently drop the override if you exit without triggering a save. Skip the interactive flow: write `/etc/systemd/system/webhook.service.d/override.conf` directly via a heredoc, then `systemctl daemon-reload && systemctl restart webhook`. |
+| **`git push` rejected because remote is ahead** | Someone (you, a webhook, or an SSH session) committed on `main` since your last pull — commonly an empty `test: webhook deploy` commit from the VPS. Fix: `git pull --rebase origin main && git push origin main`. Never `--force` unless you actually want to discard the remote work. |
 | **Recursion errors in poller / `RecursionError: maximum recursion depth exceeded`** | Don't `replace_all` rename `_processed_issues.add` → `_add_processed` — it'll catch the line inside the helper itself and turn it into infinite recursion. Add a comment warning future-you. |
 | **One chat creates two Paperclip runs (one cancelled)** | The chat dispatcher is calling both `/heartbeat/invoke` and posting a comment. Only post the comment — the comment alone wakes the agent via `wakeOnDemand`. Already fixed in `orchestrator._dispatch_via_paperclip`. |
 | **CEO chat returns the framing block as its reply** | `pick_agent_output` is supposed to filter out comments starting with `[tenant_id=` / `[wake]`. Verify the filter is intact in `services/paperclip_chat.py`. |

@@ -1133,3 +1133,88 @@ This was a long single-day debugging session that touched almost every part of t
 - **Inbox path B (safety net):** `paperclip_office_sync.poll_completed_issues` runs every 5s, scrapes finished issue comments, dedupes via `paperclip_issue_id` column
 - **CEO chat:** posts user message as comment on a fresh CEO issue, polls comments every 1-4s (adaptive backoff), 60s timeout, falls back to local `call_claude` if Paperclip is unreachable
 - **Verification end-to-end:** "create a social media post based on my GTM" → Paperclip CEO run completes in ~90s → Social Manager subagent → inbox row appears with title "Twitter/X Post: Build in Public — Developer Founder GTM" + Publish to X/LinkedIn buttons wired up.
+
+---
+
+## 2026-04-11 — Backend efficiency audit (27 items, 4 commits) + VPS auto-deploy webhook
+
+Two parallel tracks in one session: shipped a full backend performance audit then wired up the GitHub→Hostinger auto-deploy webhook that had been sitting broken.
+
+### Backend perf audit — 27 items across 4 commits
+
+Grouped 27 audit items into 4 thematic commits on `main`:
+
+**Batch 1 — concurrency unlock + poller backoff** (`d46355a`)
+- `dashboard_stats` was 4 sequential sync Supabase queries (200-800ms total). Rewrote to run in parallel via `asyncio.gather` + `asyncio.to_thread` — 4x faster.
+- `_paperclip_office_sync_loop` was firing every 5s 24/7 (~17,000 calls/day) even when idle. Added adaptive backoff: 5s active → 30s idle after 6 empty cycles. Added `poke_paperclip_poller()` asyncio.Event so chat handler / inbox routes can reset the interval when the user does something. 70-80% fewer idle hits.
+- Watcher hot path (`_dispatch_paperclip_and_watch_to_inbox`) wrapped every sync DB call in `asyncio.to_thread` so it stops blocking the event loop on each tick.
+- Inbox poller (`poll_completed_issues`) — existence-check SELECT, insert, and notifications INSERT all wrapped in `to_thread`. Returns count so the adaptive loop knows work happened.
+- `_gmail_sync_loop` audit item was a false alarm — the pre-check for tenants without Gmail already existed in `gmail_sync.py:282`.
+
+**Batch 2 — CEO chat token diet + dead code removal** (`d789cdb`)
+- CEO chat system prompt trimmed ~30%: cached `_CEO_ACTION_DESCRIPTIONS` at module load (was rebuilt from `ACTION_REGISTRY` on every chat request), deduped the "do not auto-act" rule (was repeated 4x in 80 lines), dropped verbose EXAMPLES blocks, consolidated delegation/action rules into single sections.
+- CRM context heuristic tightened with word-boundary regexes (`_CRM_NOUN_RE` / `_CRM_VERB_RE`). Previous substring matching was firing on "ideal"→"deal", "leader"→"lead", "calling"→"call", "client product"→"client" — inflating CRM context injection (~1.5k tokens) on totally unrelated questions. Also dropped the too-loose "customer" and "client" nouns from the list.
+- Deleted ~140 lines of dead `run_agent_via_paperclip_sync` chain — `run_agent_via_paperclip_sync`, `_create_chat_issue`, `_post_chat_comment`, `_build_chat_comment_body`, `_poll_for_agent_reply`, `_POLL_INTERVALS`. CEO chat calls `call_claude` with Haiku directly now; the Paperclip sync path was the original 10-30s slow path replaced in an earlier session. Updated CLAUDE.md and `paperclip_chat.py` docstring to match.
+
+**Batch 3 — N+1 fix + partial writes + cached helpers** (`07c626b`)
+- `get_agent_status` N+1 unwound: was 12 sequential round-trips for 6 active agents (1 `agent_logs` SELECT + 1 Paperclip GET per agent), with SELECTs blocking the event loop via sync Supabase. Rewrote as 1 batched SELECT (`.in_("agent_name", active)`) grouped in Python + parallel Paperclip GETs via `asyncio.gather`.
+- Added `update_tenant_integrations(config)` helper in `config/loader.py` that writes ONLY the `integrations` JSONB column instead of upserting the entire 30+ field row through `save_tenant_config`'s column-strip retry loop. `gmail_sync._ensure_access_token` now uses the targeted helper for all 5 token-refresh paths — meaningful DB write reduction across tenants during the 2-min Gmail sync loop. Helper also primes the in-memory cache instead of invalidating.
+- httpx.AsyncClient singleton + module-level SSL context in `orchestrator.py`: `_paperclip_api` was opening a fresh `httpx.AsyncClient` on every call (TCP+TLS handshake each time) — now uses `_get_httpx_client()` singleton closed on shutdown via `close_httpx_client()` wired into `server.py` lifespan. `_urllib_request` was calling `ssl.create_default_context()` per request (~1-3ms on Windows) — now uses module-level `_SSL_CTX` cached at import.
+- Bounded `_config_cache` (max 500 entries) with insertion-order eviction — was unbounded.
+- Lazy log formatting (`logger.X(f"...")` → `%s`) in orchestrator.py hot paths.
+- Hoisted `_DELEGATE_BLOCK_RE` / `_ACTION_BLOCK_RE` regexes to module scope + removed inline `import re` calls in the chat handler.
+
+**Batch 4 — regex hoist + lazy import cleanup + cache caps** (`d34ba61`)
+- Hoisted 20 email-template regex patterns in `_wrap_email_in_designed_template` and `_strip_html_to_text` to module-level `_EMAIL_*_RE` / `_STRIP_*_RE` constants. Was recompiling 12 patterns on every inbox row build.
+- Moved lazy imports inside hot paths up to module-level: `dispatch_agent`, `get_paperclip_agent_id`, `_sanitize_error_message`, `_urllib_request`, `PaperclipUnreachable`, `AGENT_REGISTRY`, `normalize_comments`, `pick_agent_output`, `_is_finished`, `_is_failed`, `_add_processed`, `poll_completed_issues`, `sync_agent_statuses`. Removed inline imports inside `_dispatch_paperclip_and_watch_to_inbox`, `_run_agent_to_inbox` error path, CEO chat dispatch loop, and paperclip office sync loop.
+- Bounded remaining caches: `_live_agent_status` (server.py) capped at 1000 tenants; `_usage_cache` + `_agent_usage` (claude_cli.py) both capped at 1000 via `_usage_cache_set` helper.
+- `_CLAUDE_BIN = shutil.which("claude")` cached at module load in `claude_cli.py` — was letting `create_subprocess_exec` do PATH lookup on every CLI call.
+
+### `_re_crm` import-order hotfix (`73b8618`)
+
+Batch 4 shipped with a bug that crash-looped the backend container in production. The error:
+```
+File "/app/backend/server.py", line 5388, in <module>
+    _DELEGATE_BLOCK_RE = _re_crm.compile(r"```delegate\s*\n(.*?)\n```", _re_crm.DOTALL)
+NameError: name '_re_crm' is not defined
+```
+
+Root cause: I added the pre-compiled `_DELEGATE_BLOCK_RE` / `_ACTION_BLOCK_RE` block BEFORE the `import re as _re_crm` line (which lived inside the CRM-heuristic block further down). At module-execution time `_re_crm` didn't exist yet. `py_compile` passed because the name is a runtime lookup, not a parse-time check.
+
+Fix: hoisted `import re as _re_crm` above both regex blocks so every reference sees a defined alias.
+
+**Lesson saved to CLAUDE.md common issues table:** `py_compile` cannot catch forward-reference `NameError` in module-level code. Always visually verify that import aliases are defined BEFORE the first use when hoisting blocks around.
+
+### VPS auto-deploy webhook — wired up end-to-end
+
+Background: a GitHub webhook was half-configured on the repo (`http://72.61.126.188:9000/hooks/deploy-aria`) but the HMAC secret was empty and systemd verbose logging was off, so pushes weren't actually deploying and there was no visibility into why.
+
+**Fixes applied this session:**
+
+1. **Secret sync.** Generated shared secret `absolutemadness` (user picked it), replaced `REPLACE_WITH_A_LONG_RANDOM_STRING` in `/etc/webhook.conf` via `sed -i`, pasted the same string into the GitHub webhook Secret field. Restarted `webhook.service`.
+2. **Verbose logging.** Added a systemd drop-in at `/etc/systemd/system/webhook.service.d/override.conf` with `ExecStart=/usr/bin/webhook -nopanic -hooks /etc/webhook.conf -port 9000 -verbose`. The interactive `systemctl edit webhook` flow silently failed to save the first time — wrote the file directly via heredoc instead. `journalctl -u webhook -f` now shows every incoming POST.
+3. **`deploy.sh` rewrite.** The existing `/opt/aria/deploy.sh` had TWO stacked command blocks (pre-existing bug from a prior session that got re-introduced — see 2025-era log entry about "the original ran every command twice"). Rewrote cleanly with `set -euo pipefail`, single-pass, rebuilds backend + frontend (user confirmed both are real containers on the VPS — frontend is NOT on Vercel as CLAUDE.md used to suggest):
+   ```bash
+   #!/bin/bash
+   set -euo pipefail
+   cd /opt/aria
+   git pull origin main
+   docker compose up -d --build backend frontend
+   ```
+
+**Verification end-to-end:** `git commit --allow-empty -m "test: webhook deploy" && git push origin main` → webhook fires in ~2s → `deploy-aria got matched` → HMAC validates → `200 OK` in 280µs → `deploy.sh` runs → `git pull` → all Docker layers CACHED (empty commit) → containers recreated → `[deploy] done at 2026-04-11T21:32:59Z`, **4 seconds total**.
+
+### Stack confirmed on the VPS
+- **aria-backend** — python:3.11-slim, uvicorn serving FastAPI on port 8000
+- **aria-frontend** — node:20-alpine, Next.js standalone build on port 3000 (NOT Vercel)
+- **aria-nginx** — nginx:alpine, reverse proxy on 8080/8443
+- **aria-qdrant** — qdrant:latest on 6333 (semantic cache)
+- **aria-redis** — redis:7-alpine on 6379
+
+The frontend running as a container on the VPS is the biggest correction from this session's discovery — previous CLAUDE.md text said "frontend is on Vercel" which is no longer accurate. Updated.
+
+### Known-good end state
+- All 4 audit commits deployed and the backend container is `Up` after the hotfix
+- Auto-deploy is live: every `git push origin main` triggers a backend + frontend rebuild via the webhook
+- Typical cycle: ~4s (no-op), ~20-40s (backend code), ~1-3min (deps change)
+- `journalctl -u webhook -f` is the single source of truth for what the deploy is doing
