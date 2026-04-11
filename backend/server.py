@@ -2979,6 +2979,44 @@ def _enrich_task_desc_with_crm(task_desc: str, tenant_id: str) -> str:
         return task_desc
 
 
+def _agent_html_already_designed(html: str) -> bool:
+    """Return True if the agent's HTML output already has its own design.
+
+    We only want to apply the backend's branded template wrapper to
+    PLAIN, unstyled output (naked <p>/<ul>/<li> tags from the markdown
+    converter). When the agent produces its own designed HTML -- inline
+    styles, gradients, table-based layouts, dark themes, custom CTAs --
+    we leave it alone so each email can look different.
+
+    Detection signals (any one is enough):
+      - Contains a <table> (almost always email-template layout)
+      - Inline `style=` attribute count >= 5 (rich styling)
+      - Mentions linear-gradient, max-width: 600px, or background-color
+      - Has explicit @media or CSS-in-style-attr rules
+    """
+    if not html:
+        return False
+    h = html.lower()
+    if "<table" in h:
+        return True
+    # Inline-style density
+    if h.count('style="') >= 5 or h.count("style='") >= 5:
+        return True
+    if any(marker in h for marker in (
+        "linear-gradient",
+        "max-width: 600",
+        "max-width:600",
+        "background-color: #",
+        "background:#",
+        "background: #",
+        "@media",
+        "border-radius:",
+        "box-shadow:",
+    )):
+        return True
+    return False
+
+
 def _business_name_for_template(tenant_id: str = "") -> str:
     """Return the tenant's business name for the email template header.
 
@@ -3290,19 +3328,20 @@ def _parse_html_email_draft(text: str, fallback_to: str = "") -> dict | None:
     if m:
         html_body = m.group(1).strip()
 
-    # Wrap in the designed branded template -- same as the markdown
-    # parser branch -- so the inbox editor renders a styled email
-    # instead of whatever raw HTML the agent produced.
-    preview_text = ""
-    pm = re.search(r"Preview\s*Text[^:]*:\s*([^\n]+)", _strip_html_to_text(text), re.IGNORECASE)
-    if pm:
-        preview_text = pm.group(1).strip().strip('"').strip("*").strip()[:120]
-    html_body = _wrap_email_in_designed_template(
-        html_body,
-        business_name=_business_name_for_template(),
-        subject=subject or "",
-        preview_text=preview_text,
-    )
+    # Only wrap in the backend template when the agent's HTML is
+    # plain/unstyled. If the agent already designed its own email
+    # (inline styles, gradients, table layouts), leave it alone.
+    if html_body and not _agent_html_already_designed(html_body):
+        preview_text = ""
+        pm = re.search(r"Preview\s*Text[^:]*:\s*([^\n]+)", _strip_html_to_text(text), re.IGNORECASE)
+        if pm:
+            preview_text = pm.group(1).strip().strip('"').strip("*").strip()[:120]
+        html_body = _wrap_email_in_designed_template(
+            html_body,
+            business_name=_business_name_for_template(),
+            subject=subject or "",
+            preview_text=preview_text,
+        )
 
     # text_body and preview from the rendered text
     text_body = _strip_html_to_text(text)
@@ -3519,16 +3558,21 @@ def _parse_email_draft_from_text(text: str, fallback_to: str = "") -> dict | Non
     if pm:
         preview_text = pm.group(1).strip().strip('"').strip("*").strip()[:120]
 
-    # Wrap the agent's plain HTML in the designed branded template so
-    # the inbox editor renders a beautiful styled email instead of
-    # naked <p> / <ul> tags. The agent stays dumb; the backend
-    # handles the design.
-    final_html = _wrap_email_in_designed_template(
-        body_html,
-        business_name=_business_name_for_template(),
-        subject=subject or "",
-        preview_text=preview_text,
-    )
+    # Only wrap the agent's HTML in the backend template when the
+    # agent's output is plain unstyled HTML. If the agent already
+    # produced its own designed email (inline styles, gradients,
+    # table layouts), leave it alone -- each email is allowed to
+    # look different. The wrapper is a fallback for the "agent
+    # only emitted naked <p>/<ul>" case.
+    if body_html and not _agent_html_already_designed(body_html):
+        final_html = _wrap_email_in_designed_template(
+            body_html,
+            business_name=_business_name_for_template(),
+            subject=subject or "",
+            preview_text=preview_text,
+        )
+    else:
+        final_html = body_html
 
     # IMPORTANT: field names must match the frontend's EmailDraft
     # interface (frontend/app/(dashboard)/inbox/page.tsx) -- it reads
