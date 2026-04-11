@@ -2979,6 +2979,162 @@ def _enrich_task_desc_with_crm(task_desc: str, tenant_id: str) -> str:
         return task_desc
 
 
+def _strip_html_to_text(html: str) -> str:
+    """Convert an HTML body into a plain text approximation for the
+    text_body / preview_snippet fields. Not perfect -- just enough to
+    give the user a readable plaintext version. Mirrors the same logic
+    the frontend uses in stripHtml() at frontend/app/.../inbox/page.tsx.
+    """
+    import re
+    if not html:
+        return ""
+    out = html
+    out = re.sub(r"<style[^>]*>[\s\S]*?</style>", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"<script[^>]*>[\s\S]*?</script>", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"<br\s*/?>", "\n", out, flags=re.IGNORECASE)
+    out = re.sub(r"</p>", "\n\n", out, flags=re.IGNORECASE)
+    out = re.sub(r"</div>", "\n", out, flags=re.IGNORECASE)
+    out = re.sub(r"</li>", "\n", out, flags=re.IGNORECASE)
+    out = re.sub(r"</h[1-6]>", "\n\n", out, flags=re.IGNORECASE)
+    out = re.sub(r"<[^>]+>", "", out)
+    out = (out
+           .replace("&nbsp;", " ")
+           .replace("&amp;", "&")
+           .replace("&lt;", "<")
+           .replace("&gt;", ">")
+           .replace("&quot;", '"')
+           .replace("&#39;", "'"))
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
+def _parse_html_email_draft(text: str, fallback_to: str = "") -> dict | None:
+    """Parse an email_draft when the agent's content IS raw HTML.
+
+    Detection: content starts with <!DOCTYPE, <html>, or has many HTML
+    tags relative to length. The previous markdown parser would extract
+    the <html><body style="..."> opening tag as the SUBJECT field via
+    the first-sentence fallback, which is exactly the bug we saw in
+    production.
+
+    Strategy:
+      - Subject: prefer <title>, then first <h1>/<h2>, then any
+        SUBJECT: marker in the rendered text
+      - To: any email-shaped token in the rendered text (NOT in
+        attribute values like style="font-family: ...@...")
+      - html_body: the inner HTML between <body> tags, or the whole
+        thing if no body tag
+      - text_body: stripped HTML
+    """
+    import re
+    if not text or len(text) < 30:
+        return None
+
+    # Subject extraction order: <title> -> <h1>/<h2>/<h3> -> Subject markers
+    # in stripped text -> first non-greeting <p> content
+    subject = None
+    m = re.search(r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        subject = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+    if not subject:
+        for tag in ("h1", "h2", "h3"):
+            m = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", text, re.IGNORECASE | re.DOTALL)
+            if m:
+                candidate = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+                if candidate and len(candidate) > 5:
+                    subject = candidate
+                    break
+
+    # Fall back to running subject markers against the stripped text.
+    # This catches "Subject Line Options:" / "Subject A: ..." patterns
+    # the agent embeds inside <p> tags.
+    if not subject:
+        stripped = _strip_html_to_text(text)
+        # Pattern: A: "..." or A) "..." after a "Subject" header
+        m = re.search(
+            r"Subject[^\n]{0,40}\n+\s*A[):]\s*[\"']?([^\"'\n]+)[\"']?",
+            stripped, re.IGNORECASE,
+        )
+        if m:
+            subject = m.group(1).strip()
+        if not subject:
+            # Pattern: Subject: <value>
+            m = re.search(r"(?:^|\n)\s*Subject\s*(?:Line)?\s*[:\-]\s*[\"']?([^\"'\n]+)[\"']?", stripped, re.IGNORECASE)
+            if m:
+                cand = m.group(1).strip()
+                if cand and len(cand) > 5:
+                    subject = cand
+        if not subject:
+            # Pattern: Preview Text: <value>
+            m = re.search(r"(?:^|\n)\s*Preview\s*(?:Text)?\s*[:\-]\s*[\"']?([^\"'\n]+)[\"']?", stripped, re.IGNORECASE)
+            if m:
+                cand = m.group(1).strip()
+                if cand and len(cand) > 5:
+                    subject = cand
+        if not subject:
+            # Last resort: first <p> that isn't a greeting
+            for m in re.finditer(r"<p[^>]*>(.*?)</p>", text, re.IGNORECASE | re.DOTALL):
+                cand = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+                if not cand or len(cand) < 15:
+                    continue
+                if re.match(r"^(hi|hello|hey|dear|best|sincerely|cheers|thanks|p\.?s\.?)\b", cand, re.IGNORECASE):
+                    continue
+                # Truncate to 100 chars at word boundary
+                if len(cand) > 100:
+                    cand = cand[:100].rsplit(" ", 1)[0] + "..."
+                subject = cand
+                break
+
+    if subject:
+        subject = subject.replace("&amp;", "&").replace("&nbsp;", " ").strip()
+        # Truncate at line breaks for one-line subjects
+        subject = subject.split("\n")[0].strip()[:200]
+
+    # html_body: prefer the inner contents of <body>...</body>
+    html_body = text
+    m = re.search(r"<body[^>]*>(.*?)</body>", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        html_body = m.group(1).strip()
+    # If we extracted just the body content, wrap it in a div with
+    # default styling so it renders nicely in the editor without the
+    # original document's <html><body> noise.
+    if html_body != text:
+        html_body = (
+            '<div style="font-family: -apple-system, BlinkMacSystemFont, '
+            "'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #1f2937; "
+            'max-width: 600px; margin: 0 auto;">'
+            f"{html_body}"
+            "</div>"
+        )
+
+    # text_body and preview from the rendered text
+    text_body = _strip_html_to_text(text)
+    preview = text_body[:200]
+
+    # Recipient: any email address in the rendered text (avoids attribute
+    # value matches like style="font: ...@...")
+    to = fallback_to or ""
+    if not to:
+        # Strip ALL tag attributes first so style="...@..." doesn't false-match
+        text_only = re.sub(r"<[^>]+>", " ", text)
+        m = re.search(r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b", text_only)
+        if m:
+            to = m.group(1)
+
+    if not (subject or text_body):
+        return None
+
+    return {
+        "subject": (subject or "Untitled email")[:300],
+        "to": to or "",
+        "send_time": "",
+        "text_body": text_body[:5000],
+        "html_body": html_body or "",
+        "preview_snippet": preview,
+        "status": "draft_pending_approval",
+    }
+
+
 def _parse_email_draft_from_text(text: str, fallback_to: str = "") -> dict | None:
     """Extract structured email fields from a free-form agent reply.
 
@@ -3004,6 +3160,23 @@ def _parse_email_draft_from_text(text: str, fallback_to: str = "") -> dict | Non
 
     if not text or len(text) < 30:
         return None
+
+    # If the agent posted raw HTML as content (which we saw in production
+    # after the agent started generating designed emails directly), use
+    # the HTML-aware parser instead -- the markdown patterns below would
+    # otherwise grab the <html><body style="..."> opening tag as the
+    # first sentence and use it as the subject.
+    _stripped = text.lstrip()
+    _looks_like_html = (
+        _stripped.startswith("<!DOCTYPE")
+        or _stripped[:200].lower().startswith(("<html", "<body"))
+        or text.count("<") > 20  # heavy tag density = probably HTML
+    )
+    if _looks_like_html:
+        html_result = _parse_html_email_draft(text, fallback_to=fallback_to)
+        if html_result:
+            return html_result
+        # Fall through to markdown parser if HTML parsing returned None
 
     # Subject -- handle three common email_marketer formats:
     #   1. **Subject:** "value"  /  Subject: value
@@ -3811,13 +3984,51 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                 _logger.error("[paperclip-watch] failed to update placeholder on failure: %s", e)
         return
 
-    # Success path: write real content to the placeholder.
-    # First, try to extract structured fields from the agent's reply so
-    # the frontend can render the same Approve & Send / Publish buttons
-    # the local _run_agent_to_inbox path produces. The local path got
-    # email_draft directly from the agent's Python module return value;
-    # the Paperclip path only gets the agent's plain-text comment, so
-    # we have to parse it.
+    # Before updating the placeholder, check whether the agent already
+    # created its OWN inbox row via the aria-backend-api skill curl.
+    # If yes, the watcher's placeholder is redundant -- delete it so
+    # the user sees ONE row per delegation, not two. The agent's skill
+    # curl row has the actual structured email content (html_body,
+    # text_body, email_draft) that the inbox CREATE endpoint parsed,
+    # while the watcher's placeholder only has the agent's reply
+    # COMMENT (often a short summary like "Created and saved").
+    skill_row_already_exists = False
+    if placeholder_id:
+        try:
+            sb = _get_supabase()
+            recent_window = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+            agent_rows = (
+                sb.table("inbox_items")
+                .select("id,content,status")
+                .eq("tenant_id", tenant_id)
+                .eq("agent", agent_id)
+                .gte("created_at", recent_window)
+                .neq("id", placeholder_id)
+                .execute()
+            )
+            for r in (agent_rows.data or []):
+                content_len = len(r.get("content") or "")
+                if content_len > 200 and r.get("status") != "processing":
+                    _logger.warning(
+                        "[paperclip-watch] agent %s already created row %s for tenant %s "
+                        "(content=%d chars) -- deleting placeholder %s to avoid duplicate",
+                        agent_id, r["id"], tenant_id, content_len, placeholder_id,
+                    )
+                    try:
+                        sb.table("inbox_items").delete().eq("id", placeholder_id).execute()
+                        if tenant_id:
+                            try:
+                                await sio.emit("inbox_updated", {"action": "deleted", "id": placeholder_id}, room=tenant_id)
+                            except Exception:
+                                pass
+                    except Exception as del_err:
+                        _logger.error("[paperclip-watch] failed to delete placeholder: %s", del_err)
+                    placeholder_id = None
+                    skill_row_already_exists = True
+                    break
+        except Exception as e:
+            _logger.debug("[paperclip-watch] agent-row dedupe lookup failed: %s", e)
+
     content_type = _infer_content_type(agent_id, output)
     title = _extract_title(agent_id, task_desc, output)
     email_draft: dict | None = None
@@ -3874,8 +4085,11 @@ async def _dispatch_paperclip_and_watch_to_inbox(
             _logger.error("[paperclip-watch] failed to update placeholder %s: %s", placeholder_id, e)
             placeholder_id = None
 
-    # If placeholder update failed, save as a fresh row
-    if not placeholder_id:
+    # If placeholder update failed, save as a fresh row -- BUT only if
+    # we didn't intentionally delete the placeholder because the
+    # agent's skill curl already created the canonical row. Without
+    # this guard we'd just re-create the duplicate we just deleted.
+    if not placeholder_id and not skill_row_already_exists:
         saved = _save_inbox_item(
             tenant_id=tenant_id,
             agent=agent_id,
@@ -4027,11 +4241,21 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
         parsed = _parse_email_draft_from_text(body.content)
         if parsed:
             if email_draft:
-                # Merge: agent's fields win where set, parser fills gaps
+                # Merge: agent's fields win where set, parser fills gaps.
+                # BUT: if the agent provided a subject that looks like
+                # raw HTML (e.g. '<html><body style="...'), throw it
+                # away in favor of the parser's extracted subject.
+                # Same for `to` -- agent's HTML-tag-attribute matches
+                # can produce garbage like 'apple-system@font.com'.
                 merged = dict(parsed)
                 for k, v in email_draft.items():
-                    if v:
-                        merged[k] = v
+                    if not v:
+                        continue
+                    if k == "subject" and isinstance(v, str) and v.lstrip().startswith("<"):
+                        continue  # parser's subject wins
+                    if k == "to" and isinstance(v, str) and (v.startswith("<") or "font" in v.lower()):
+                        continue  # parser's to wins
+                    merged[k] = v
                 email_draft = merged
             else:
                 email_draft = parsed
@@ -4043,10 +4267,18 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
             # 'email_sequence'.
             content_type = "email_sequence"
             status = "draft_pending_approval"
-            if parsed.get("subject") and parsed["subject"] != "Untitled email":
-                # Only override the title if the agent's own title is generic
+            # Override title with the extracted subject ONLY if it's a
+            # real subject (not HTML, not the "Untitled" fallback) AND
+            # the agent's own title is generic.
+            parsed_subject = email_draft.get("subject", "") if email_draft else ""
+            subject_is_clean = (
+                parsed_subject
+                and parsed_subject != "Untitled email"
+                and not parsed_subject.lstrip().startswith("<")
+            )
+            if subject_is_clean:
                 if not title or title.lower().startswith(("draft", "marketing email", "email", "untitled")):
-                    title = f"Email: {parsed['subject']}"
+                    title = f"Email: {parsed_subject}"
 
     if body.agent in ("content_writer", "social_manager"):
         social = _parse_social_drafts_from_text(body.content)
