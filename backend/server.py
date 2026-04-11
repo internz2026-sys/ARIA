@@ -2828,6 +2828,184 @@ def _safe_background(coro, *, label: str = "background"):
     return task
 
 
+def _parse_email_draft_from_text(text: str, fallback_to: str = "") -> dict | None:
+    """Extract structured email fields from a free-form agent reply.
+
+    The local _run_agent_to_inbox path produced rich email_draft objects
+    directly from the agent's Python module return value (subject, body,
+    body_html, to, preview_snippet). The Paperclip path only gives us
+    the agent's text reply as a comment, so we have to parse markdown
+    looking for the same fields.
+
+    Patterns recognised (case-insensitive, all optional):
+      **Subject:** ... | Subject: ...                  -> subject
+      **To:** | **Recipient:** | **Send to:** ...      -> to (email address)
+      **Send Time:** | **When:** ...                   -> send_time
+      ```html ... ```  fenced code block               -> body_html
+      everything else                                  -> body (plaintext)
+
+    Returns a dict suitable for the inbox_items.email_draft column, or
+    None if nothing email-shaped was found. The frontend renders the
+    Approve & Send / Schedule / Cancel draft buttons whenever this
+    column is non-null.
+    """
+    import re
+
+    if not text or len(text) < 30:
+        return None
+
+    # Subject -- handle three common email_marketer formats:
+    #   1. **Subject:** "value"  /  Subject: value
+    #   2. **Subject Line A/B Testing:**\n  **A)** "..."\n  **B)** "..."   (use A)
+    #   3. Subject line as a header followed by quoted line on the next line
+    subject = None
+    # Format 2: A/B test header -> grab the **A)** value
+    m = re.search(
+        r"\*\*\s*Subject\s*Line\s*(?:A/B\s*)?(?:Testing|Test|Variants?)?\s*:?\s*\*\*\s*\n+\s*\*\*?\s*A\)?\s*\*?\*?\s*[:\-]?\s*(.+)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        subject = m.group(1).strip().splitlines()[0]
+    # Format 1: inline subject value
+    if not subject:
+        for pat in (
+            r"\*\*\s*Subject\s*(?:Line)?\s*:?\s*\*\*\s*[:\-]?\s*(.+)",
+            r"(?:^|\n)\s*Subject\s*(?:Line)?\s*[:\-]\s*(.+)",
+        ):
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                candidate = m.group(1).strip().splitlines()[0]
+                if candidate and not candidate.startswith("**"):
+                    subject = candidate
+                    break
+    # Format 3: orphan **A)** line right after a Subject header (already
+    # picked up by format 2, but be defensive in case A/B header was on
+    # a different line shape)
+    if not subject:
+        m = re.search(
+            r"\*\*\s*Subject[^\n]*\*\*\s*\n+\s*\*?\*?\s*A\)?\s*\*?\*?\s*[:\-]?\s*(.+)",
+            text,
+            re.IGNORECASE,
+        )
+        if m:
+            subject = m.group(1).strip().splitlines()[0]
+    # Clean up the matched subject
+    if subject:
+        subject = subject.strip()
+        # Strip surrounding asterisks, quotes, backticks
+        subject = re.sub(r'^[\s\*"\'`]+|[\s\*"\'`]+$', "", subject).strip()
+        if not subject:
+            subject = None
+
+    # Recipient email address
+    to = fallback_to or ""
+    if not to:
+        for pat in (
+            r"\*\*\s*(?:To|Recipient|Send\s*to)\s*:?\s*\*\*\s*[:\-]?\s*([^\s\n*]+@[^\s\n*]+)",
+            r"(?:^|\n)\s*(?:To|Recipient)\s*[:\-]\s*([^\s\n]+@[^\s\n]+)",
+        ):
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                to = m.group(1).strip().rstrip(".,;:")
+                break
+    if not to:
+        # Fall back to any email-shaped token in the text
+        m = re.search(r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b", text)
+        if m:
+            to = m.group(1)
+
+    # Send time / when
+    send_time = None
+    for pat in (
+        r"\*\*\s*(?:Send\s*Time|When)\s*:?\s*\*\*\s*[:\-]?\s*(.+)",
+        r"(?:^|\n)\s*Send\s*Time\s*[:\-]\s*(.+)",
+    ):
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            send_time = m.group(1).strip().splitlines()[0].strip("*").strip()
+            break
+
+    # HTML body in fenced code block
+    body_html = None
+    m = re.search(r"```html\s*\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        body_html = m.group(1).strip()
+
+    # Plain body: strip the fenced HTML block + the marker lines we already
+    # extracted, leaving the rest as the readable email body
+    body = text
+    body = re.sub(r"```html\s*\n.*?\n```", "", body, flags=re.DOTALL | re.IGNORECASE)
+    body = re.sub(r"\*\*\s*Subject[^\n]*\n", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"\*\*\s*(?:To|Recipient|Send\s*to)[^\n]*\n", "", body, flags=re.IGNORECASE)
+    body = re.sub(r"\*\*\s*(?:Send\s*Time|When)[^\n]*\n", "", body, flags=re.IGNORECASE)
+    body = body.strip()
+
+    # Bail if nothing useful was extracted -- the watcher's plain content
+    # field is a better fallback than an empty email_draft.
+    if not (subject or body_html):
+        return None
+
+    return {
+        "subject": (subject or "Untitled email")[:300],
+        "to": to or "",
+        "send_time": send_time or "",
+        "body": body[:5000],
+        "body_html": body_html,
+        "preview_snippet": (body or text)[:200],
+    }
+
+
+def _parse_social_drafts_from_text(text: str) -> dict | None:
+    """Extract X/Twitter and LinkedIn post variants from an agent reply.
+
+    Patterns recognised:
+      **Twitter:** ... | **X:** ... | **X/Twitter:** ...
+      **LinkedIn:** ...
+      ## Twitter / ## LinkedIn headers
+
+    Returns a dict like {twitter: "...", linkedin: "..."} for the
+    inbox row's social_draft column, or None if nothing recognisable
+    was found. The frontend uses this to render Publish to X /
+    Publish to LinkedIn buttons.
+    """
+    import re
+
+    if not text or len(text) < 30:
+        return None
+
+    def _grab_section(label_pattern: str) -> str | None:
+        """Find a section starting with **<label>:** or ## <label> and
+        return its body up to the next section marker or end of text."""
+        # Match either bold-prefix or H2 heading
+        pat = (
+            rf"(?:\*\*\s*{label_pattern}\s*[:\-]?\s*\*\*|##\s*{label_pattern})"
+            rf"\s*[:\-]?\s*(.*?)"
+            rf"(?=\n\s*\*\*\s*\w[^*]*\*\*\s*[:\-]|\n\s*##\s+|\Z)"
+        )
+        m = re.search(pat, text, re.IGNORECASE | re.DOTALL)
+        if not m:
+            return None
+        section = m.group(1).strip()
+        # Strip leading/trailing markdown bullets and quotes
+        section = re.sub(r"^[\s>\-*]+", "", section)
+        section = re.sub(r"[\s>\-*]+$", "", section)
+        return section or None
+
+    twitter = (
+        _grab_section(r"(?:Twitter|X(?:/Twitter)?|Tweet)")
+    )
+    linkedin = _grab_section(r"LinkedIn")
+
+    if not (twitter or linkedin):
+        return None
+
+    return {
+        "twitter": (twitter or "")[:1000],
+        "linkedin": (linkedin or "")[:5000],
+    }
+
+
 def _infer_content_type(agent: str, content: str) -> str:
     """Infer the content type from the agent slug and output."""
     type_map = {
@@ -3428,22 +3606,64 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                 _logger.error("[paperclip-watch] failed to update placeholder on failure: %s", e)
         return
 
-    # Success path: write real content to the placeholder
+    # Success path: write real content to the placeholder.
+    # First, try to extract structured fields from the agent's reply so
+    # the frontend can render the same Approve & Send / Publish buttons
+    # the local _run_agent_to_inbox path produces. The local path got
+    # email_draft directly from the agent's Python module return value;
+    # the Paperclip path only gets the agent's plain-text comment, so
+    # we have to parse it.
     content_type = _infer_content_type(agent_id, output)
     title = _extract_title(agent_id, task_desc, output)
+    email_draft: dict | None = None
+
+    if agent_id == "email_marketer":
+        email_draft = _parse_email_draft_from_text(output)
+        if email_draft:
+            content_type = "email_sequence"
+            # Override the title with the email subject when we got one
+            if email_draft.get("subject") and email_draft["subject"] != "Untitled email":
+                title = f"Email: {email_draft['subject']}"
+            _logger.info(
+                "[paperclip-watch] parsed email_draft for issue %s (subject=%r, has_html=%s)",
+                paperclip_issue_id, email_draft.get("subject"), bool(email_draft.get("body_html")),
+            )
+
+    elif agent_id in ("content_writer", "social_manager"):
+        # Detect social content (Twitter/LinkedIn variants) so the
+        # frontend renders the Publish to X / Publish to LinkedIn
+        # buttons. content_type=social_post is the signal.
+        social = _parse_social_drafts_from_text(output)
+        task_lower = (task_desc or "").lower()
+        looks_like_social = (
+            social is not None
+            or any(k in task_lower for k in ("social", "twitter", "linkedin", "tweet", "post for x"))
+        )
+        if looks_like_social:
+            content_type = "social_post"
+            _logger.info(
+                "[paperclip-watch] detected social_post for issue %s (twitter=%s linkedin=%s)",
+                paperclip_issue_id,
+                bool(social and social.get("twitter")),
+                bool(social and social.get("linkedin")),
+            )
+
     inbox_status = "draft_pending_approval" if content_type == "email_sequence" else "needs_review"
 
     if placeholder_id:
         try:
             sb = _get_supabase()
-            sb.table("inbox_items").update({
+            update_data: dict = {
                 "title": title[:200],
                 "content": output,
                 "type": content_type,
                 "status": inbox_status,
                 "paperclip_issue_id": paperclip_issue_id,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", placeholder_id).execute()
+            }
+            if email_draft:
+                update_data["email_draft"] = email_draft
+            sb.table("inbox_items").update(update_data).eq("id", placeholder_id).execute()
             _logger.info("[paperclip-watch] updated placeholder %s with real content", placeholder_id)
         except Exception as e:
             _logger.error("[paperclip-watch] failed to update placeholder %s: %s", placeholder_id, e)
@@ -3461,6 +3681,7 @@ async def _dispatch_paperclip_and_watch_to_inbox(
             task_id=task_id,
             chat_session_id=session_id,
             status=inbox_status,
+            email_draft=email_draft,
         )
         placeholder_id = saved["id"] if saved else None
 
