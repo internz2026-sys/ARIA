@@ -278,13 +278,19 @@ async def call_claude(
         except Exception as e:
             logger.debug("Semantic cache unavailable: %s", e)
 
-    # Build claude CLI command
+    # Build claude CLI command. --max-turns 5 (not 1) because the CLI
+    # counts internal reasoning + any tool consideration as turns, and
+    # `--max-turns 1` was failing on complex chat requests like
+    # "create another lead in CRM" with `Reached max turns (1)`. Five
+    # gives the model headroom to think + (optionally) use a read-only
+    # tool + emit the final reply, while still bounding any runaway
+    # tool spiral (most chat replies still finish in 1-2 turns).
     cmd = [
         "claude",
         "-p", prompt,
         "--output-format", "text",
         "--model", use_model,
-        "--max-turns", "1",
+        "--max-turns", "5",
     ]
 
     # Add system prompt via --append-system-prompt
