@@ -2777,6 +2777,25 @@ async def generate_media_image(tenant_id: str, payload: dict = Body(default={}))
         return {"status": "failed", "error": "prompt is required"}
 
     result = await media_agent.run(tenant_id, {"prompt": prompt})
+
+    # Real-time push so the inbox UI shows the new image without a manual
+    # refresh. Other agent paths emit inbox_new_item from their dispatch
+    # wrapper; this endpoint bypasses that path so we emit here directly.
+    inbox_row = (result or {}).get("inbox_item") if isinstance(result, dict) else None
+    if inbox_row and tenant_id:
+        try:
+            await sio.emit("inbox_new_item", {
+                "id": inbox_row.get("id"),
+                "agent": "media",
+                "type": inbox_row.get("type", "image"),
+                "title": inbox_row.get("title", ""),
+                "status": inbox_row.get("status", "ready"),
+                "priority": inbox_row.get("priority", "medium"),
+                "created_at": inbox_row.get("created_at", ""),
+            }, room=tenant_id)
+        except Exception:
+            pass
+
     return result
 
 
@@ -4465,6 +4484,21 @@ async def _dispatch_paperclip_and_watch_to_inbox(
         result = {}
 
     paperclip_issue_id = result.get("paperclip_issue_id") if isinstance(result, dict) else None
+
+    # Media special-case: the Media Designer's instruction MD tells it to curl
+    # /api/media/<tenant>/generate, which already creates the canonical inbox
+    # row (with the real Pollinations PNG). The watcher's placeholder + comment
+    # polling produces a stale/duplicate row because the agent's Paperclip
+    # comment is just a free-form summary that often references previous URLs.
+    # We still want the dispatch above to wake the agent, but everything
+    # downstream (placeholder, polling, update) is noise for media tasks.
+    if agent_id == "media":
+        if paperclip_issue_id:
+            try:
+                _add_processed(paperclip_issue_id)  # block global poller too
+            except Exception:
+                pass
+        return
 
     # Phase 2: create the placeholder inbox row. If we got an issue id,
     # bake it in so the dedupe column is set from the start.

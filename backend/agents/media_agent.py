@@ -130,7 +130,7 @@ Do NOT include any explanation — just the image prompt."""
                 "context": ctx,
             },
         )
-        inbox_service.create_item(
+        inbox_row = inbox_service.create_item(
             tenant_id=tenant_id,
             agent=self.AGENT_NAME,
             title=(raw_prompt or refined_prompt)[:100],
@@ -149,6 +149,7 @@ Do NOT include any explanation — just the image prompt."""
                 "original_request": raw_prompt,
                 "provider": provider_used,
             },
+            "inbox_item": inbox_row,
             "timestamp": _now_iso(),
         }
 
