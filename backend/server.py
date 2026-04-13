@@ -2777,12 +2777,30 @@ async def generate_media_image(tenant_id: str, payload: dict = Body(default={}))
         return {"status": "failed", "error": "prompt is required"}
 
     result = await media_agent.run(tenant_id, {"prompt": prompt})
-
-    # Real-time push so the inbox UI shows the new image without a manual
-    # refresh. Other agent paths emit inbox_new_item from their dispatch
-    # wrapper; this endpoint bypasses that path so we emit here directly.
     inbox_row = (result or {}).get("inbox_item") if isinstance(result, dict) else None
+
+    # Replace the watcher's "Media is working on..." placeholder with this
+    # finished row, so the user sees ONE row that transitions processing -> ready
+    # instead of a stale placeholder + a new finished row.
     if inbox_row and tenant_id:
+        try:
+            sb = _get_supabase()
+            recent = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).eq(
+                "agent", "media"
+            ).eq("status", "processing").neq(
+                "id", inbox_row["id"]
+            ).order("created_at", desc=True).limit(1).execute()
+            if recent.data:
+                placeholder_id = recent.data[0]["id"]
+                sb.table("inbox_items").delete().eq("id", placeholder_id).execute()
+                try:
+                    await sio.emit("inbox_item_deleted", {"id": placeholder_id}, room=tenant_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Push the finished row to the UI in real time
         try:
             await sio.emit("inbox_new_item", {
                 "id": inbox_row.get("id"),
@@ -4485,14 +4503,39 @@ async def _dispatch_paperclip_and_watch_to_inbox(
 
     paperclip_issue_id = result.get("paperclip_issue_id") if isinstance(result, dict) else None
 
-    # Media special-case: the Media Designer's instruction MD tells it to curl
-    # /api/media/<tenant>/generate, which already creates the canonical inbox
-    # row (with the real Pollinations PNG). The watcher's placeholder + comment
-    # polling produces a stale/duplicate row because the agent's Paperclip
-    # comment is just a free-form summary that often references previous URLs.
-    # We still want the dispatch above to wake the agent, but everything
-    # downstream (placeholder, polling, update) is noise for media tasks.
+    # Media special-case: we still create the placeholder so the user sees
+    # "Media is working on..." instantly, but we skip the Paperclip-comment
+    # polling/update phase. The Media Designer's instruction MD tells it to
+    # curl /api/media/<tenant>/generate, which UPDATES this placeholder in
+    # place with the real Pollinations PNG. Polling Paperclip comments was
+    # the source of stale-URL pollution and duplicate rows.
     if agent_id == "media":
+        placeholder_content_type = _infer_content_type(agent_id, "")
+        placeholder = _save_inbox_item(
+            tenant_id=tenant_id,
+            agent=agent_id,
+            title=f"Media is working on: {task_desc[:80]}",
+            content="Generating image...",
+            content_type=placeholder_content_type,
+            priority=priority,
+            task_id=task_id,
+            chat_session_id=session_id,
+            status="processing",
+            paperclip_issue_id=paperclip_issue_id,
+        )
+        if placeholder and tenant_id:
+            try:
+                await sio.emit("inbox_new_item", {
+                    "id": placeholder["id"],
+                    "agent": agent_id,
+                    "type": placeholder_content_type,
+                    "title": placeholder.get("title", ""),
+                    "status": "processing",
+                    "priority": priority,
+                    "created_at": placeholder.get("created_at", ""),
+                }, room=tenant_id)
+            except Exception:
+                pass
         if paperclip_issue_id:
             try:
                 _add_processed(paperclip_issue_id)  # block global poller too
