@@ -2,9 +2,11 @@ import React from "react";
 
 /**
  * Lightweight markdown-to-JSX renderer for ARIA chat messages.
- * Handles: headers, tables, bold, italic, inline code, lists, horizontal rules.
+ * Handles: headers, tables, bold, italic, inline code, lists, horizontal rules, images.
  * No external dependencies.
  */
+
+const IMAGE_LINE_RE = /^!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)\s*$/;
 
 function inlineFormat(text: string, keyPrefix: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
@@ -158,6 +160,24 @@ export function renderMarkdown(text: string): React.ReactNode {
         i += consumed;
         continue;
       }
+    }
+
+    // Image: ![alt](https://...)
+    const imgMatch = trimmed.match(IMAGE_LINE_RE);
+    if (imgMatch) {
+      const alt = imgMatch[1] || "Image";
+      const src = imgMatch[2];
+      elements.push(
+        <img
+          key={`img-${i}`}
+          src={src}
+          alt={alt}
+          className="my-2 max-w-full rounded-lg border border-[#E0DED8]"
+          loading="lazy"
+        />
+      );
+      i++;
+      continue;
     }
 
     // Horizontal rule (---, ***, ___)
