@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import socketio
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -298,6 +298,7 @@ _PUBLIC_PREFIXES = (
     "/api/auth/",           # OAuth callbacks (Twitter, LinkedIn)
     "/api/webhooks/",       # External webhooks (Stripe, SendGrid)
     "/api/inbox/",          # Inbox item creation (used by Paperclip agents)
+    "/api/media/",          # Image generation (used by Paperclip Media Designer)
     "/api/tenant/by-email/", # Tenant lookup during login (returns only tenant_id)
     "/docs",                # Swagger UI
     "/openapi.json",
@@ -2757,6 +2758,25 @@ async def run_agent(tenant_id: str, agent_name: str):
                 "created_at": saved.get("created_at", ""),
             }, room=tenant_id)
 
+    return result
+
+
+@app.post("/api/media/{tenant_id}/generate")
+async def generate_media_image(tenant_id: str, payload: dict = Body(default={})):
+    """Direct image-generation endpoint for the Paperclip Media Designer agent.
+
+    Bypasses Paperclip dispatch and calls media_agent.run() locally so the agent
+    actually produces a real PNG via Pollinations -> Supabase Storage -> inbox.
+    Public (no JWT) so the Paperclip-spawned Claude CLI can curl it from inside
+    the container — same pattern as /api/inbox/.
+    """
+    from backend.agents import media_agent
+
+    prompt = (payload or {}).get("prompt", "")
+    if not prompt:
+        return {"status": "failed", "error": "prompt is required"}
+
+    result = await media_agent.run(tenant_id, {"prompt": prompt})
     return result
 
 
