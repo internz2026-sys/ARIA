@@ -312,6 +312,33 @@ export default function InboxPage() {
     }
   };
 
+  const handleDownloadImage = async (item: InboxItem) => {
+    const match = (item.content || "").match(/!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/);
+    const url = match ? match[1] : (item.content || "").match(/https?:\/\/\S+\.(?:png|jpg|jpeg|webp|gif)/i)?.[0];
+    if (!url) {
+      showToast({ title: "No image found", body: "Could not extract an image URL from this item.", variant: "error" });
+      return;
+    }
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
+      const blob = await res.blob();
+      const ext = (url.split(".").pop() || "png").split("?")[0].toLowerCase();
+      const safeTitle = (item.title || "image").replace(/[^a-z0-9-_]+/gi, "_").slice(0, 60);
+      const filename = `${safeTitle || "image"}.${ext}`;
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
+    } catch (err: any) {
+      showToast({ title: "Download failed", body: err?.message || "Could not download the image.", variant: "error" });
+    }
+  };
+
   const handleCopy = (content: string) => {
     navigator.clipboard.writeText(content);
     setCopied(true);
@@ -1015,6 +1042,17 @@ export default function InboxPage() {
             </svg>
             {copied ? "Copied!" : "Copy content"}
           </button>
+          {item.type === "image" && (
+            <button
+              onClick={() => handleDownloadImage(item)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-white text-[#534AB7] border border-[#534AB7] hover:bg-[#EEEDFE] transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+              </svg>
+              Download
+            </button>
+          )}
           {/* Schedule button -- available for ANY non-failed/non-cancelled item.
               The user explicitly asked for this on every sub-agent output, not
               just emails. The schedule modal/handler picks the right task_type
