@@ -42,6 +42,7 @@ interface CeoChatState {
   sending: boolean;
   pendingConfirmation: PendingConfirmation | null;
   send: (text: string) => Promise<void>;
+  cancel: () => void;
   confirmAction: () => Promise<void>;
   cancelAction: () => void;
   switchSession: (sid: string) => void;
@@ -107,6 +108,7 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
   const [sending, setSending] = useState(false);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const mountedRef = useRef(true);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -138,6 +140,16 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => { refreshSessions(); }, [refreshSessions]);
 
+  const cancel = useCallback(() => {
+    if (!sending) return;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (mountedRef.current) {
+      setSending(false);
+      setMessages((p) => [...p, { role: "assistant", content: "Cancelled." }]);
+    }
+  }, [sending]);
+
   const send = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -147,12 +159,16 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
       setSending(true);
       touchSessionTimestamp();
 
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       try {
         const authHeaders = await getAuthHeaders();
         const res = await fetch(`${API_URL}/api/ceo/chat`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({ session_id: sessionId, message: trimmed, tenant_id: getTenantId() }),
+          signal: controller.signal,
         });
         const data = await res.json();
         if (mountedRef.current) {
@@ -172,13 +188,17 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
 
           refreshSessions();
         }
-      } catch {
+      } catch (err: any) {
         if (mountedRef.current) {
-          setMessages((p) => [...p, { role: "assistant", content: "Connection error — is the backend running?" }]);
+          // AbortError means the user cancelled — already handled in cancel()
+          if (err?.name !== "AbortError") {
+            setMessages((p) => [...p, { role: "assistant", content: "Connection error — is the backend running?" }]);
+          }
         }
       }
 
       if (mountedRef.current) setSending(false);
+      abortRef.current = null;
     },
     [sessionId, sending, refreshSessions],
   );
@@ -230,7 +250,7 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
     setMessages([]);
   }, []);
 
-  const value: CeoChatState = { messages, sessions, sessionId, sending, pendingConfirmation, send, confirmAction, cancelAction, switchSession, startNewChat, refreshSessions };
+  const value: CeoChatState = { messages, sessions, sessionId, sending, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat, refreshSessions };
 
   return React.createElement(CeoChatContext.Provider, { value }, children);
 }

@@ -312,6 +312,21 @@ export default function InboxPage() {
     }
   };
 
+  const handleCancelProcessing = async (item: InboxItem, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await inbox.remove(item.id);
+      setItems((prev) => prev.filter((i) => i.id !== item.id));
+      if (selected?.id === item.id) {
+        setSelected(null);
+        setMobileShowDetail(false);
+      }
+      showToast({ title: "Cancelled", variant: "info" });
+    } catch (err: any) {
+      showToast({ title: "Couldn't cancel", body: err?.message || "Network error.", variant: "error" });
+    }
+  };
+
   const handleDownloadImage = async (item: InboxItem) => {
     const match = (item.content || "").match(/!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/);
     const url = match ? match[1] : (item.content || "").match(/https?:\/\/\S+\.(?:png|jpg|jpeg|webp|gif)/i)?.[0];
@@ -1247,6 +1262,15 @@ export default function InboxPage() {
                       )}
                     </div>
                   </button>
+                  {item.status === "processing" && (
+                    <button
+                      onClick={(e) => handleCancelProcessing(item, e)}
+                      className="shrink-0 self-center px-2 py-1 text-[11px] font-medium rounded-lg border border-red-200 text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                      title="Cancel this in-progress task"
+                    >
+                      Cancel
+                    </button>
+                  )}
                 </div>
               );
             })}

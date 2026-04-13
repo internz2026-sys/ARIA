@@ -17,7 +17,7 @@ export default function FloatingChat() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const seenCount = useRef(0); // tracks how many messages the user has seen
 
-  const { messages, sessions, sessionId, sending, pendingConfirmation, send, confirmAction, cancelAction, switchSession, startNewChat } = useCeoChat();
+  const { messages, sessions, sessionId, sending, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat } = useCeoChat();
   const sendRef = useRef(send);
   sendRef.current = send;
   const stt = useSpeechToText(useCallback((text: string) => { if (text.trim()) sendRef.current(text.trim()); }, []));
@@ -282,6 +282,12 @@ export default function FloatingChat() {
                     <span className="w-1.5 h-1.5 bg-[#534AB7] rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
                   </div>
                   Thinking...
+                  <button
+                    onClick={cancel}
+                    className="ml-auto px-2 py-0.5 text-[11px] font-medium rounded border border-red-200 text-red-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                  >
+                    Cancel
+                  </button>
                 </div>
               )}
               <div ref={bottomRef} />
