@@ -2779,26 +2779,11 @@ async def generate_media_image(tenant_id: str, payload: dict = Body(default={}))
     result = await media_agent.run(tenant_id, {"prompt": prompt})
     inbox_row = (result or {}).get("inbox_item") if isinstance(result, dict) else None
 
-    # Replace the watcher's "Media is working on..." placeholder with this
-    # finished row, so the user sees ONE row that transitions processing -> ready
-    # instead of a stale placeholder + a new finished row.
+    # Kill the watcher's "Media is working on..." placeholder so the user
+    # sees ONE row that transitions processing -> ready, not a stale
+    # placeholder lingering next to the finished image row.
     if inbox_row and tenant_id:
-        try:
-            sb = _get_supabase()
-            recent = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).eq(
-                "agent", "media"
-            ).eq("status", "processing").neq(
-                "id", inbox_row["id"]
-            ).order("created_at", desc=True).limit(1).execute()
-            if recent.data:
-                placeholder_id = recent.data[0]["id"]
-                sb.table("inbox_items").delete().eq("id", placeholder_id).execute()
-                try:
-                    await sio.emit("inbox_item_deleted", {"id": placeholder_id}, room=tenant_id)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        await _cleanup_media_placeholder(tenant_id, inbox_row.get("id"))
 
         # Push the finished row to the UI in real time
         try:
@@ -5164,7 +5149,48 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
         except Exception:
             pass
 
+    # If this is a finished media row, kill any leftover "Media is working
+    # on..." placeholder for this tenant. Covers the case where the agent
+    # used the legacy aria-backend-api skill instead of /api/media/.../generate.
+    if body.agent == "media" and item:
+        await _cleanup_media_placeholder(tenant_id, item.get("id"))
+
     return {"item": item}
+
+
+async def _cleanup_media_placeholder(tenant_id: str, keep_id: str | None) -> None:
+    """Delete any 'processing' media inbox row for this tenant other than keep_id.
+
+    Called whenever a finished media row is written via either path
+    (/api/media/.../generate or /api/inbox/.../items) so the user doesn't
+    see a stale 'Media is working on...' placeholder lingering after the
+    real image arrives. Emits inbox_item_deleted so the frontend updates
+    in real time.
+    """
+    if not tenant_id:
+        return
+    try:
+        sb = _get_supabase()
+        q = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).eq(
+            "agent", "media"
+        ).eq("status", "processing")
+        if keep_id:
+            q = q.neq("id", keep_id)
+        rows = q.execute().data or []
+        for r in rows:
+            pid = r.get("id")
+            if not pid:
+                continue
+            try:
+                sb.table("inbox_items").delete().eq("id", pid).execute()
+            except Exception:
+                continue
+            try:
+                await sio.emit("inbox_item_deleted", {"id": pid}, room=tenant_id)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 # ─── CEO Actions ───
