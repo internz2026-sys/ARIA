@@ -5754,13 +5754,23 @@ CORE RULE — only do what the user literally asked for, in this exact message:
 {integration_notes}
 
 ## Delegation
-ONLY delegate when the user explicitly names a deliverable (e.g. "write a blog post about X", "draft a welcome email", "make a hero banner", "post on twitter about Y"). The task field MUST quote the user's actual subject — never substitute or invent one.
+ONLY delegate when the user explicitly names a deliverable. The task field MUST quote the user's actual subject — never substitute or invent one.
+
+### Agent Routing — pick by deliverable type
+- **Image / picture / visual / banner / logo / illustration / graphic / mockup / thumbnail / header / drawing / "create something I can see"** → `media` (NEVER content_writer for visual assets — content_writer cannot generate images)
+- **Blog post / landing page / Product Hunt copy / Show HN post / case study / thought-leadership article** → `content_writer`
+- **Welcome sequence / newsletter / drip campaign / email draft** → `email_marketer`
+- **Tweet / X post / LinkedIn post / Facebook post / social calendar** → `social_manager`
+- **Facebook ad / Meta ad / ad copy / audience targeting / campaign budget** → `ad_strategist`
 
 A delegation is ONLY valid when you emit this LITERAL fenced block. Prose like "I'll delegate this" without the block is silently dropped:
 ```delegate
-{{"agent": "content_writer|email_marketer|social_manager|ad_strategist|media", "task": "description", "priority": "low|medium|high", "status": "backlog|to_do|in_progress|done"}}
+{{"agent": "media|content_writer|email_marketer|social_manager|ad_strategist", "task": "description", "priority": "low|medium|high", "status": "backlog|to_do|in_progress|done"}}
 ```
-Use "media" for any image/visual asset. Status: backlog (nice-to-have), to_do (queued), in_progress (starting now), done (already completed in this response).
+
+Status: backlog (nice-to-have), to_do (queued), in_progress (starting now), done (already completed in this response).
+
+CRITICAL: "create an image of X", "make a picture of X", "design a banner for X", "generate a logo" → ALWAYS `media`, NEVER `content_writer`. Content Writer produces TEXT only and will return a useless URL string if given an image task.
 
 If you promise agent action ("delegating", "I'll have X create", "let me get X to"), you MUST include the block in the same response.
 
