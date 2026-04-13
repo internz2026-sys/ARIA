@@ -5391,7 +5391,7 @@ import pathlib as _pathlib
 
 _AGENTS_DIR = _pathlib.Path(__file__).resolve().parent.parent / "docs" / "agents"
 _CEO_MD_FULL = (_AGENTS_DIR / "ceo.md").read_text(encoding="utf-8")
-_CEO_MD = _CEO_MD_FULL[:800]  # Truncate to ~200 tokens — prompt caching handles the rest
+_CEO_MD = _CEO_MD_FULL[:4000]  # Need enough to include all delegation rules + sub-agent list. Prompt caching keeps cost low on repeat calls.
 # Sub-agent role MDs — used by the CEO chat handler to build a one-line
 # capabilities cheat sheet on the FIRST chat turn only (see _build_sub_agent_context).
 # Skill MDs are NOT loaded here — BaseAgent.run() loads them per-agent at
