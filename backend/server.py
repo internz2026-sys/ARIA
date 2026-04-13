@@ -4975,6 +4975,11 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
         )
         return {"item": None, "skipped": "confirmation_message"}
 
+    # Reject duplicate media writes from the legacy aria-backend-api skill
+    # (the canonical row was already created by /api/media/.../generate).
+    if _is_duplicate_media_write(tenant_id, body):
+        return {"item": None, "skipped": "duplicate_media_write"}
+
     # Apply the same parser the watcher uses, so the rich fields
     # populate even when the agent skipped them in its POST body.
     title = body.title
@@ -5156,6 +5161,33 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
         await _cleanup_media_placeholder(tenant_id, item.get("id"))
 
     return {"item": item}
+
+
+def _is_duplicate_media_write(tenant_id: str, body: "CreateInboxItem") -> bool:
+    """Reject duplicate media writes from the legacy aria-backend-api skill.
+
+    When the Media Designer agent has both the new instructions AND the old
+    aria-backend-api skill enabled, it hits TWO endpoints per image request:
+    /api/media/.../generate (creates the canonical row with the rendered PNG)
+    and /api/inbox/.../items (creates a text summary). The second is noise.
+
+    If a media row for this tenant was created in the last 60s, treat any
+    new media POST to /api/inbox/ as a duplicate. The 60s window is wide
+    enough to cover Pollinations latency + agent reply lag, narrow enough
+    that legitimate back-to-back requests still go through.
+    """
+    if body.agent != "media":
+        return False
+    try:
+        from datetime import timedelta
+        sb = _get_supabase()
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        existing = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).eq(
+            "agent", "media"
+        ).neq("status", "processing").gte("created_at", cutoff).limit(1).execute()
+        return bool(existing.data)
+    except Exception:
+        return False
 
 
 async def _cleanup_media_placeholder(tenant_id: str, keep_id: str | None) -> None:
