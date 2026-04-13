@@ -5849,6 +5849,11 @@ Status: backlog (nice-to-have), to_do (queued), in_progress (starting now), done
 
 CRITICAL: "create an image of X", "make a picture of X", "design a banner for X", "generate a logo" → ALWAYS `media`, NEVER `content_writer`. Content Writer produces TEXT only and will return a useless URL string if given an image task.
 
+### One Delegate Per Message — HARD RULE
+Each user message gets EXACTLY ONE delegate block, never two. Do NOT chain delegations like "media for the image AND content_writer for a caption". If the user asked for ONLY an image, delegate ONLY to media. Bonus content the user did not ask for (captions, blog copy, social posts about the image) is forbidden — never auto-add a content_writer/social_manager delegate alongside a media one.
+
+If the user explicitly asks for both ("make an image AND write a caption"), still emit ONE delegate to the agent that produces the primary deliverable they named first; mention the secondary in your prose so the user can ask in a follow-up message if they want it.
+
 If you promise agent action ("delegating", "I'll have X create", "let me get X to"), you MUST include the block in the same response.
 
 ## CEO Business Actions
