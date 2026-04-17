@@ -2072,7 +2072,9 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
     item = item_result.data
     if not item:
         raise HTTPException(status_code=404, detail="Inbox item not found")
-    if item.get("status") != "draft_pending_approval":
+    # Accept pending OR failed — a failed draft is a legitimate retry target,
+    # the email_draft payload is preserved on failure so we can resend it.
+    if item.get("status") not in ("draft_pending_approval", "failed"):
         raise HTTPException(status_code=400, detail=f"Item is not a pending draft (status: {item.get('status')})")
     if item.get("tenant_id") != tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
