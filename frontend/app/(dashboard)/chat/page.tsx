@@ -438,7 +438,15 @@ export default function CEOChatPage() {
         </div>
 
         {/* Input */}
-        <div className="border-t border-[#E0DED8] px-4 pt-3 pb-2">
+        {/* Input area — sticks to the bottom of the flex-col, and on
+            mobile adds the iOS home-indicator inset so the send button
+            isn't hidden behind the safe-area. `pb-[env(safe-area-inset-
+            bottom)]` is additive to the explicit pb so the input stays
+            readable on both iOS and Android. */}
+        <div
+          className="border-t border-[#E0DED8] px-4 pt-3 pb-2"
+          style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
+        >
           {stt.error && (
             <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

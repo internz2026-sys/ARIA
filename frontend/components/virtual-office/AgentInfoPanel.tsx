@@ -114,7 +114,7 @@ export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) 
         aria-modal="true"
         aria-label={agent ? `${agent.name} details` : "Agent details"}
         className={cn(
-          "fixed top-0 right-0 z-50 h-full w-[360px] bg-white border-l border-gray-200 shadow-xl",
+          "fixed top-0 right-0 z-50 h-full w-[calc(100vw-2rem)] max-w-[360px] bg-white border-l border-gray-200 shadow-xl",
           "flex flex-col overflow-y-auto",
           "transition-transform duration-300 ease-in-out",
           isOpen ? "translate-x-0" : "translate-x-full"

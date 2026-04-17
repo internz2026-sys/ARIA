@@ -9,6 +9,7 @@ import FloatingChat from "@/components/shared/FloatingChat";
 import OfficeKanban from "@/components/virtual-office/OfficeKanban";
 import NotificationBell from "@/components/shared/NotificationBell";
 import ToastContainer from "@/components/shared/ToastContainer";
+import MobileBottomNav from "@/components/shared/MobileBottomNav";
 import { CeoChatProvider } from "@/lib/use-ceo-chat";
 import { NotificationProvider } from "@/lib/use-notifications";
 import { OfficeAgentsProvider } from "@/lib/use-office-agents";
@@ -128,14 +129,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <NotificationBell />
           </div>
 
-          {/* Page content */}
-          <main className="p-6 lg:p-8 pt-6">{children}</main>
+          {/* Page content. pb-20 on mobile keeps the final row out
+              from under the bottom-tab nav; lg:pb-8 removes the extra
+              space on desktop where the nav isn't shown. */}
+          <main className="p-6 lg:p-8 pt-6 pb-24 lg:pb-8">{children}</main>
         </div>
 
         {/* Floating widgets — available on every dashboard page */}
         <FloatingChat />
         <OfficeKanban />
         <ToastContainer />
+
+        {/* Bottom-tab bar for mobile. Hidden on lg+ where the left
+            sidebar takes over. The hamburger drawer (top-left) still
+            covers secondary routes so no navigation is lost. */}
+        <MobileBottomNav />
       </div>
       </ConfirmProvider>
       </OfficeAgentsProvider>

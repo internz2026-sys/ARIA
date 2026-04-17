@@ -1637,7 +1637,7 @@ export default function InboxPage() {
       {/* Schedule Picker Modal */}
       {scheduleItem && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/30" onClick={() => setScheduleItem(null)}>
-          <div className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl w-[400px]" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl w-[calc(100vw-2rem)] max-w-[400px] mx-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-3 border-b border-[#E0DED8]">
               <h3 className="text-sm font-semibold text-[#2C2C2A]">Schedule Task</h3>
               <button onClick={() => setScheduleItem(null)} className="text-[#B0AFA8] hover:text-[#2C2C2A]">
