@@ -7,15 +7,15 @@ import { useCeoChat } from "@/lib/use-ceo-chat";
 import { formatDateAgo } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/render-markdown";
 import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
-import { useResizablePanel } from "@/lib/use-resizable-panel";
+import { useResizablePanel, type ResizeCorner } from "@/lib/use-resizable-panel";
 import ConfirmationDialog from "@/components/shared/ConfirmationDialog";
 
 export default function FloatingChat() {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [showHistory, setShowHistory] = useState(false);
-  // panelRef kept for any future outside-click logic; resizeRef (from
-  // useResizablePanel) is what the panel element actually binds to.
+  // panelRef kept for any future outside-click / focus logic. Not currently
+  // wired to the panel div — resize is handled by the corner grip instead.
   const panelRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -125,27 +125,39 @@ export default function FloatingChat() {
   // Position is derived purely from the button: no independent drag, so the
   // two always read as ONE unit. Drag the button → the panel moves with it.
   //
-  // Size is resizable via the native CSS `resize: both` corner grip and
-  // persisted to localStorage. Restored on mount. Default 420 × 520.
+  // Size is resizable via a visible corner grip (useResizablePanel hook)
+  // and persisted to localStorage. Restored on mount. Default 420 × 520.
   const wH = typeof window !== "undefined" ? window.innerHeight : 800;
   const wW = typeof window !== "undefined" ? window.innerWidth : 1200;
   const PANEL_GAP = 8;
   const BUTTON_H = 52;
+
+  // Resize handle goes on the panel corner FARTHEST from the button so
+  // dragging it feels natural (drag away from button = grow).
+  const isButtonRight = pos.x > wW * 0.4;
+  const isButtonBottom = pos.y > wH * 0.35;
+  const corner: ResizeCorner =
+    isButtonRight
+      ? (isButtonBottom ? "nw" : "sw")
+      : (isButtonBottom ? "ne" : "se");
+
   const defaultH = Math.min(520, wH - 80);
-  const { panelRef: resizeRef, size: panelSize } = useResizablePanel(
+  const { size: panelSize, startResize, cursorClass } = useResizablePanel(
     "aria-ceo-chat-panel-size",
     { w: 420, h: defaultH },
+    corner,
+    { minW: 320, minH: 360 },
   );
 
   // Horizontal: right-align with button when button is in the right half,
   // left-align otherwise. Clamped so the panel never spills off the viewport.
   const buttonRightEdge = pos.x + 170;
-  const rawPanelX = pos.x > wW * 0.4 ? buttonRightEdge - panelSize.w : pos.x;
+  const rawPanelX = isButtonRight ? buttonRightEdge - panelSize.w : pos.x;
   const basePanelX = Math.min(Math.max(20, rawPanelX), wW - panelSize.w - 20);
 
   // Vertical: panel above the button when it sits in the lower 65%, below
-  // otherwise. Keeps the seam between the two elements small.
-  const basePanelY = pos.y > wH * 0.35
+  // otherwise.
+  const basePanelY = isButtonBottom
     ? Math.max(20, pos.y - panelSize.h - PANEL_GAP)
     : Math.min(wH - panelSize.h - 20, pos.y + BUTTON_H + PANEL_GAP);
 
@@ -153,16 +165,26 @@ export default function FloatingChat() {
     position: "fixed",
     width: panelSize.w,
     height: panelSize.h,
-    minWidth: 320,
-    minHeight: 360,
-    maxWidth: "calc(100vw - 40px)",
-    maxHeight: "calc(100vh - 40px)",
-    resize: "both",
-    overflow: "hidden",
     left: basePanelX,
     top: basePanelY,
     zIndex: 61,
   };
+
+  // Tailwind class for the corner position + matching border-radius of the
+  // resize grip. Listed explicitly because Tailwind's JIT needs literal
+  // class names — dynamic string interpolation isn't scanned.
+  const cornerPos = {
+    nw: "top-0 left-0",
+    ne: "top-0 right-0",
+    sw: "bottom-0 left-0",
+    se: "bottom-0 right-0",
+  }[corner];
+  const cornerRound = {
+    nw: "rounded-tl-xl",
+    ne: "rounded-tr-xl",
+    sw: "rounded-bl-xl",
+    se: "rounded-br-xl",
+  }[corner];
 
   if (pos.x < 0) return null;
 
@@ -191,7 +213,32 @@ export default function FloatingChat() {
       </button>
 
       {open && (
-        <div ref={resizeRef} data-floating-widget="ceo-chat" style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col">
+        <div data-floating-widget="ceo-chat" style={panelStyle} className="relative bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
+          {/* Resize grip — visible corner handle with direction cursor.
+              Placed on the corner farthest from the toggle button so dragging
+              outward grows the panel. z-[62] keeps it above internal content
+              but below modals. */}
+          <div
+            onMouseDown={startResize}
+            className={`absolute ${cornerPos} w-6 h-6 ${cursorClass} flex items-center justify-center hover:bg-[#534AB7]/10 ${cornerRound} transition-colors z-[62]`}
+            title="Drag to resize"
+          >
+            <svg
+              className="w-3.5 h-3.5 text-[#534AB7]/60 pointer-events-none"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              style={{
+                transform:
+                  corner === "ne" ? "scaleX(-1)" :
+                  corner === "sw" ? "scaleY(-1)" :
+                  corner === "se" ? "rotate(180deg)" :
+                  undefined,
+              }}
+            >
+              {/* Three diagonal lines pointing toward the corner (nw variant). */}
+              <path d="M1 14 L14 1 M5 14 L14 5 M9 14 L14 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+            </svg>
+          </div>
           {/* Header — panel is anchored to the button; not independently draggable */}
           <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0">
             <button

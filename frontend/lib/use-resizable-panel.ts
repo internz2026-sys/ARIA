@@ -1,29 +1,42 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+export type ResizeCorner = "nw" | "ne" | "sw" | "se";
 
 /**
- * Give a floating panel user-controlled resize via the native CSS
- * `resize: both` corner grip, and persist the chosen size to localStorage
- * so it survives page navigation and reloads.
+ * Give a floating panel a visible, cursor-styled resize handle on ONE corner
+ * and persist the chosen size to localStorage. Which corner depends on the
+ * button position (caller passes it in) — we always offer resize from the
+ * corner farthest from the button so the drag direction feels natural
+ * (dragging away from the button grows the panel).
+ *
+ * Why custom handles instead of CSS `resize: both`:
+ * - The native bottom-right grip is nearly invisible and users don't
+ *   discover it.
+ * - With our button-anchored position math, native resize fights the
+ *   layout (dragging toward the button shrinks the panel *away* from the
+ *   drag direction because position recomputes from the button).
  *
  * Usage:
- *   const { panelRef, size } = useResizablePanel("aria-chat-panel", { w: 420, h: 520 });
- *   <div ref={panelRef} style={{ width: size.w, height: size.h, resize: "both", overflow: "hidden" }}>
- *
- * The hook reads the persisted size once on mount, then watches the element
- * with a ResizeObserver so every user drag updates both the React state
- * (positioning math can read it) and localStorage (debounced to avoid
- * spamming writes while the user is still dragging).
+ *   const { size, startResize, cursorClass } = useResizablePanel(
+ *     "aria-ceo-chat-size", { w: 420, h: 520 }, "nw",
+ *   );
+ *   <div style={{ width: size.w, height: size.h }}>
+ *     <div onMouseDown={startResize} className={cursorClass + " ..."}>grip</div>
+ *   </div>
  */
 export function useResizablePanel(
   storageKey: string,
   defaults: { w: number; h: number },
+  corner: ResizeCorner,
+  constraints: { minW?: number; minH?: number } = {},
 ) {
   const [size, setSize] = useState(defaults);
-  const panelRef = useRef<HTMLDivElement>(null);
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
 
-  // One-time restore from localStorage.
+  // Restore persisted size once per key.
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey);
@@ -37,32 +50,53 @@ export function useResizablePanel(
     }
   }, [storageKey]);
 
-  // Sync size from the DOM (when the user drags the resize grip) back to
-  // state + localStorage. Debounced so rapid resize events don't hammer
-  // localStorage or trigger a flood of re-renders downstream.
-  useEffect(() => {
-    const el = panelRef.current;
-    if (!el) return;
-    let saveTimer: ReturnType<typeof setTimeout> | null = null;
-    const ro = new ResizeObserver(() => {
-      const w = el.offsetWidth;
-      const h = el.offsetHeight;
-      setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
-      if (saveTimer) clearTimeout(saveTimer);
-      saveTimer = setTimeout(() => {
+  const startResize = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startW = sizeRef.current.w;
+      const startH = sizeRef.current.h;
+      const minW = constraints.minW ?? 320;
+      const minH = constraints.minH ?? 320;
+
+      function onMove(ev: MouseEvent) {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        // A corner of "nw" means the handle is on top-left → dragging
+        // further top-left should grow the panel, so use -dx/-dy.
+        let newW = startW;
+        let newH = startH;
+        newW = corner === "nw" || corner === "sw" ? startW - dx : startW + dx;
+        newH = corner === "nw" || corner === "ne" ? startH - dy : startH + dy;
+
+        const maxW = typeof window !== "undefined" ? window.innerWidth - 40 : 1200;
+        const maxH = typeof window !== "undefined" ? window.innerHeight - 40 : 800;
+        newW = Math.max(minW, Math.min(maxW, newW));
+        newH = Math.max(minH, Math.min(maxH, newH));
+
+        setSize({ w: newW, h: newH });
+      }
+      function onUp() {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
         try {
-          localStorage.setItem(storageKey, JSON.stringify({ w, h }));
+          localStorage.setItem(storageKey, JSON.stringify(sizeRef.current));
         } catch {
           /* ignore */
         }
-      }, 400);
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      if (saveTimer) clearTimeout(saveTimer);
-    };
-  }, [storageKey]);
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [corner, storageKey, constraints.minW, constraints.minH],
+  );
 
-  return { panelRef, size };
+  // `cursorClass` matches the visual direction of the corner. Tailwind's
+  // `cursor-nwse-resize` is the ↖↘ arrow; `cursor-nesw-resize` is ↗↙.
+  const cursorClass =
+    corner === "nw" || corner === "se" ? "cursor-nwse-resize" : "cursor-nesw-resize";
+
+  return { size, startResize, cursorClass, corner };
 }

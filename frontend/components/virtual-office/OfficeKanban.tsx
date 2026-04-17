@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import KanbanBoard from "@/components/shared/KanbanBoard";
 import { useDraggable } from "@/lib/use-draggable";
-import { useResizablePanel } from "@/lib/use-resizable-panel";
+import { useResizablePanel, type ResizeCorner } from "@/lib/use-resizable-panel";
 import { useTaskUpdates } from "@/lib/socket";
 import {
   type Task,
@@ -79,21 +79,31 @@ export default function OfficeKanban() {
   // Panel position + size.
   // - Position follows the button 1:1 (no independent drag, matches
   //   FloatingChat). Drag the button and the panel moves with it.
-  // - Size is resizable via the native CSS `resize: both` corner grip and
-  //   persisted to localStorage. Restored on next mount.
+  // - Size is resizable via a visible corner grip (useResizablePanel hook)
+  //   and persisted to localStorage. Restored on next mount.
   const wH = typeof window !== "undefined" ? window.innerHeight : 800;
   const wW = typeof window !== "undefined" ? window.innerWidth : 1200;
   const PANEL_GAP = 8;
   const BUTTON_H = 52;
-  const { panelRef: resizeRef, size: panelSize } = useResizablePanel(
+
+  const isButtonRight = pos.x > wW * 0.4;
+  const isButtonBottom = pos.y > wH * 0.4;
+  const corner: ResizeCorner =
+    isButtonRight
+      ? (isButtonBottom ? "nw" : "sw")
+      : (isButtonBottom ? "ne" : "se");
+
+  const { size: panelSize, startResize, cursorClass } = useResizablePanel(
     "aria-task-board-panel-size",
     { w: 700, h: 440 },
+    corner,
+    { minW: 420, minH: 320 },
   );
 
   const buttonRightEdge = pos.x + 180; // button is ~180px wide
-  const rawPanelX = pos.x > wW * 0.4 ? buttonRightEdge - panelSize.w : pos.x;
+  const rawPanelX = isButtonRight ? buttonRightEdge - panelSize.w : pos.x;
   const basePanelX = Math.min(Math.max(20, rawPanelX), wW - panelSize.w - 20);
-  const basePanelY = pos.y > wH * 0.4
+  const basePanelY = isButtonBottom
     ? Math.max(20, pos.y - panelSize.h - PANEL_GAP)
     : Math.min(wH - panelSize.h - 20, pos.y + BUTTON_H + PANEL_GAP);
 
@@ -101,16 +111,23 @@ export default function OfficeKanban() {
     position: "fixed",
     width: panelSize.w,
     height: panelSize.h,
-    minWidth: 420,
-    minHeight: 320,
-    maxWidth: "calc(100vw - 40px)",
-    maxHeight: "calc(100vh - 40px)",
-    resize: "both",
-    overflow: "hidden",
     left: basePanelX,
     top: basePanelY,
     zIndex: 61,
   };
+
+  const cornerPos = {
+    nw: "top-0 left-0",
+    ne: "top-0 right-0",
+    sw: "bottom-0 left-0",
+    se: "bottom-0 right-0",
+  }[corner];
+  const cornerRound = {
+    nw: "rounded-tl-xl",
+    ne: "rounded-tr-xl",
+    sw: "rounded-bl-xl",
+    se: "rounded-br-xl",
+  }[corner];
 
   if (pos.x < 0) return null;
 
@@ -147,7 +164,28 @@ export default function OfficeKanban() {
       </button>
 
       {open && (
-        <div ref={resizeRef} data-floating-widget="task-board" style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col">
+        <div data-floating-widget="task-board" style={panelStyle} className="relative bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
+          {/* Visible resize grip on the corner farthest from the toggle button. */}
+          <div
+            onMouseDown={startResize}
+            className={`absolute ${cornerPos} w-6 h-6 ${cursorClass} flex items-center justify-center hover:bg-[#FF6B35]/10 ${cornerRound} transition-colors z-[62]`}
+            title="Drag to resize"
+          >
+            <svg
+              className="w-3.5 h-3.5 text-[#FF6B35]/60 pointer-events-none"
+              viewBox="0 0 16 16"
+              fill="none"
+              style={{
+                transform:
+                  corner === "ne" ? "scaleX(-1)" :
+                  corner === "sw" ? "scaleY(-1)" :
+                  corner === "se" ? "rotate(180deg)" :
+                  undefined,
+              }}
+            >
+              <path d="M1 14 L14 1 M5 14 L14 5 M9 14 L14 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </div>
           <div className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8] shrink-0">
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full" style={{ background: "linear-gradient(135deg, #FF6B35, #F7418F)" }} />
