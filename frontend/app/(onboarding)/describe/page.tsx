@@ -52,6 +52,7 @@ export default function DescribePage() {
   const [skipping, setSkipping] = useState(false);
   const [isRestart, setIsRestart] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sendVoiceRef = useRef<(text: string) => void>(() => {});
   const stt = useSpeechToText(useCallback((text: string) => { if (text.trim()) sendVoiceRef.current(text.trim()); }, []));
   const tts = useTTS();
@@ -87,6 +88,15 @@ export default function DescribePage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Auto-grow the textarea while voice input is live. onChange-based resize
+  // doesn't fire when STT streams transcript via React props.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 240) + "px";
+  }, [stt.transcript, stt.listening, input]);
 
   async function sendMessage(text: string) {
     if (!text || loading || !sessionId) return;
@@ -292,13 +302,14 @@ export default function DescribePage() {
             )}
             <form onSubmit={handleSend} className="flex items-end gap-3">
               <textarea
+                ref={textareaRef}
                 value={stt.listening && stt.transcript ? stt.transcript : input}
-                onChange={e => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px"; } }}
+                onChange={e => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 240) + "px"; } }}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(e); } }}
                 placeholder={stt.listening ? "Listening... (sends after 5s of silence)" : "Type your answer..."}
                 disabled={loading}
                 rows={1}
-                className="flex-1 min-h-[44px] max-h-[120px] rounded-lg border border-[#E0DED8] px-4 py-2.5 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60 resize-none"
+                className="flex-1 min-h-[44px] max-h-[240px] rounded-lg border border-[#E0DED8] px-4 py-2.5 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60 resize-none"
               />
               {tts.supported && (
                 <button

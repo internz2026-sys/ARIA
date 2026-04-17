@@ -36,6 +36,7 @@ export default function CEOChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const { messages, sessions, sessionId, sending, send, switchSession, startNewChat } = useCeoChat();
   const sendRef = useRef(send);
@@ -67,6 +68,15 @@ export default function CEOChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Auto-grow the textarea while voice input is live. onChange-based resize
+  // doesn't fire when STT streams transcript via React props.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 260) + "px";
+  }, [stt.transcript, stt.listening, input]);
 
   function handleSend() {
     const text = input.trim();
@@ -287,13 +297,14 @@ export default function CEOChatPage() {
           )}
           <div className="flex items-end gap-2">
             <textarea
+              ref={textareaRef}
               value={stt.listening && stt.transcript ? stt.transcript : input}
-              onChange={(e) => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 150) + "px"; } }}
+              onChange={(e) => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 260) + "px"; } }}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
               placeholder={stt.listening ? "Listening... (sends after 5s of silence)" : "Ask the CEO agent anything about your marketing..."}
               disabled={sending}
               rows={1}
-              className="flex-1 min-h-[48px] max-h-[150px] px-4 py-3 bg-white border border-[#E0DED8] rounded-xl text-sm text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] disabled:opacity-60 resize-none"
+              className="flex-1 min-h-[48px] max-h-[260px] px-4 py-3 bg-white border border-[#E0DED8] rounded-xl text-sm text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] disabled:opacity-60 resize-none"
             />
             {tts.supported && (
               <button

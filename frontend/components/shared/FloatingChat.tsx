@@ -15,6 +15,7 @@ export default function FloatingChat() {
   const [showHistory, setShowHistory] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const seenCount = useRef(0); // tracks how many messages the user has seen
 
   const { messages, sessions, sessionId, sending, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat } = useCeoChat();
@@ -82,6 +83,16 @@ export default function FloatingChat() {
 
   // Scroll to bottom on new messages AND when panel opens
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, open]);
+
+  // Auto-grow textarea while voice input is live. The onChange auto-resize
+  // only fires on user typing — when STT streams transcript via React props,
+  // onChange never runs and the field stays at 1 row even for long dictations.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+  }, [stt.transcript, stt.listening, input]);
 
   // Persistent panel — the panel stays open until the user explicitly
   // closes it (via the X button, the CEO Chat toggle, or Escape).
@@ -296,10 +307,13 @@ export default function FloatingChat() {
               </div>
             )}
             <div className="flex items-end gap-2">
-              <textarea value={stt.listening && stt.transcript ? stt.transcript : input} onChange={e => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 80) + "px"; } }}
+              <textarea
+                ref={textareaRef}
+                value={stt.listening && stt.transcript ? stt.transcript : input}
+                onChange={e => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; } }}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                 placeholder={stt.listening ? "Listening... (sends after 5s of silence)" : "Ask the CEO..."} disabled={sending} rows={1}
-                className="flex-1 min-h-[36px] max-h-[80px] px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none" />
+                className="flex-1 min-h-[36px] max-h-[200px] px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none" />
               {tts.supported && (
                 <button
                   onClick={() => tts.setEnabled(!tts.enabled)}
