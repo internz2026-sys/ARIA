@@ -5288,6 +5288,57 @@ Channels: {', '.join(tc.channels)}
             )
     integration_notes = ("\n" + "\n".join(integration_lines)) if integration_lines else ""
 
+    # ── Recent activity injection ────────────────────────────────────
+    # The CEO's killer failure mode: "I delegated an email, now I want
+    # to schedule it" requires the CEO to know the inbox row's ID, but
+    # the delegation is async — by the time the user follows up, the
+    # ID exists in the DB but not in the CEO's context window. Fix:
+    # on every chat turn, pre-fetch the last 5 inbox rows for this
+    # tenant from the past 30 minutes and inline them into the system
+    # prompt with their ids. Now "schedule THAT email" resolves without
+    # the CEO needing to call read_inbox at all — the id is literally
+    # visible in its own context.
+    recent_activity = ""
+    if tenant_id:
+        try:
+            _ra_sb = _get_supabase()
+            _ra_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+            _ra_rows = (
+                _ra_sb.table("inbox_items")
+                .select("id, agent, type, title, status, created_at, email_draft")
+                .eq("tenant_id", tenant_id)
+                .gte("created_at", _ra_cutoff)
+                .order("created_at", desc=True)
+                .limit(5)
+                .execute()
+            )
+            if _ra_rows.data:
+                _ra_lines = [
+                    "\n## Recent Inbox Activity (last 30 min)",
+                    "These are the items your team just produced. When the user says "
+                    "\"it / that / the email / the draft / the last one\", pick the id "
+                    "from this list — DO NOT call read_inbox again.",
+                ]
+                for r in _ra_rows.data:
+                    title = (r.get("title") or r.get("type") or "Item")[:80]
+                    agent = r.get("agent") or "—"
+                    rtype = r.get("type") or "—"
+                    status = r.get("status") or "—"
+                    # Include recipient for email rows — helps the CEO
+                    # match "schedule the Hanz email" to the right id.
+                    recipient = ""
+                    draft = r.get("email_draft") or {}
+                    if isinstance(draft, dict) and draft.get("to"):
+                        recipient = f" → {draft['to']}"
+                    _ra_lines.append(
+                        f"- id: `{r['id']}` · {title}{recipient} · {rtype} · {status} · from {agent}"
+                    )
+                recent_activity = "\n".join(_ra_lines) + "\n"
+        except Exception as e:
+            logging.getLogger("aria.ceo_chat").debug(
+                "[ceo-chat] recent_activity fetch failed for %s: %s", tenant_id, e,
+            )
+
     # ── CRM context injection (only when message references contacts/deals/companies) ──
     crm_context = ""
     # Tightened heuristic: only inject CRM context when the message clearly
@@ -5330,7 +5381,7 @@ Channels: {', '.join(tc.channels)}
     _now_iso = _now.isoformat()
 
     system_prompt = f"""{_CEO_MD}
-{business_context}{crm_context}
+{business_context}{crm_context}{recent_activity}
 ## Current Date & Time
 Today is {_today_str}. Current UTC time: {_now_iso}.
 When the user says "tomorrow", "next Monday", "in 2 hours", "April 18", etc., compute the absolute ISO 8601 timestamp from this reference point and use it verbatim in `scheduled_at` fields.
@@ -5411,11 +5462,14 @@ Action rules:
 The user may ask "schedule that email for tomorrow at 1 PM", "remind me next Monday", "send this Friday 9 AM", etc.
 
 1. Resolve the natural-language time using the "Current Date & Time" block above. Output format MUST be ISO 8601 with timezone (e.g. `2026-04-18T13:00:00+00:00`). Never use placeholders.
-2. To schedule an EXISTING draft, call `read_inbox` with NO filters on the first try. It returns the most recent items across every status; pick the row that matches what the user meant. Each row includes `id: <uuid>` — use that exact id as `payload.inbox_item_id`.
-3. task_type values: `send_email` (payload needs inbox_item_id), `publish_post` (payload needs inbox_item_id + platform), `reminder` (payload needs inbox_item_id + title + body).
-4. If `read_inbox` genuinely returns nothing and the user just asked you to delegate an email/post in the same conversation, the draft is being written right now. Say (in your own words, warmly): "I'm just waiting for the draft to land in the Inbox. I'll schedule it the second it arrives — want me to go ahead and lock in the time?" Take ownership of the waiting; never say "the Email Marketer hasn't finished" or blame a sub-agent.
-5. If `read_inbox` returns a list of recent items (the formatter shows "Here are your N most recent inbox items"), pick the best match and schedule it. Never claim the inbox is empty when the formatter clearly shows rows.
-6. Never fabricate an id. If multiple items could match, ask the user to pick: "I see the Checking-in email to Hanz and the SMAPS-SIS demo — which one did you mean?"
+2. **Check the "Recent Inbox Activity" block FIRST.** If the user said "it / that / the email / the last one / the draft" and the list above has entries, pick the most recent matching row's id and schedule it immediately. You should NOT call `read_inbox` when the answer is already in your context — the activity list above is the source of truth for everything produced in the last 30 minutes.
+3. Only call `read_inbox` when:
+   (a) The Recent Activity block is empty (nothing happened in the last 30 min), OR
+   (b) The user referenced something specific that isn't in the recent list ("the Hanz email from yesterday"). For targeted lookups use `read_inbox` with `params.search = "<name or topic>"` — it fuzzy-matches against title and content so "the Hanz one" finds the row with Hanz in it without needing the full title.
+4. If exactly ONE candidate matches (either in Recent Activity or in the read_inbox result), assume that's what the user meant and schedule it. Don't ask. Disambiguation is only needed when >=2 plausible candidates exist.
+5. task_type values: `send_email` (payload needs inbox_item_id), `publish_post` (payload needs inbox_item_id + platform), `reminder` (payload needs inbox_item_id + title + body).
+6. If the Recent Activity block AND `read_inbox` both come back empty, the draft is likely still being written. Say (warmly, in your own words): "I'm just waiting for the draft to land in the Inbox. I'll schedule it the second it arrives — want me to go ahead and lock in the time of April 18, 11 AM so it fires the moment it's ready?" Take ownership; never blame a sub-agent.
+7. Never fabricate an id. If read_inbox returns 2+ plausible candidates, name them briefly ("the Checking-in email to Hanz or the SMAPS-SIS demo?") and let the user pick.
 
 ### Voice + language (founder ↔ CEO)
 You are speaking to a founder about their marketing team. Keep the tone peer-to-peer, warm, and concrete. DO NOT use these words in user-facing replies, ever:

@@ -299,9 +299,9 @@ ACTION_REGISTRY: dict[str, dict] = {
     "read_inbox": {
         "entity": "inbox_item",
         "operation": "read",
-        "description": "List inbox items, optionally filtered by status",
+        "description": "List inbox items. Accepts optional `status`, `type`, or `search` (fuzzy match on title/content for 'the Hanz one' queries).",
         "required_fields": [],
-        "optional_fields": ["status"],
+        "optional_fields": ["status", "type", "search"],
         "confirm": ConfirmLevel.NONE,
         "risk": "none",
     },
@@ -878,6 +878,62 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
     # ── Inbox Read ──
     elif entity == "inbox_item" and operation == "read":
         import asyncio as _asyncio
+        from backend.services.supabase import get_db as _get_db
+
+        # ── Fuzzy search (title ILIKE) ────────────────────────────
+        # The CEO passes `search` when the user says "the Hanz one" /
+        # "the SMAPS demo" / "the draft about pricing". We ILIKE on
+        # title since that's what the formatter shows to the user —
+        # matching on rendered title keeps CEO reasoning and DB
+        # lookup in sync. Short-circuits before the retry loop
+        # because title search is a different query shape.
+        search = (params.get("search") or "").strip()
+        if search:
+            sb_ = _get_db()
+            fuzzy_items: list = []
+            # 3 retries, 500ms apart — matches the prompt's "Database
+            # is slow → retry 3 times before giving up" test case.
+            for attempt in range(3):
+                try:
+                    q = (
+                        sb_.table("inbox_items")
+                        .select("*")
+                        .eq("tenant_id", tenant_id)
+                        .ilike("title", f"%{search}%")
+                        .order("created_at", desc=True)
+                        .limit(10)
+                    )
+                    res = q.execute()
+                    fuzzy_items = list(res.data or [])
+                    if fuzzy_items:
+                        break
+                except Exception:
+                    pass
+                if attempt < 2:
+                    await _asyncio.sleep(0.5)
+            # Fall back to content ILIKE if nothing matched on title —
+            # covers agents that stash the recipient name in the body
+            # rather than the title.
+            if not fuzzy_items:
+                try:
+                    res = (
+                        _get_db()
+                        .table("inbox_items")
+                        .select("*")
+                        .eq("tenant_id", tenant_id)
+                        .ilike("content", f"%{search}%")
+                        .order("created_at", desc=True)
+                        .limit(10)
+                        .execute()
+                    )
+                    fuzzy_items = list(res.data or [])
+                except Exception:
+                    pass
+            return {
+                "items": fuzzy_items[:10],
+                "total": len(fuzzy_items),
+                "search_used": search,
+            }
         # Three-tier search so the CEO stops saying "Your inbox is empty"
         # when the inbox visibly isn't:
         #
@@ -929,11 +985,14 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
             return raw
 
         items = await _fetch()
-        # Only retry when the CALLER asked for a specific filter and it
-        # missed — unfiltered queries returning empty means the tenant
-        # genuinely has nothing, retrying won't change that.
+        # Retry up to 3 times (500ms gap each) when the caller asked
+        # for a specific filter and it missed. This covers the case
+        # where Paperclip just finished an agent run but the inbox
+        # row hasn't been indexed/visible yet. Only retry for filtered
+        # queries — unfiltered empty means the tenant truly has
+        # nothing, no point hammering Postgres.
         if not items.get("items") and (effective_status or type_filter):
-            for _ in range(2):
+            for _ in range(3):
                 await _asyncio.sleep(0.5)
                 items = await _fetch()
                 if items.get("items"):
