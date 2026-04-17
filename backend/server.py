@@ -5874,8 +5874,19 @@ Channels: {', '.join(tc.channels)}
         except Exception:
             pass
 
+    # Current date/time — injected so the CEO can resolve natural-language
+    # scheduling like "tomorrow at 1 PM", "next Monday", "in 2 hours" to the
+    # absolute ISO 8601 timestamp required by the schedule_task action.
+    _now = datetime.now(timezone.utc)
+    _today_str = _now.strftime("%A, %B %d, %Y (%Y-%m-%d)")
+    _now_iso = _now.isoformat()
+
     system_prompt = f"""{_CEO_MD}
 {business_context}{crm_context}
+## Current Date & Time
+Today is {_today_str}. Current UTC time: {_now_iso}.
+When the user says "tomorrow", "next Monday", "in 2 hours", "April 18", etc., compute the absolute ISO 8601 timestamp from this reference point and use it verbatim in `scheduled_at` fields.
+
 ## Sub-Agent Documentation
 {sub_agent_context}
 
@@ -5930,6 +5941,15 @@ Action rules:
 - UPDATE/DELETE/PUBLISH/SEND always require user confirmation before the block runs.
 - CREATE can proceed when intent is clear; ask if data is missing.
 - The system appends the formatted result automatically — write a brief intro ("Here are your contacts:") and include the block. Do NOT fabricate results.
+
+### Scheduling workflow (schedule_task / reschedule_task)
+The user may ask "schedule that email for tomorrow at 1 PM", "remind me next Monday", "send this Friday 9 AM", etc.
+
+1. Resolve the natural-language time using the "Current Date & Time" block above. Output format MUST be ISO 8601 with timezone (e.g. `2026-04-18T13:00:00+00:00`). Never use placeholders.
+2. If scheduling an EXISTING draft, first call `read_inbox` to locate the item (filter mentally by agent and recency), grab the `id`. Then emit `schedule_task` with `payload.inbox_item_id = <id>`.
+3. task_type values: `send_email` (payload needs inbox_item_id), `publish_post` (payload needs inbox_item_id + platform), `reminder` (payload needs inbox_item_id + title + body).
+4. If the user asked you to schedule a draft that was JUST delegated to a sub-agent in this same conversation, the draft may not be in the Inbox yet. Reply: "The draft isn't in the Inbox yet — give the agent a few seconds to finish, then ask me to schedule it." Do NOT emit `schedule_task` with a guessed or placeholder id.
+5. Never fabricate an id — if read_inbox returns nothing matching, tell the user, don't make one up.
 
 Token efficiency:
 - If the user asks to send/post content that ALREADY EXISTS in the Inbox, reference it and delegate with "USE EXISTING:" prefix instead of regenerating.
