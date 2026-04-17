@@ -142,6 +142,10 @@ export function useSpeechToText(onResult: (text: string) => void): UseSpeechToTe
       }
       transcriptRef.current = full;
       setTranscript(full);
+      // A successful result means the previous transient error (often a
+      // harmless "network" blip) is no longer meaningful — clear it so the
+      // banner doesn't linger over working speech.
+      setError(null);
 
       clearSilenceTimer();
       silenceTimerRef.current = setTimeout(() => {
@@ -163,9 +167,15 @@ export function useSpeechToText(onResult: (text: string) => void): UseSpeechToTe
     recognition.onerror = (event: any) => {
       const code = event?.error as string | undefined;
       const mapped = mapErrorCode(code);
-      // "no-speech" fires routinely on short pauses in some browsers — ignore
-      // if we already have transcript text or user hasn't stopped yet.
-      if (mapped === "no_speech" && (transcriptRef.current || !userStoppedRef.current)) {
+      // "no-speech" fires routinely on short pauses in some browsers.
+      // "network" and "aborted" fire on transient disconnects in the speech
+      // service mid-stream — Chrome auto-recovers and we usually still get
+      // a transcript. Only surface these to the user if we truly have
+      // NOTHING captured AND the user hasn't intentionally stopped.
+      const shouldSuppress =
+        (mapped === "no_speech" || mapped === "network" || mapped === "aborted")
+        && (transcriptRef.current || !userStoppedRef.current);
+      if (shouldSuppress) {
         return;
       }
       // Log for debugging — mic failures are otherwise invisible.

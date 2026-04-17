@@ -7,10 +7,9 @@ import { supabase } from "@/lib/supabase";
 import { useNotifications } from "@/lib/use-notifications";
 
 // Sidebar grouped into 4 sections to reduce the cognitive load of the
-// previous flat 14-item list. The "Chat with CEO" duplicate nav link
-// was removed -- the FloatingChat widget + Cmd+K shortcut already
-// provide chat access from every page, so the sidebar entry was
-// redundant and confused first-time users about which to click.
+// previous flat 14-item list. "Chat with CEO" is a full-page chat route
+// that sits alongside the FloatingChat widget — user prefers having an
+// explicit sidebar entry for it.
 
 const navItems = [
   {
@@ -19,6 +18,16 @@ const navItems = [
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1h-2z" />
+      </svg>
+    ),
+  },
+  {
+    label: "Chat with CEO",
+    href: "/chat",
+    highlight: true,
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
       </svg>
     ),
   },
@@ -180,7 +189,7 @@ export default function Sidebar() {
         {(() => {
           // Group definitions: section label -> matching href set
           const groups: { label: string; hrefs: string[] }[] = [
-            { label: "Workspace", hrefs: ["/dashboard", "/office", "/projects"] },
+            { label: "Workspace", hrefs: ["/dashboard", "/chat", "/office", "/projects"] },
             { label: "Activity", hrefs: ["/inbox", "/conversations", "/calendar"] },
             { label: "Marketing", hrefs: ["/crm", "/campaigns", "/agents"] },
             { label: "Insights", hrefs: ["/analytics", "/reports", "/usage"] },
