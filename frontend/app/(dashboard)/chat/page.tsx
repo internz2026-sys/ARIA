@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { AGENT_COLORS, AGENT_NAMES } from "@/lib/agent-config";
 import { useCeoChat, type ChatMessage } from "@/lib/use-ceo-chat";
 import { formatDateAgo } from "@/lib/utils";
-import { useSpeechToText, useTTS } from "@/lib/use-voice";
+import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
 
 function renderMarkdown(text: string) {
   const parts: React.ReactNode[] = [];
@@ -274,6 +274,17 @@ export default function CEOChatPage() {
 
         {/* Input */}
         <div className="border-t border-[#E0DED8] px-4 pt-3 pb-2">
+          {stt.error && (
+            <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+              <span className="flex-1">{sttErrorMessage(stt.error)}</span>
+              <button onClick={stt.clearError} className="text-amber-700 hover:text-amber-900 font-medium">
+                Dismiss
+              </button>
+            </div>
+          )}
           <div className="flex items-end gap-2">
             <textarea
               value={stt.listening && stt.transcript ? stt.transcript : input}

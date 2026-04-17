@@ -6,7 +6,7 @@ import { useDraggable } from "@/lib/use-draggable";
 import { useCeoChat } from "@/lib/use-ceo-chat";
 import { formatDateAgo } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/render-markdown";
-import { useSpeechToText, useTTS } from "@/lib/use-voice";
+import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
 import ConfirmationDialog from "@/components/shared/ConfirmationDialog";
 
 export default function FloatingChat() {
@@ -296,6 +296,12 @@ export default function FloatingChat() {
 
           {/* Input */}
           <div className="border-t border-[#E0DED8] px-3 py-2 shrink-0">
+            {stt.error && (
+              <div className="mb-1.5 flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+                <span className="flex-1 leading-tight">{sttErrorMessage(stt.error)}</span>
+                <button onClick={stt.clearError} className="text-amber-700 hover:text-amber-900 font-medium shrink-0">×</button>
+              </div>
+            )}
             <div className="flex items-end gap-2">
               <textarea value={stt.listening && stt.transcript ? stt.transcript : input} onChange={e => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 80) + "px"; } }}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}

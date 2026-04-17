@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { renderMarkdown } from "@/lib/render-markdown";
-import { useSpeechToText, useTTS } from "@/lib/use-voice";
+import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
 import { API_URL } from "@/lib/api";
 
 interface ChatMessage {
@@ -279,6 +279,17 @@ export default function DescribePage() {
 
           {/* Input area */}
           <div className="px-6 py-4 border-t border-[#E0DED8]">
+            {stt.error && (
+              <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                </svg>
+                <span className="flex-1">{sttErrorMessage(stt.error)}</span>
+                <button type="button" onClick={stt.clearError} className="text-amber-700 hover:text-amber-900 font-medium">
+                  Dismiss
+                </button>
+              </div>
+            )}
             <form onSubmit={handleSend} className="flex items-end gap-3">
               <textarea
                 value={stt.listening && stt.transcript ? stt.transcript : input}
