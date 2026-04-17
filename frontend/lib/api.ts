@@ -68,6 +68,17 @@ export const inbox = {
   },
   update: (itemId: string, updates: { status: string }) =>
     fetchAPI(`/api/inbox/${itemId}`, { method: "PATCH", body: JSON.stringify(updates) }),
+  updateItem: (
+    itemId: string,
+    updates: {
+      title?: string;
+      content?: string;
+      metadata?: Record<string, unknown>;
+      social_posts?: Array<{ platform: string; text: string; hashtags?: string[]; image_url?: string }>;
+      email_draft?: Record<string, unknown>;
+      status?: string;
+    },
+  ) => fetchAPI(`/api/inbox/${itemId}`, { method: "PATCH", body: JSON.stringify(updates) }),
   remove: (itemId: string) =>
     fetchAPI(`/api/inbox/${itemId}`, { method: "DELETE" }),
   approveSend: (tenantId: string, inboxItemId: string) =>

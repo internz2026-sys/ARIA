@@ -142,6 +142,16 @@ export default function InboxPage() {
   const [totalPages, setTotalPages] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  // ── Inline edit state ─────────────────────────────────────────────
+  // Set `editingId` to the id of the item currently being edited. The
+  // shape of `editDraft` depends on the item type:
+  //   content/blog/ad -> { title, content }
+  //   social_post     -> { title, posts: [{platform, text, hashtags}] }
+  // Null when no edit is in progress. Saving calls inbox.updateItem
+  // with whatever subset of the draft is populated.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<any>(null);
+  const [editSaving, setEditSaving] = useState(false);
   const PAGE_SIZE = 20;
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
@@ -704,6 +714,78 @@ export default function InboxPage() {
     }
   };
 
+  // ─── Inline edit helpers (content + social) ──────────────────────
+  // Generic edit for non-email inbox items. Emails already have their
+  // own EmailEditor component with approve/schedule/send UX — these
+  // helpers cover the gap for Content Writer / Ad Strategist markdown
+  // outputs and Social Manager per-platform posts.
+  const beginEditContent = (item: InboxItem) => {
+    setEditingId(item.id);
+    setEditDraft({ title: item.title, content: item.content });
+  };
+  const beginEditSocial = (item: InboxItem) => {
+    const posts = parseSocialPosts(item.content);
+    setEditingId(item.id);
+    setEditDraft({
+      title: item.title,
+      posts: posts.length
+        ? posts.map((p) => ({
+            platform: p.platform || "twitter",
+            text: p.text || "",
+            hashtags: p.hashtags || [],
+          }))
+        : [{ platform: "twitter", text: "", hashtags: [] }],
+    });
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditDraft(null);
+  };
+
+  const handleSaveEdit = async (item: InboxItem) => {
+    if (!editDraft || editSaving) return;
+    setEditSaving(true);
+    try {
+      const updates: any = {};
+      if (typeof editDraft.title === "string" && editDraft.title !== item.title) {
+        updates.title = editDraft.title;
+      }
+      if (Array.isArray(editDraft.posts)) {
+        // Social posts path — backend converts social_posts[] into
+        // the {posts:[...]} JSON blob on the content column.
+        updates.social_posts = editDraft.posts;
+      } else if (typeof editDraft.content === "string" && editDraft.content !== item.content) {
+        updates.content = editDraft.content;
+      }
+      if (Object.keys(updates).length === 0) {
+        cancelEdit();
+        return;
+      }
+      await inbox.updateItem(item.id, updates);
+      // Optimistically update local state so the user sees their edit
+      // applied without waiting for the socket event to echo back.
+      const newContent = updates.social_posts
+        ? JSON.stringify({ posts: updates.social_posts })
+        : updates.content ?? item.content;
+      const patched = {
+        ...item,
+        title: updates.title ?? item.title,
+        content: newContent,
+      };
+      setItems((prev) => prev.map((i) => (i.id === item.id ? patched : i)));
+      if (selected?.id === item.id) setSelected(patched);
+      showToast({ title: "Saved", variant: "success" });
+      cancelEdit();
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't save edit",
+        body: err?.message || "Network error — try again.",
+        variant: "error",
+      });
+    }
+    setEditSaving(false);
+  };
+
   // ─── Email Draft Editor (editable) ───
   const renderEmailEditor = (item: InboxItem) => {
     const draft = item.email_draft!;
@@ -835,7 +917,9 @@ export default function InboxPage() {
 
   // ─── Social post detail view (tweet cards) ───
   const renderSocialDetail = (item: InboxItem) => {
-    const posts = parseSocialPosts(item.content);
+    const isEditing = editingId === item.id;
+    type SocialPost = { platform: string; text: string; hashtags?: string[] };
+    const posts: SocialPost[] = isEditing && editDraft?.posts ? editDraft.posts : parseSocialPosts(item.content);
     const PLATFORM_ICONS: Record<string, React.ReactNode> = {
       twitter: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" /></svg>,
       linkedin: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" /></svg>,
@@ -859,9 +943,50 @@ export default function InboxPage() {
             <span className="text-xs text-[#9E9C95]">Social Post</span>
             <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
           </div>
-          <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
+          {isEditing ? (
+            <input
+              value={editDraft?.title ?? ""}
+              onChange={(e) => setEditDraft({ ...editDraft, title: e.target.value })}
+              className="w-full text-lg font-semibold text-[#2C2C2A] bg-white border border-[#534AB7]/40 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30"
+              placeholder="Title"
+            />
+          ) : (
+            <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
+          )}
           <div className="flex items-center gap-2 mt-3 flex-wrap">
-            {isSocialPost(item) && (item.status === "ready" || item.status === "needs_review" || item.status === "failed") && (
+            {!isEditing && (item.status === "ready" || item.status === "needs_review" || item.status === "failed") && (
+              <button
+                onClick={() => beginEditSocial(item)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-white text-[#534AB7] border border-[#534AB7] hover:bg-[#EEEDFE] transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zM19.5 19.5h-15" />
+                </svg>
+                Edit
+              </button>
+            )}
+            {isEditing && (
+              <>
+                <button
+                  onClick={() => handleSaveEdit(item)}
+                  disabled={editSaving}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors disabled:opacity-60"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                  </svg>
+                  {editSaving ? "Saving..." : "Save"}
+                </button>
+                <button
+                  onClick={cancelEdit}
+                  disabled={editSaving}
+                  className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+            {!isEditing && isSocialPost(item) && (item.status === "ready" || item.status === "needs_review" || item.status === "failed") && (
               <button
                 onClick={() => handlePublishSocial(item)}
                 disabled={actionLoading === "publish"}
@@ -873,7 +998,7 @@ export default function InboxPage() {
                 {actionLoading === "publish" ? "Publishing..." : item.status === "failed" ? "Retry Publish" : "Publish to X"}
               </button>
             )}
-            {isSocialPost(item) && (item.status === "ready" || item.status === "needs_review" || item.status === "failed") && (
+            {!isEditing && isSocialPost(item) && (item.status === "ready" || item.status === "needs_review" || item.status === "failed") && (
               <button
                 onClick={() => handlePublishLinkedIn(item)}
                 disabled={actionLoading === "linkedin"}
@@ -885,7 +1010,7 @@ export default function InboxPage() {
                 {actionLoading === "linkedin" ? "Publishing..." : "Publish to LinkedIn"}
               </button>
             )}
-            {isSocialPost(item) && (item.status === "ready" || item.status === "needs_review") && (
+            {!isEditing && isSocialPost(item) && (item.status === "ready" || item.status === "needs_review") && (
               <button
                 onClick={() => { setScheduleItem(item); setSchedulePlatform(""); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-white text-[#534AB7] border border-[#534AB7] hover:bg-[#EEEDFE] transition-colors"
@@ -913,7 +1038,90 @@ export default function InboxPage() {
           </div>
         </div>
         <div className="flex-1 overflow-auto p-5 space-y-4">
-          {posts.length > 0 ? posts.map((post, idx) => {
+          {isEditing && (
+            <div className="space-y-3">
+              {(editDraft?.posts || []).map((p: any, idx: number) => {
+                const platform = (p.platform || "twitter").toLowerCase();
+                const charLimit = platform === "twitter" ? 280 : platform === "linkedin" ? 3000 : 2000;
+                const updatePost = (changes: any) => {
+                  const nextPosts = [...(editDraft?.posts || [])];
+                  nextPosts[idx] = { ...nextPosts[idx], ...changes };
+                  setEditDraft({ ...editDraft, posts: nextPosts });
+                };
+                return (
+                  <div key={idx} className="rounded-xl border border-[#E0DED8] bg-white overflow-hidden">
+                    <div className="flex items-center gap-2 px-4 py-2 bg-[#F8F8F6] border-b border-[#E0DED8]">
+                      <select
+                        value={platform}
+                        onChange={(e) => updatePost({ platform: e.target.value })}
+                        className="text-sm font-medium bg-transparent border-0 focus:outline-none"
+                      >
+                        <option value="twitter">X / Twitter</option>
+                        <option value="linkedin">LinkedIn</option>
+                        <option value="facebook">Facebook</option>
+                      </select>
+                      <span className="text-xs text-[#9E9C95] ml-auto">
+                        {(p.text || "").length}/{charLimit}
+                        {platform === "twitter" && (p.text || "").length > 280 && (
+                          <span className="text-red-500 ml-1 font-medium">over limit</span>
+                        )}
+                      </span>
+                      {(editDraft?.posts?.length || 0) > 1 && (
+                        <button
+                          onClick={() => {
+                            const nextPosts = [...(editDraft?.posts || [])];
+                            nextPosts.splice(idx, 1);
+                            setEditDraft({ ...editDraft, posts: nextPosts });
+                          }}
+                          className="text-xs text-red-500 hover:text-red-600"
+                          title="Remove this post"
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    <textarea
+                      value={p.text || ""}
+                      onChange={(e) => updatePost({ text: e.target.value })}
+                      rows={5}
+                      placeholder="Post text..."
+                      className="w-full px-4 py-3 border-0 focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 text-[15px] text-[#0F1419] resize-y"
+                    />
+                    <div className="px-4 py-2 border-t border-[#E0DED8]">
+                      <input
+                        value={(p.hashtags || []).join(", ")}
+                        onChange={(e) =>
+                          updatePost({
+                            hashtags: e.target.value
+                              .split(",")
+                              .map((t: string) => t.trim().replace(/^#/, ""))
+                              .filter(Boolean),
+                          })
+                        }
+                        placeholder="Hashtags (comma-separated, no #)"
+                        className="w-full text-sm bg-transparent border-0 focus:outline-none placeholder:text-[#B0AFA8]"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+              <button
+                onClick={() =>
+                  setEditDraft({
+                    ...editDraft,
+                    posts: [
+                      ...(editDraft?.posts || []),
+                      { platform: "twitter", text: "", hashtags: [] },
+                    ],
+                  })
+                }
+                className="w-full py-2 text-sm font-medium rounded-lg border border-dashed border-[#534AB7]/40 text-[#534AB7] hover:bg-[#EEEDFE] transition-colors"
+              >
+                + Add post
+              </button>
+            </div>
+          )}
+          {!isEditing && posts.length > 0 ? posts.map((post, idx) => {
             const platform = (post.platform || "twitter").toLowerCase();
             const colors = PLATFORM_COLORS[platform] || PLATFORM_COLORS.twitter;
             const hashtags = post.hashtags || [];
@@ -976,11 +1184,11 @@ export default function InboxPage() {
                 </div>
               </div>
             );
-          }) : (
+          }) : !isEditing ? (
             <div className="prose prose-sm max-w-none text-[#2C2C2A] whitespace-pre-wrap">
               {item.content}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     );
@@ -1035,7 +1243,9 @@ export default function InboxPage() {
     </div>
   );
 
-  const renderStandardDetail = (item: InboxItem) => (
+  const renderStandardDetail = (item: InboxItem) => {
+    const isEditing = editingId === item.id;
+    return (
     <div className="flex flex-col w-full">
       <div className="border-b border-[#E0DED8] p-5">
         <div className="flex items-center gap-2 mb-2">
@@ -1046,8 +1256,52 @@ export default function InboxPage() {
           <span className="text-xs text-[#9E9C95]">{typeLabel(item.type)}</span>
           <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
         </div>
-        <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
+        {isEditing ? (
+          <input
+            value={editDraft?.title ?? ""}
+            onChange={(e) => setEditDraft({ ...editDraft, title: e.target.value })}
+            className="w-full text-lg font-semibold text-[#2C2C2A] bg-white border border-[#534AB7]/40 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30"
+            placeholder="Title"
+          />
+        ) : (
+          <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
+        )}
         <div className="flex items-center gap-2 mt-3">
+          {/* Edit / Save / Cancel for editable, non-image item types.
+              Images can't be text-edited — they get a separate refine
+              prompt flow below via the Media Agent re-dispatch. */}
+          {item.type !== "image" && !isEditing && (
+            <button
+              onClick={() => beginEditContent(item)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-white text-[#534AB7] border border-[#534AB7] hover:bg-[#EEEDFE] transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zM19.5 19.5h-15" />
+              </svg>
+              Edit
+            </button>
+          )}
+          {isEditing && (
+            <>
+              <button
+                onClick={() => handleSaveEdit(item)}
+                disabled={editSaving}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors disabled:opacity-60"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+                {editSaving ? "Saving..." : "Save"}
+              </button>
+              <button
+                onClick={cancelEdit}
+                disabled={editSaving}
+                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors disabled:opacity-60"
+              >
+                Cancel
+              </button>
+            </>
+          )}
           <button
             onClick={() => handleCopy(item.content)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors"
@@ -1097,17 +1351,27 @@ export default function InboxPage() {
         </div>
       </div>
       <div className="flex-1 overflow-auto p-5">
-        <div className="prose prose-sm max-w-none text-[#2C2C2A]">
-          {looksLikeHtml(item.content)
-            ? <div className="whitespace-pre-wrap">{stripHtml(item.content)}</div>
-            : item.content.includes("## ") || item.content.includes("**")
-              ? renderMarkdown(item.content)
-              : <div className="whitespace-pre-wrap">{item.content}</div>
-          }
-        </div>
+        {isEditing ? (
+          <textarea
+            value={editDraft?.content ?? ""}
+            onChange={(e) => setEditDraft({ ...editDraft, content: e.target.value })}
+            placeholder="Edit content (supports markdown)"
+            className="w-full min-h-[360px] font-mono text-sm p-3 rounded-lg border border-[#E0DED8] bg-white focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7]/60 resize-y"
+          />
+        ) : (
+          <div className="prose prose-sm max-w-none text-[#2C2C2A]">
+            {looksLikeHtml(item.content)
+              ? <div className="whitespace-pre-wrap">{stripHtml(item.content)}</div>
+              : item.content.includes("## ") || item.content.includes("**")
+                ? renderMarkdown(item.content)
+                : <div className="whitespace-pre-wrap">{item.content}</div>
+            }
+          </div>
+        )}
       </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="max-w-[1400px] space-y-4">
