@@ -276,6 +276,19 @@ ONBOARDING_FIELDS = [
     "goal_30_days",
 ]
 
+# Canned fallback questions used when the LLM goes off-script and tries to
+# produce a final summary before all 8 fields are answered. Keyed by field.
+FIELD_QUESTIONS = {
+    "business_name": "What is your business or brand name?",
+    "product_or_offer": "What product, service, or offer do you sell?",
+    "target_audience": "Who is your ideal customer?",
+    "problem_solved": "What main problem does your offer solve?",
+    "differentiator": "What makes your offer different from competitors?",
+    "channels": "Which channels should ARIA focus on first: email, social, ads, or content?",
+    "brand_voice": "What tone should ARIA use for your brand: professional, friendly, bold, luxury, or casual?",
+    "goal_30_days": "What is your main goal for the next 30 days?",
+}
+
 def _ensure_generated_fields(gp: dict) -> dict:
     """Fill in positioning_summary and 30_day_gtm_focus if the model left them empty."""
     if not gp.get("positioning_summary"):
@@ -418,7 +431,18 @@ class OnboardingAgent:
             )
         else:
             next_field = ONBOARDING_FIELDS[self.current_topic_index]
-            progress += f"Current question field: {next_field}."
+            remaining = self.max_questions - answered
+            progress += (
+                f"Current question field: {next_field}. "
+                f"Only {answered} of {self.max_questions} questions have been answered "
+                f"({remaining} remaining). "
+                f"DO NOT produce the final summary yet. "
+                f"DO NOT output 'Onboarding Complete' or any summary block. "
+                f"Ask ONLY the next question for the '{next_field}' field "
+                f"(suggested wording: \"{FIELD_QUESTIONS.get(next_field, '')}\"). "
+                f"Even if the user's previous answer seemed detailed, "
+                f"you must still ask the remaining {remaining} question(s) one at a time."
+            )
 
         # Use higher max_tokens for the final summary.
         tokens = 1000 if answered >= self.max_questions else 500
@@ -436,13 +460,31 @@ class OnboardingAgent:
         # Safety net: strip any JSON that leaked into the visible response.
         cleaned_text = self._strip_json_from_chat(cleaned_text)
 
+        # Safety net: if the LLM produced a premature "Onboarding Complete"
+        # summary while fewer than max_questions fields are validated, replace
+        # it with a canned next-question prompt. The LLM sometimes hallucinates
+        # answers for remaining fields from a single detailed user reply.
+        if (
+            self.questions_answered < self.max_questions
+            and "onboarding complete" in cleaned_text.lower()
+        ):
+            next_field = ONBOARDING_FIELDS[self.current_topic_index]
+            cleaned_text = FIELD_QUESTIONS.get(
+                next_field,
+                f"Tell me about: {next_field.replace('_', ' ')}.",
+            )
+            logger.warning(
+                "Onboarding: LLM produced premature summary at %d/%d; "
+                "replaced with canned question for field=%s",
+                self.questions_answered, self.max_questions, next_field,
+            )
+
         # Store the cleaned text (without metadata) in conversation history.
         self.messages.append({"role": "assistant", "content": cleaned_text})
 
-        # Detect completion.
+        # Detect completion — count-based only. String-based detection was
+        # unsafe because the LLM occasionally produces a summary prematurely.
         if not self._complete and self.questions_answered >= self.max_questions:
-            self._complete = True
-        if not self._complete and "onboarding complete" in cleaned_text.lower():
             self._complete = True
 
         return cleaned_text
