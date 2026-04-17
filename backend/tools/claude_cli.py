@@ -17,6 +17,7 @@ from pathlib import Path
 logger = logging.getLogger("aria.claude")
 
 # ── Model constants ────────────────────────────────────────────────────────────
+MODEL_OPUS = "claude-opus-4-7"
 MODEL_SONNET = "claude-sonnet-4-6"
 MODEL_HAIKU = "claude-haiku-4-5"
 

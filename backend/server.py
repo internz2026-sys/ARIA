@@ -5997,7 +5997,7 @@ async def ceo_chat(body: CEOChatMessage):
 
 
 async def _ceo_chat_impl(body: CEOChatMessage):
-    from backend.tools.claude_cli import call_claude, MODEL_SONNET
+    from backend.tools.claude_cli import call_claude, MODEL_OPUS
     import json as _json
 
     _evict_chat_sessions()
@@ -6303,7 +6303,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             conversation,
             tenant_id=tenant_id or "global",
             agent_id="ceo",
-            model=MODEL_SONNET,
+            model=MODEL_OPUS,
         )
     except Exception as exc:
         import traceback
