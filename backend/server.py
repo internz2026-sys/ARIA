@@ -2132,6 +2132,43 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
     if not to or not subject or not html_body:
         raise HTTPException(status_code=400, detail="Email draft is missing required fields (to, subject, or body)")
 
+    # Reply-threading lookup: if the draft is tied to an existing thread,
+    # resolve the Gmail threadId so the send stays in the same conversation
+    # instead of starting a new one. Silently falls back to a fresh thread
+    # if the lookup fails — threading is a nice-to-have, not a blocker.
+    reply_thread_id = ""
+    reply_in_reply_to = ""
+    reply_to_thread_db_id = meta.get("reply_to_thread_id", "")
+    if reply_to_thread_db_id:
+        try:
+            t_row = sb.table("email_threads").select("gmail_thread_id").eq(
+                "id", reply_to_thread_db_id
+            ).eq("tenant_id", tenant_id).single().execute()
+            if t_row.data:
+                reply_thread_id = t_row.data.get("gmail_thread_id") or ""
+            # Newest inbound message's RFC-2822 Message-ID (stored by the
+            # sync loop when available) — lets non-Gmail clients thread too.
+            last_inbound = sb.table("email_messages").select(
+                "gmail_message_id"
+            ).eq("thread_id", reply_to_thread_db_id).eq("tenant_id", tenant_id).eq(
+                "direction", "inbound"
+            ).order("message_timestamp", desc=True).limit(1).execute()
+            if last_inbound.data and reply_thread_id:
+                # Best-effort: fetch the Message-ID header from Gmail so
+                # In-Reply-To threads in clients that don't read threadId.
+                try:
+                    from backend.tools import gmail_tool as _gt
+                    gcfg = get_tenant_config(tenant_id)
+                    tok = gcfg.integrations.google_access_token
+                    gmsg_id = last_inbound.data[0].get("gmail_message_id")
+                    if tok and gmsg_id:
+                        fetched = await _gt.get_message(tok, gmsg_id)
+                        reply_in_reply_to = fetched.get("message_id_header", "") or ""
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     # Mark as sending
     sb.table("inbox_items").update({
         "status": "sending",
@@ -2166,6 +2203,8 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
         subject=subject,
         html_body=html_body,
         from_email=config.owner_email,
+        thread_id=reply_thread_id,
+        in_reply_to=reply_in_reply_to,
     )
 
     # Token expired — try refresh
@@ -2180,6 +2219,8 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
                 subject=subject,
                 html_body=html_body,
                 from_email=config.owner_email,
+                thread_id=reply_thread_id,
+                in_reply_to=reply_in_reply_to,
             )
         except Exception as e:
             config.integrations.google_access_token = None
@@ -2517,6 +2558,162 @@ Keep it professional, concise, and on-brand. Do not include placeholder text."""
             "preview_snippet": preview_snippet,
             "status": "draft_pending_approval",
         },
+    }
+
+
+class SendReplyRequest(BaseModel):
+    body: str
+    subject: str = ""
+
+
+@app.post("/api/email/{tenant_id}/threads/{thread_id}/send-reply")
+async def send_thread_reply(tenant_id: str, thread_id: str, body: SendReplyRequest):
+    """Send a user-authored reply directly on an existing email thread.
+
+    Unlike /draft-reply (which drafts via the agent and goes through inbox
+    approval), this sends immediately with the user's own text. Gmail
+    threadId + In-Reply-To are preserved so the reply stays in the same
+    conversation in Gmail and in other mail clients.
+    """
+    from backend.tools import gmail_tool
+    from backend.agents.email_marketer_agent import _wrap_html
+    import html as _html_mod
+
+    sb = _get_supabase()
+
+    text = (body.body or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Reply body cannot be empty")
+
+    thread_result = sb.table("email_threads").select("*").eq(
+        "id", thread_id
+    ).eq("tenant_id", tenant_id).single().execute()
+    if not thread_result.data:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    thread = thread_result.data
+    contact_email = thread.get("contact_email", "")
+    if not contact_email:
+        raise HTTPException(status_code=400, detail="Thread has no contact email to reply to")
+
+    original_subject = thread.get("subject", "") or ""
+    subject = (body.subject or "").strip() or (
+        original_subject if original_subject.lower().startswith("re:")
+        else f"Re: {original_subject}" if original_subject else "Re:"
+    )
+
+    # Plain text → lightly styled HTML paragraphs (escape first, line
+    # breaks → <br>, blank lines → new <p>). Then wrap in the branded
+    # template so the outgoing mail matches ARIA-drafted replies.
+    escaped = _html_mod.escape(text)
+    paragraphs = [p.replace("\n", "<br>") for p in escaped.split("\n\n") if p.strip()]
+    inner = "".join(
+        f'<p style="margin:0 0 12px 0; line-height:1.6;">{p}</p>' for p in paragraphs
+    ) or f'<p style="margin:0; line-height:1.6;">{escaped}</p>'
+    html_body = _wrap_html(inner)
+
+    config = get_tenant_config(tenant_id)
+    access_token = config.integrations.google_access_token
+    refresh_token = config.integrations.google_refresh_token
+
+    if not access_token and refresh_token:
+        try:
+            access_token = await gmail_tool.refresh_access_token(refresh_token)
+            config.integrations.google_access_token = access_token
+            save_tenant_config(config)
+        except Exception:
+            pass
+
+    if not access_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Gmail not connected. Please log in with Google to grant email access.",
+        )
+
+    gmail_thread_id = thread.get("gmail_thread_id") or ""
+    in_reply_to = ""
+    last_inbound = sb.table("email_messages").select("gmail_message_id").eq(
+        "thread_id", thread_id
+    ).eq("tenant_id", tenant_id).eq("direction", "inbound").order(
+        "message_timestamp", desc=True
+    ).limit(1).execute()
+    if last_inbound.data and gmail_thread_id:
+        gmsg_id = last_inbound.data[0].get("gmail_message_id")
+        if gmsg_id:
+            try:
+                fetched = await gmail_tool.get_message(access_token, gmsg_id)
+                in_reply_to = fetched.get("message_id_header", "") or ""
+            except Exception:
+                pass
+
+    result = await gmail_tool.send_email(
+        access_token=access_token,
+        to=contact_email,
+        subject=subject,
+        html_body=html_body,
+        from_email=config.owner_email,
+        thread_id=gmail_thread_id,
+        in_reply_to=in_reply_to,
+    )
+
+    if result.get("error") == "token_expired" and refresh_token:
+        try:
+            new_token = await gmail_tool.refresh_access_token(refresh_token)
+            config.integrations.google_access_token = new_token
+            save_tenant_config(config)
+            result = await gmail_tool.send_email(
+                access_token=new_token,
+                to=contact_email,
+                subject=subject,
+                html_body=html_body,
+                from_email=config.owner_email,
+                thread_id=gmail_thread_id,
+                in_reply_to=in_reply_to,
+            )
+        except Exception as e:
+            config.integrations.google_access_token = None
+            if getattr(e, "is_revoked", False):
+                config.integrations.google_refresh_token = None
+            save_tenant_config(config)
+            raise HTTPException(status_code=401, detail="Gmail token expired. Please reconnect Gmail in Settings.")
+
+    if result.get("error"):
+        detail = result.get("detail") or result.get("error") or "Gmail send failed"
+        raise HTTPException(status_code=500, detail=f"Email send failed: {detail}")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sb.table("email_messages").insert({
+        "thread_id": thread_id,
+        "tenant_id": tenant_id,
+        "gmail_message_id": result.get("message_id") or None,
+        "direction": "outbound",
+        "sender": config.owner_email,
+        "recipients": contact_email,
+        "subject": subject,
+        "text_body": text,
+        "html_body": html_body,
+        "preview_snippet": text[:200],
+        "message_timestamp": now_iso,
+        "approval_status": "sent",
+    }).execute()
+
+    sb.table("email_threads").update({
+        "status": "awaiting_reply",
+        "last_message_at": now_iso,
+        "gmail_thread_id": gmail_thread_id or result.get("thread_id") or None,
+        "updated_at": now_iso,
+    }).eq("id", thread_id).execute()
+
+    await sio.emit("email_thread_updated", {
+        "thread_id": thread_id,
+        "gmail_thread_id": gmail_thread_id or result.get("thread_id", ""),
+        "status": "awaiting_reply",
+    }, room=tenant_id)
+
+    return {
+        "status": "sent",
+        "message_id": result.get("message_id", ""),
+        "thread_id": thread_id,
+        "gmail_thread_id": gmail_thread_id or result.get("thread_id", ""),
     }
 
 
@@ -6017,6 +6214,15 @@ The user may ask "schedule that email for tomorrow at 1 PM", "remind me next Mon
 3. task_type values: `send_email` (payload needs inbox_item_id), `publish_post` (payload needs inbox_item_id + platform), `reminder` (payload needs inbox_item_id + title + body).
 4. If the user asked you to schedule a draft that was JUST delegated to a sub-agent in this same conversation, the draft may not be in the Inbox yet. Reply: "The draft isn't in the Inbox yet — give the agent a few seconds to finish, then ask me to schedule it." Do NOT emit `schedule_task` with a guessed or placeholder id.
 5. Never fabricate an id — if read_inbox returns nothing matching, tell the user, don't make one up.
+
+### Email reply workflow (draft_email_reply)
+When the user asks you to REPLY to an existing email ("reply to X's email", "write back to Y saying ...", "respond to the last email from Z"):
+
+1. Call `read_email_threads` first to locate the thread. Match on contact email or, if the user references "the last reply", use the thread whose `status` is `needs_review` or has the most recent `last_message_at`.
+2. Emit `draft_email_reply` with `params.thread_id` set to the matched thread's id. If the user gave specific instructions ("tell them we can meet Friday", "decline politely"), pass them as `params.custom_instructions`.
+3. The draft goes to the Inbox as `draft_pending_approval`. Tell the user where to find it and that approving it will send on the ORIGINAL Gmail thread (not a new conversation).
+4. Never skip step 1 — you cannot guess `thread_id`. If `read_email_threads` returns nothing matching, tell the user instead of making one up.
+5. Reply requests NEVER go through the `delegate` block. `draft_email_reply` is a business action, not a sub-agent delegation.
 
 Token efficiency:
 - If the user asks to send/post content that ALREADY EXISTS in the Inbox, reference it and delegate with "USE EXISTING:" prefix instead of regenerating.

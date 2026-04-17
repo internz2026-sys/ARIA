@@ -17,12 +17,31 @@ GMAIL_SEND_URL = f"{GMAIL_API_BASE}/messages/send"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
-def _build_mime_message(to: str, subject: str, html_body: str, from_email: str) -> str:
-    """Build RFC 2822 MIME message and return base64url-encoded string."""
+def _build_mime_message(
+    to: str,
+    subject: str,
+    html_body: str,
+    from_email: str,
+    in_reply_to: str = "",
+    references: str = "",
+) -> str:
+    """Build RFC 2822 MIME message and return base64url-encoded string.
+
+    When in_reply_to / references are supplied, the resulting message carries
+    the headers that third-party email clients (Apple Mail, Outlook, etc.)
+    use to thread replies. Gmail itself threads via the API's `threadId`
+    field, which is handled in `send_email`.
+    """
     msg = MIMEMultipart("alternative")
     msg["To"] = to
     msg["From"] = from_email
     msg["Subject"] = subject
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        # Fall back to In-Reply-To for References if no chain was supplied.
+        msg["References"] = references or in_reply_to
+    elif references:
+        msg["References"] = references
     msg.attach(MIMEText(html_body, "html"))
     return base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
 
@@ -76,14 +95,26 @@ async def send_email(
     subject: str,
     html_body: str,
     from_email: str,
+    thread_id: str = "",
+    in_reply_to: str = "",
+    references: str = "",
 ) -> dict:
-    """Send an email via Gmail API. Returns message_id on success."""
-    raw = _build_mime_message(to, subject, html_body, from_email)
+    """Send an email via Gmail API. Returns message_id on success.
+
+    For replies, pass `thread_id` (the Gmail threadId) so Gmail keeps the
+    message in the same conversation. `in_reply_to` / `references` are the
+    RFC-2822 Message-ID headers — set them so non-Gmail clients thread
+    correctly too. All three are optional; omit for a brand-new thread.
+    """
+    raw = _build_mime_message(to, subject, html_body, from_email, in_reply_to, references)
+    payload: dict = {"raw": raw}
+    if thread_id:
+        payload["threadId"] = thread_id
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             GMAIL_SEND_URL,
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"raw": raw},
+            json=payload,
         )
         if resp.status_code == 401:
             return {"error": "token_expired", "status_code": 401}

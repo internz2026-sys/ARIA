@@ -142,24 +142,32 @@ export default function FloatingChat() {
       : (isButtonBottom ? "ne" : "se");
 
   const defaultH = Math.min(520, wH - 80);
-  const { size: panelSize, startResize, cursorClass } = useResizablePanel(
+
+  // Shared between useResizablePanel's direct-DOM path (during drag) and
+  // React's render-time style (at rest). Same math for both so the panel
+  // doesn't jump on mouseup.
+  const computePanelPosition = useCallback(
+    (s: { w: number; h: number }) => {
+      const buttonRightEdge = pos.x + 170;
+      const rawPanelX = isButtonRight ? buttonRightEdge - s.w : pos.x;
+      const left = Math.min(Math.max(20, rawPanelX), wW - s.w - 20);
+      const top = isButtonBottom
+        ? Math.max(20, pos.y - s.h - PANEL_GAP)
+        : Math.min(wH - s.h - 20, pos.y + BUTTON_H + PANEL_GAP);
+      return { left, top };
+    },
+    [pos.x, pos.y, isButtonRight, isButtonBottom, wW, wH],
+  );
+
+  const { size: panelSize, startResize, cursorClass, handles } = useResizablePanel(
     "aria-ceo-chat-panel-size",
     { w: 420, h: defaultH },
     corner,
     { minW: 320, minH: 360 },
+    { panelRef, computePosition: computePanelPosition },
   );
 
-  // Horizontal: right-align with button when button is in the right half,
-  // left-align otherwise. Clamped so the panel never spills off the viewport.
-  const buttonRightEdge = pos.x + 170;
-  const rawPanelX = isButtonRight ? buttonRightEdge - panelSize.w : pos.x;
-  const basePanelX = Math.min(Math.max(20, rawPanelX), wW - panelSize.w - 20);
-
-  // Vertical: panel above the button when it sits in the lower 65%, below
-  // otherwise.
-  const basePanelY = isButtonBottom
-    ? Math.max(20, pos.y - panelSize.h - PANEL_GAP)
-    : Math.min(wH - panelSize.h - 20, pos.y + BUTTON_H + PANEL_GAP);
+  const { left: basePanelX, top: basePanelY } = computePanelPosition(panelSize);
 
   const panelStyle: React.CSSProperties = {
     position: "fixed",
@@ -213,32 +221,40 @@ export default function FloatingChat() {
       </button>
 
       {open && (
-        <div data-floating-widget="ceo-chat" style={panelStyle} className="relative bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
-          {/* Resize grip — visible corner handle with direction cursor.
-              Placed on the corner farthest from the toggle button so dragging
-              outward grows the panel. z-[62] keeps it above internal content
-              but below modals. */}
-          <div
-            onMouseDown={startResize}
-            className={`absolute ${cornerPos} w-6 h-6 ${cursorClass} flex items-center justify-center hover:bg-[#534AB7]/10 ${cornerRound} transition-colors z-[62]`}
-            title="Drag to resize"
-          >
-            <svg
-              className="w-3.5 h-3.5 text-[#534AB7]/60 pointer-events-none"
-              viewBox="0 0 16 16"
-              fill="currentColor"
-              style={{
-                transform:
-                  corner === "ne" ? "scaleX(-1)" :
-                  corner === "sw" ? "scaleY(-1)" :
-                  corner === "se" ? "rotate(180deg)" :
-                  undefined,
-              }}
-            >
-              {/* Three diagonal lines pointing toward the corner (nw variant). */}
-              <path d="M1 14 L14 1 M5 14 L14 5 M9 14 L14 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
-            </svg>
-          </div>
+        <div ref={panelRef} data-floating-widget="ceo-chat" style={panelStyle} className="relative bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
+          {/* Resize handles — far edges + far corner, relative to the
+              button anchor. Edges are thin strips with a matching cursor;
+              the corner keeps a visible SVG grip. Near edges are omitted
+              because the panel's near side is locked to the button. */}
+          {handles.map((h) => {
+            if (h === "n") return <div key={h} onMouseDown={startResize("n")} className="absolute left-0 right-0 top-0 h-1.5 cursor-ns-resize hover:bg-[#534AB7]/10 z-[62]" />;
+            if (h === "s") return <div key={h} onMouseDown={startResize("s")} className="absolute left-0 right-0 bottom-0 h-1.5 cursor-ns-resize hover:bg-[#534AB7]/10 z-[62]" />;
+            if (h === "e") return <div key={h} onMouseDown={startResize("e")} className="absolute top-0 bottom-0 right-0 w-1.5 cursor-ew-resize hover:bg-[#534AB7]/10 z-[62]" />;
+            if (h === "w") return <div key={h} onMouseDown={startResize("w")} className="absolute top-0 bottom-0 left-0 w-1.5 cursor-ew-resize hover:bg-[#534AB7]/10 z-[62]" />;
+            return (
+              <div
+                key={h}
+                onMouseDown={startResize(h)}
+                className={`absolute ${cornerPos} w-6 h-6 ${cursorClass} flex items-center justify-center hover:bg-[#534AB7]/10 ${cornerRound} transition-colors z-[63]`}
+                title="Drag to resize"
+              >
+                <svg
+                  className="w-3.5 h-3.5 text-[#534AB7]/60 pointer-events-none"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  style={{
+                    transform:
+                      corner === "ne" ? "scaleX(-1)" :
+                      corner === "sw" ? "scaleY(-1)" :
+                      corner === "se" ? "rotate(180deg)" :
+                      undefined,
+                  }}
+                >
+                  <path d="M1 14 L14 1 M5 14 L14 5 M9 14 L14 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </div>
+            );
+          })}
           {/* Header — doubles as a drag handle. Grabbing it anywhere that
               isn't a button drags BOTH the panel and the toggle button
               together, because they share the same useDraggable position.

@@ -104,6 +104,11 @@ export const emailThreads = {
       method: "POST",
       body: JSON.stringify({ thread_id: threadId, custom_instructions: customInstructions || "" }),
     }),
+  sendReply: (tenantId: string, threadId: string, body: string, subject?: string) =>
+    fetchAPI(`/api/email/${tenantId}/threads/${threadId}/send-reply`, {
+      method: "POST",
+      body: JSON.stringify({ body, subject: subject || "" }),
+    }),
   sync: (tenantId: string) =>
     fetchAPI(`/api/email/${tenantId}/sync`, { method: "POST" }),
 };

@@ -93,19 +93,31 @@ export default function OfficeKanban() {
       ? (isButtonBottom ? "nw" : "sw")
       : (isButtonBottom ? "ne" : "se");
 
-  const { size: panelSize, startResize, cursorClass } = useResizablePanel(
+  // Shared between useResizablePanel's direct-DOM path (during drag) and
+  // React's render-time style (at rest). Same math both places so the
+  // panel doesn't jump when state syncs on mouseup.
+  const computePanelPosition = useCallback(
+    (s: { w: number; h: number }) => {
+      const buttonRightEdge = pos.x + 180; // button is ~180px wide
+      const rawPanelX = isButtonRight ? buttonRightEdge - s.w : pos.x;
+      const left = Math.min(Math.max(20, rawPanelX), wW - s.w - 20);
+      const top = isButtonBottom
+        ? Math.max(20, pos.y - s.h - PANEL_GAP)
+        : Math.min(wH - s.h - 20, pos.y + BUTTON_H + PANEL_GAP);
+      return { left, top };
+    },
+    [pos.x, pos.y, isButtonRight, isButtonBottom, wW, wH],
+  );
+
+  const { size: panelSize, startResize, cursorClass, handles } = useResizablePanel(
     "aria-task-board-panel-size",
     { w: 700, h: 440 },
     corner,
     { minW: 420, minH: 320 },
+    { panelRef, computePosition: computePanelPosition },
   );
 
-  const buttonRightEdge = pos.x + 180; // button is ~180px wide
-  const rawPanelX = isButtonRight ? buttonRightEdge - panelSize.w : pos.x;
-  const basePanelX = Math.min(Math.max(20, rawPanelX), wW - panelSize.w - 20);
-  const basePanelY = isButtonBottom
-    ? Math.max(20, pos.y - panelSize.h - PANEL_GAP)
-    : Math.min(wH - panelSize.h - 20, pos.y + BUTTON_H + PANEL_GAP);
+  const { left: basePanelX, top: basePanelY } = computePanelPosition(panelSize);
 
   const panelStyle: React.CSSProperties = {
     position: "fixed",
@@ -164,28 +176,39 @@ export default function OfficeKanban() {
       </button>
 
       {open && (
-        <div data-floating-widget="task-board" style={panelStyle} className="relative bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
-          {/* Visible resize grip on the corner farthest from the toggle button. */}
-          <div
-            onMouseDown={startResize}
-            className={`absolute ${cornerPos} w-6 h-6 ${cursorClass} flex items-center justify-center hover:bg-[#FF6B35]/10 ${cornerRound} transition-colors z-[62]`}
-            title="Drag to resize"
-          >
-            <svg
-              className="w-3.5 h-3.5 text-[#FF6B35]/60 pointer-events-none"
-              viewBox="0 0 16 16"
-              fill="none"
-              style={{
-                transform:
-                  corner === "ne" ? "scaleX(-1)" :
-                  corner === "sw" ? "scaleY(-1)" :
-                  corner === "se" ? "rotate(180deg)" :
-                  undefined,
-              }}
-            >
-              <path d="M1 14 L14 1 M5 14 L14 5 M9 14 L14 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </div>
+        <div ref={panelRef} data-floating-widget="task-board" style={panelStyle} className="relative bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
+          {/* Resize handles — far edges + far corner, relative to the
+              button anchor. Near edges omitted since the panel's near
+              side is anchored to the toggle button. */}
+          {handles.map((h) => {
+            if (h === "n") return <div key={h} onMouseDown={startResize("n")} className="absolute left-0 right-0 top-0 h-1.5 cursor-ns-resize hover:bg-[#FF6B35]/10 z-[62]" />;
+            if (h === "s") return <div key={h} onMouseDown={startResize("s")} className="absolute left-0 right-0 bottom-0 h-1.5 cursor-ns-resize hover:bg-[#FF6B35]/10 z-[62]" />;
+            if (h === "e") return <div key={h} onMouseDown={startResize("e")} className="absolute top-0 bottom-0 right-0 w-1.5 cursor-ew-resize hover:bg-[#FF6B35]/10 z-[62]" />;
+            if (h === "w") return <div key={h} onMouseDown={startResize("w")} className="absolute top-0 bottom-0 left-0 w-1.5 cursor-ew-resize hover:bg-[#FF6B35]/10 z-[62]" />;
+            return (
+              <div
+                key={h}
+                onMouseDown={startResize(h)}
+                className={`absolute ${cornerPos} w-6 h-6 ${cursorClass} flex items-center justify-center hover:bg-[#FF6B35]/10 ${cornerRound} transition-colors z-[63]`}
+                title="Drag to resize"
+              >
+                <svg
+                  className="w-3.5 h-3.5 text-[#FF6B35]/60 pointer-events-none"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  style={{
+                    transform:
+                      corner === "ne" ? "scaleX(-1)" :
+                      corner === "sw" ? "scaleY(-1)" :
+                      corner === "se" ? "rotate(180deg)" :
+                      undefined,
+                  }}
+                >
+                  <path d="M1 14 L14 1 M5 14 L14 5 M9 14 L14 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              </div>
+            );
+          })}
           <div
             onMouseDown={(e) => {
               if ((e.target as HTMLElement).closest("button")) return;

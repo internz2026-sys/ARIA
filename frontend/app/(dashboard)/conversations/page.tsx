@@ -57,6 +57,16 @@ export default function ConversationsPage() {
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
+  // Inline reply composer — opened by the Reply button in the thread
+  // header, sends the user's own text on the same Gmail thread (no AI
+  // drafting, no inbox approval). `draftReply` is still one click away
+  // for when you want ARIA to write it for you.
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyBody, setReplyBody] = useState("");
+  const [sendingReply, setSendingReply] = useState(false);
+  const [replyError, setReplyError] = useState("");
+  const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
+
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
   const fetchThreads = useCallback(async () => {
@@ -142,6 +152,11 @@ export default function ConversationsPage() {
   const selectThread = async (thread: EmailThread) => {
     setSelected(thread);
     setThreadLoading(true);
+    // Switching threads resets the inline composer so the reply text
+    // from thread A doesn't carry over into thread B.
+    setReplyOpen(false);
+    setReplyBody("");
+    setReplyError("");
     try {
       const data = await emailThreads.get(tenantId, thread.id);
       setMessages(data.messages || []);
@@ -155,6 +170,25 @@ export default function ConversationsPage() {
       setMessages([]);
     }
     setThreadLoading(false);
+  };
+
+  const handleSendReply = async () => {
+    if (!tenantId || !selected || sendingReply) return;
+    const text = replyBody.trim();
+    if (!text) return;
+    setSendingReply(true);
+    setReplyError("");
+    try {
+      await emailThreads.sendReply(tenantId, selected.id, text);
+      const data = await emailThreads.get(tenantId, selected.id);
+      setMessages(data.messages || []);
+      setReplyBody("");
+      setReplyOpen(false);
+      await fetchThreads();
+    } catch (err: any) {
+      setReplyError(err?.message || "Failed to send reply. Check Gmail connection in Settings.");
+    }
+    setSendingReply(false);
   };
 
   const handleSync = async () => {
@@ -367,14 +401,28 @@ export default function ConversationsPage() {
                     </p>
                     <div className="flex items-center gap-2 mt-3">
                       <button
-                        onClick={handleDraftReply}
-                        disabled={draftLoading}
-                        className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors disabled:opacity-60"
+                        onClick={() => {
+                          setReplyOpen(true);
+                          setReplyError("");
+                          // Let the textarea mount before focusing.
+                          setTimeout(() => replyTextareaRef.current?.focus(), 40);
+                        }}
+                        className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
                         </svg>
-                        {draftLoading ? "Generating..." : "Generate Reply Draft"}
+                        Reply
+                      </button>
+                      <button
+                        onClick={handleDraftReply}
+                        disabled={draftLoading}
+                        className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-white border border-[#E0DED8] text-[#2C2C2A] hover:bg-[#F8F8F6] transition-colors disabled:opacity-60"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" />
+                        </svg>
+                        {draftLoading ? "Generating..." : "Draft with AI"}
                       </button>
                     </div>
                   </div>
@@ -476,6 +524,75 @@ export default function ConversationsPage() {
                       );
                     })}
                   </div>
+
+                  {/* Inline reply composer. Sits below the scrollable
+                      message list so long threads don't push it off
+                      screen. Cmd/Ctrl+Enter sends; Escape closes. */}
+                  {replyOpen && (
+                    <div className="border-t border-[#E0DED8] bg-[#FAFAF8] p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-medium text-[#5F5E5A]">
+                          Reply to <span className="text-[#2C2C2A]">{selected.contact_email}</span>
+                        </span>
+                        <button
+                          onClick={() => { setReplyOpen(false); setReplyBody(""); setReplyError(""); }}
+                          className="text-[#9E9C95] hover:text-[#2C2C2A] transition-colors"
+                          title="Close"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      {replyError && (
+                        <div className="mb-2 px-3 py-2 rounded-md border border-red-200 bg-red-50 text-xs text-red-700">
+                          {replyError}
+                        </div>
+                      )}
+                      <textarea
+                        ref={replyTextareaRef}
+                        value={replyBody}
+                        onChange={(e) => setReplyBody(e.target.value)}
+                        onKeyDown={(e) => {
+                          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                            e.preventDefault();
+                            handleSendReply();
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            setReplyOpen(false);
+                            setReplyBody("");
+                            setReplyError("");
+                          }
+                        }}
+                        placeholder="Type your reply... (Cmd/Ctrl+Enter to send)"
+                        disabled={sendingReply}
+                        rows={4}
+                        className="w-full px-3 py-2 bg-white border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:border-[#534AB7] focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-60 resize-y min-h-[96px]"
+                      />
+                      <div className="flex items-center gap-2 mt-2">
+                        <button
+                          onClick={handleSendReply}
+                          disabled={sendingReply || !replyBody.trim()}
+                          className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors disabled:opacity-50"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                          </svg>
+                          {sendingReply ? "Sending..." : "Send"}
+                        </button>
+                        <button
+                          onClick={() => { setReplyOpen(false); setReplyBody(""); setReplyError(""); }}
+                          disabled={sendingReply}
+                          className="px-3 py-2 text-sm font-medium rounded-lg text-[#5F5E5A] hover:bg-[#F0F0EE] transition-colors disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        <span className="text-xs text-[#9E9C95] ml-auto">
+                          Sent from {selected.contact_email ? "your Gmail" : "Gmail"} — threaded with this conversation
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </>
               )
             ) : (
