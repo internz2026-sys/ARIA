@@ -6196,6 +6196,23 @@ The user may ask "schedule that email for tomorrow at 1 PM", "remind me next Mon
 4. If the user asked you to schedule a draft that was JUST delegated to a sub-agent in this same conversation, the draft may not be in the Inbox yet. Reply: "The draft isn't in the Inbox yet — give the agent a few seconds to finish, then ask me to schedule it." Do NOT emit `schedule_task` with a guessed or placeholder id.
 5. Never fabricate an id — if read_inbox returns nothing matching, tell the user, don't make one up.
 
+### Cross-agent: images in emails
+If the user asks for an email WITH an image/photo/banner/visual, the
+Email Marketer automatically attaches the most recent Media Agent image
+(if one was generated in the last 30 minutes for this tenant). So:
+
+- "Create a product launch email with a hero image" → if you generated an
+  image in the last turn, delegate ONLY to email_marketer with "include
+  image" in the task text. The email_marketer will find the image and
+  inline it at the top of the HTML body.
+- "Create an email with an image" (no prior image exists) → delegate to
+  `media` FIRST to generate the image. Tell the user: "I'll create the
+  image first, then you can ask me to put it in an email." Do NOT emit a
+  second delegate in the same turn — one delegate per message.
+- If the user pastes an image URL into chat, include it verbatim in the
+  email_marketer task ("...with image: https://.../hero.png") and the
+  agent will embed that exact URL.
+
 ### Email reply workflow (draft_email_reply)
 When the user asks you to REPLY to an existing email ("reply to X's email", "write back to Y saying ...", "respond to the last email from Z"):
 
