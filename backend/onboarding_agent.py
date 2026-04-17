@@ -541,6 +541,7 @@ class OnboardingAgent:
     ) -> TenantConfig:
         extracted = self._extracted_config or await self.extract_config()
         has_skips = len(self.skipped_topics) > 0
+        ans = self.field_answers  # authoritative source — stored user answers
 
         gp_raw = extracted.get("gtm_profile", {})
         gtm_profile = GTMProfile(
@@ -556,20 +557,56 @@ class OnboardingAgent:
             thirty_day_gtm_focus=gp_raw.get("30_day_gtm_focus", ""),
         )
 
+        # Build nested config objects with stored answers as backstops so the
+        # edit-profile view and sub-agents see real values even when the LLM
+        # extraction partially fails. The edit-profile endpoint reads from
+        # icp.target_titles / icp.pain_points / product.* / brand_voice.tone /
+        # gtm_playbook.action_plan_30 — all of which need to be hydrated here.
+        icp_raw = extracted.get("icp", {}) or {}
+        if not icp_raw.get("target_titles") and ans.get("target_audience"):
+            icp_raw["target_titles"] = [ans["target_audience"].strip()]
+        if not icp_raw.get("pain_points") and ans.get("problem_solved"):
+            icp_raw["pain_points"] = [ans["problem_solved"].strip()]
+
+        product_raw = extracted.get("product", {}) or {}
+        if not product_raw.get("description") and ans.get("product_or_offer"):
+            product_raw["description"] = ans["product_or_offer"].strip()
+        if not product_raw.get("name") and ans.get("business_name"):
+            product_raw["name"] = ans["business_name"].strip()
+        if not product_raw.get("differentiators") and ans.get("differentiator"):
+            product_raw["differentiators"] = [ans["differentiator"].strip()]
+
+        gtm_raw = extracted.get("gtm_playbook", {}) or {}
+        if not gtm_raw.get("action_plan_30") and ans.get("goal_30_days"):
+            gtm_raw["action_plan_30"] = ans["goal_30_days"].strip()
+        if not gtm_raw.get("competitor_differentiation") and ans.get("differentiator"):
+            gtm_raw["competitor_differentiation"] = ans["differentiator"].strip()
+        if not gtm_raw.get("channel_strategy"):
+            gtm_raw["channel_strategy"] = _normalize_channels(ans.get("channels", ""))
+
+        brand_raw = extracted.get("brand_voice", {}) or {}
+        if not brand_raw.get("tone") and ans.get("brand_voice"):
+            brand_raw["tone"] = ans["brand_voice"].strip()
+
+        # Top-level identity fields — stored answers always win.
+        business_name = ans.get("business_name") or extracted.get("business_name", "")
+        description = ans.get("product_or_offer") or extracted.get("description", "")
+        channels = _normalize_channels(ans.get("channels", "")) or extracted.get("channels", [])
+
         return TenantConfig(
             tenant_id=tenant_id,
-            business_name=extracted.get("business_name", ""),
+            business_name=business_name,
             industry=extracted.get("industry", "technology"),
-            description=extracted.get("description", ""),
-            icp=ICPConfig(**extracted.get("icp", {})),
-            product=ProductConfig(**extracted.get("product", {})),
-            gtm_playbook=GTMPlaybook(**extracted.get("gtm_playbook", {})),
-            brand_voice=BrandVoice(**extracted.get("brand_voice", {})),
+            description=description,
+            icp=ICPConfig(**icp_raw),
+            product=ProductConfig(**product_raw),
+            gtm_playbook=GTMPlaybook(**gtm_raw),
+            brand_voice=BrandVoice(**brand_raw),
             active_agents=active_agents or extracted.get(
                 "recommended_agents",
                 ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist", "media"],
             ),
-            channels=extracted.get("channels", []),
+            channels=channels,
             gtm_profile=gtm_profile,
             owner_email=owner_email,
             owner_name=owner_name,
