@@ -444,8 +444,8 @@ ACTION_REGISTRY: dict[str, dict] = {
         "description": "Schedule an email, post, or follow-up for a specific date/time",
         "required_fields": ["task_type", "title", "scheduled_at"],
         "optional_fields": ["payload", "timezone", "related_entity_id", "approval_required"],
-        "confirm": ConfirmLevel.REQUIRED,
-        "risk": "medium",
+        "confirm": ConfirmLevel.NONE,
+        "risk": "low",
     },
     "read_scheduled_tasks": {
         "entity": "scheduled_task",

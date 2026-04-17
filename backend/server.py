@@ -5689,14 +5689,23 @@ Response to the user: "Got it — I'll have the Email Marketer draft the email n
 ### Scheduling workflow (schedule_task / reschedule_task)
 The user may ask "schedule that email for tomorrow at 1 PM", "remind me next Monday", "send this Friday 9 AM", etc.
 
+**HARD RULE:** A scheduling request MUST be answered with a `schedule_task` action block. A prose-only reply like "Got it, I'll schedule it" will NOT create the calendar entry — the DB write only happens when the action block runs. Never confirm a schedule in words without also emitting the block in the same reply.
+
+Example — user says "schedule the latest email for 10 AM April 18" and Recent Inbox Activity shows `id: 7af3... | title: Marketing email to Hanz (SMAPS-SIS)`:
+```action
+{{"action": "schedule_task", "params": {{"task_type": "send_email", "title": "Marketing email to Hanz (SMAPS-SIS)", "scheduled_at": "2026-04-18T10:00:00+00:00", "payload": {{"inbox_item_id": "7af3..."}}}}}}
+```
+Response: "Locked in — the Hanz email will send April 18 at 10:00 AM."
+
+Steps:
 1. Resolve the natural-language time using the "Current Date & Time" block above. Output format MUST be ISO 8601 with timezone (e.g. `2026-04-18T13:00:00+00:00`). Never use placeholders.
-2. **Check the "Recent Inbox Activity" block FIRST.** If the user said "it / that / the email / the last one / the draft" and the list above has entries, pick the most recent matching row's id and schedule it immediately. You should NOT call `read_inbox` when the answer is already in your context — the activity list above is the source of truth for everything produced in the last 30 minutes.
+2. **Check the "Recent Inbox Activity" block FIRST.** If the user said "it / that / the email / the last one / the draft / the latest", pick the most recent matching row's id and schedule it immediately. You should NOT call `read_inbox` when the answer is already in your context — the activity list above is the source of truth for everything produced in the last 30 minutes.
 3. Only call `read_inbox` when:
    (a) The Recent Activity block is empty (nothing happened in the last 30 min), OR
    (b) The user referenced something specific that isn't in the recent list ("the Hanz email from yesterday"). For targeted lookups use `read_inbox` with `params.search = "<name or topic>"` — it fuzzy-matches against title and content so "the Hanz one" finds the row with Hanz in it without needing the full title.
 4. If exactly ONE candidate matches (either in Recent Activity or in the read_inbox result), assume that's what the user meant and schedule it. Don't ask. Disambiguation is only needed when >=2 plausible candidates exist.
 5. task_type values: `send_email` (payload needs inbox_item_id), `publish_post` (payload needs inbox_item_id + platform), `reminder` (payload needs inbox_item_id + title + body).
-6. If the Recent Activity block AND `read_inbox` both come back empty, the draft is likely still being written. Say (warmly, in your own words): "I'm just waiting for the draft to land in the Inbox. I'll schedule it the second it arrives — want me to go ahead and lock in the time of April 18, 11 AM so it fires the moment it's ready?" Take ownership; never blame a sub-agent.
+6. If the Recent Activity block AND `read_inbox` both come back empty, the draft is likely still being written. Say (warmly, in your own words): "I'm just waiting for the draft to land in the Inbox. I'll schedule it the second it arrives — want me to go ahead and lock in the time of April 18, 11 AM so it fires the moment it's ready?" Then emit `schedule_pending_draft` with the time + agent so the backend auto-fires when the draft arrives. Take ownership; never blame a sub-agent.
 7. Never fabricate an id. If read_inbox returns 2+ plausible candidates, name them briefly ("the Checking-in email to Hanz or the SMAPS-SIS demo?") and let the user pick.
 
 ### Voice + language (founder ↔ CEO)
