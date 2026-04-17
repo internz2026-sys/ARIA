@@ -5614,11 +5614,21 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     # ── Best-effort dedupe based on recent activity ────────────────────
     # When the agent doesn't send paperclip_issue_id (which is most of
     # the time today), still try to avoid creating obvious duplicates
-    # within the same delegation: same tenant + same agent + recent
-    # creation time + same content prefix = update the existing row
-    # instead of inserting another. The agent's behavior is to POST
-    # the same email content twice in some cases, and without dedupe
-    # we end up with two rows showing the same draft.
+    # within the same delegation. Two match strategies, in order:
+    #
+    #   1. A recent placeholder (status='processing', same tenant +
+    #      agent) — this is the row the watcher created when dispatch
+    #      started. Its content is a "X is working on..." stub, so a
+    #      content-prefix compare will never match the real agent
+    #      output. We still want to treat it as the target to update,
+    #      otherwise we get the hyphenated-slug-style double row:
+    #      placeholder stays as "Email Marketer is working on...", the
+    #      skill curl creates a second row with the real email. Always
+    #      update the most recent processing placeholder.
+    #
+    #   2. A recent completed row (same tenant + agent + first 100
+    #      chars of content match) — handles the agent POSTing the
+    #      same content twice.
     try:
         # 5-minute window catches the watcher placeholder that gets
         # updated 60-90s after the agent's skill curl posts. Previously
@@ -5626,7 +5636,7 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
         recent_window = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
         recent = (
             sb.table("inbox_items")
-            .select("id,content,type")
+            .select("id,content,type,status,title")
             .eq("tenant_id", tenant_id)
             .eq("agent", body.agent)
             .gte("created_at", recent_window)
@@ -5634,7 +5644,44 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
             .limit(8)
             .execute()
         )
-        for r in (recent.data or []):
+        rows = list(recent.data or [])
+
+        # Strategy 1: processing placeholder — always upgrade it.
+        # Content isn't substantive enough to compare; the whole point
+        # of the placeholder is to be a stub that the skill curl fills in.
+        for r in rows:
+            r_title = (r.get("title") or "").lower()
+            is_placeholder = (
+                r.get("status") == "processing"
+                or " is working on" in r_title
+            )
+            if not is_placeholder:
+                continue
+            update_data = {
+                "title": title,
+                "content": body.content,
+                "type": content_type,
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if email_draft:
+                update_data["email_draft"] = email_draft
+            sb.table("inbox_items").update(update_data).eq("id", r["id"]).execute()
+            logging.getLogger("aria.inbox").info(
+                "[inbox-create] upgraded processing placeholder %s "
+                "(agent=%s) with real agent output",
+                r["id"], body.agent,
+            )
+            item_data = {"id": r["id"], "tenant_id": tenant_id, **update_data}
+            if tenant_id:
+                try:
+                    await sio.emit("inbox_updated", {"action": "updated", "item": item_data}, room=tenant_id)
+                except Exception:
+                    pass
+            return {"item": item_data, "deduped": True, "merged_placeholder": True}
+
+        # Strategy 2: content-prefix match for double-POSTs of the same draft.
+        for r in rows:
             r_content = (r.get("content") or "")[:300]
             new_prefix = (body.content or "")[:300]
             # 100-char overlap (relaxed from 200) catches drafts where
