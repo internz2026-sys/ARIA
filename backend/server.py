@@ -2505,14 +2505,36 @@ async def update_email_draft(tenant_id: str, body: UpdateDraftRequest):
     return {"ok": True, "email_draft": draft}
 
 
+class CancelDraftRequest(BaseModel):
+    inbox_item_id: str
+    # Optional reason the user rejected this draft. Written to
+    # inbox_items.cancel_reason (column added by create_style_memory.sql)
+    # and replayed into future agent prompts via summarize_cancel_reasons.
+    reason: str = ""
+
+
 @app.post("/api/email/{tenant_id}/cancel-draft")
-async def cancel_email_draft(tenant_id: str, body: EmailApproveRequest):
-    """Cancel a pending email draft."""
+async def cancel_email_draft(tenant_id: str, body: CancelDraftRequest):
+    """Cancel a pending email draft, optionally capturing a reason."""
     sb = _get_supabase()
-    sb.table("inbox_items").update({
+    updates: dict = {
         "status": "cancelled",
         "updated_at": datetime.now(timezone.utc).isoformat(),
-    }).eq("id", body.inbox_item_id).eq("tenant_id", tenant_id).execute()
+    }
+    reason = (body.reason or "").strip()
+    if reason:
+        updates["cancel_reason"] = reason[:500]
+    try:
+        sb.table("inbox_items").update(updates).eq(
+            "id", body.inbox_item_id
+        ).eq("tenant_id", tenant_id).execute()
+    except Exception:
+        # Column might not exist yet (migration not applied). Retry
+        # without the reason so the cancel itself still succeeds.
+        sb.table("inbox_items").update({
+            "status": "cancelled",
+            "updated_at": updates["updated_at"],
+        }).eq("id", body.inbox_item_id).eq("tenant_id", tenant_id).execute()
     return {"ok": True}
 
 
@@ -6324,6 +6346,7 @@ Valid pipeline patterns:
 - `media` → `ad_strategist` (image-in-ad)
 - `content_writer` → `email_marketer` (blog digest email)
 - `content_writer` → `social_manager` (blog → thread)
+- Campaign bundles (up to 6 chained steps): `media` → `content_writer` → `email_marketer` → `social_manager`, etc. When the user asks for a "launch", "campaign", or "full bundle", emit a multi-step pipeline with `delay_seconds: 60-120` between steps so each agent's output is indexed before the next runs.
 
 This is the ONLY way to emit more than one agent in a single turn — two separate `delegate` blocks in the same reply is still a bug (it triggers the "accidentally fired two agents" alert). Use `then` for intentional chains; otherwise stick to one block.
 
@@ -6533,11 +6556,13 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             d = _parse_codeblock_json(block, "delegate")
             if not d or d.get("agent") not in _VALID_AGENTS:
                 continue
-            # Unroll the .then chain. Cap at 4 steps so a malformed
-            # response can't produce an arbitrarily long pipeline.
+            # Unroll the .then chain. Cap at 6 steps so a malformed
+            # response can't produce an arbitrarily long pipeline — 6 is
+            # the high end of a realistic campaign bundle (hero image +
+            # blog + landing page + launch email + 2-3 social posts).
             chain: list[dict] = []
             current = d
-            for _ in range(4):
+            for _ in range(6):
                 chain.append({k: v for k, v in current.items() if k != "then"})
                 nxt = current.get("then")
                 if not isinstance(nxt, dict) or nxt.get("agent") not in _VALID_AGENTS:

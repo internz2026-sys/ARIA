@@ -294,3 +294,79 @@ def summarize_top_performers_for_prompt(
             preview = (r.get("content") or "")[:160]
         lines.append(f"- {title} — {preview}")
     return "\n".join(lines)
+
+
+def summarize_style_memory_for_prompt(
+    tenant_id: str, *, agent: str, limit: int = 3,
+) -> str:
+    """Return a compact "user edits to emulate" block for BaseAgent.
+
+    Pulls recent rows from `style_adjustments` (written by
+    routers/inbox.py every time the user meaningfully edited a draft
+    this agent produced). The block is truncated aggressively — we
+    only need enough signal for the model to notice the direction of
+    the edits, not verbatim replay.
+    """
+    if not tenant_id or not agent:
+        return ""
+    try:
+        rows = (
+            _db()
+            .table("style_adjustments")
+            .select("original_content, edited_content, diff_chars, created_at")
+            .eq("tenant_id", tenant_id)
+            .eq("agent", agent)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines = [
+        "## User style preferences (the tenant edited past drafts this way — emulate)",
+    ]
+    for r in rows:
+        before = (r.get("original_content") or "")[:280].replace("\n", " ")
+        after = (r.get("edited_content") or "")[:280].replace("\n", " ")
+        lines.append(f"- BEFORE: {before}")
+        lines.append(f"  AFTER:  {after}")
+    return "\n".join(lines)
+
+
+def summarize_cancel_reasons_for_prompt(
+    tenant_id: str, *, agent: str, limit: int = 3,
+) -> str:
+    """Return a short block of recent cancellation reasons for the agent.
+
+    Read from inbox_items where cancel_reason is set. Helps the model
+    avoid the specific failure modes the user has flagged ("too salesy",
+    "wrong recipient", "off brand voice"). Empty string when the column
+    isn't present yet or the tenant has no cancelled rows.
+    """
+    if not tenant_id or not agent:
+        return ""
+    try:
+        rows = (
+            _db()
+            .table("inbox_items")
+            .select("title, cancel_reason, created_at")
+            .eq("tenant_id", tenant_id)
+            .eq("agent", agent)
+            .not_.is_("cancel_reason", "null")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        ).data or []
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines = ["## Recent user cancellation reasons (avoid these failure modes)"]
+    for r in rows:
+        title = (r.get("title") or "")[:80]
+        reason = (r.get("cancel_reason") or "").strip()[:200]
+        if reason:
+            lines.append(f"- {title}: {reason}")
+    return "\n".join(lines)

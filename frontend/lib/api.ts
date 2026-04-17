@@ -86,10 +86,10 @@ export const inbox = {
       method: "POST",
       body: JSON.stringify({ inbox_item_id: inboxItemId }),
     }),
-  cancelDraft: (tenantId: string, inboxItemId: string) =>
+  cancelDraft: (tenantId: string, inboxItemId: string, reason?: string) =>
     fetchAPI(`/api/email/${tenantId}/cancel-draft`, {
       method: "POST",
-      body: JSON.stringify({ inbox_item_id: inboxItemId }),
+      body: JSON.stringify({ inbox_item_id: inboxItemId, reason: reason || "" }),
     }),
   updateDraft: (tenantId: string, inboxItemId: string, updates: { to?: string; subject?: string; html_body?: string }) =>
     fetchAPI(`/api/email/${tenantId}/update-draft`, {

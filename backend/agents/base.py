@@ -148,21 +148,39 @@ class BaseAgent:
             )
             logger.info("[%s] Loaded skill MD (%d chars)", self.AGENT_NAME, len(skill_md))
 
-        # Analytics feedback: prepend the agent's most recent approved /
-        # sent / published outputs so the next generation can mimic what
-        # actually got greenlit. Empty string when the tenant has no
-        # history yet (first-run), so new tenants don't pay a cost.
-        # Lives in BaseAgent so every subclass picks it up automatically
-        # without each agent having to rewire its system prompt.
+        # Analytics + learning feedback layers, all best-effort and
+        # silently no-op when the tenant has no history or when the
+        # relevant table/column hasn't been migrated yet.
+        #
+        #   1. Top performers — recent approved/sent/published outputs
+        #      to emulate the structure of.
+        #   2. Style memory — diffs of drafts the user has edited, so
+        #      the model learns the tenant's preferred voice.
+        #   3. Cancellation reasons — "don't do this again" signals the
+        #      user left when rejecting a prior draft.
         try:
-            from backend.services.asset_lookup import summarize_top_performers_for_prompt
+            from backend.services.asset_lookup import (
+                summarize_top_performers_for_prompt,
+                summarize_style_memory_for_prompt,
+                summarize_cancel_reasons_for_prompt,
+            )
             perf_block = summarize_top_performers_for_prompt(
                 tenant_id, agent=self.AGENT_NAME, limit=3,
             )
             if perf_block:
                 system_prompt = f"{system_prompt}\n\n{perf_block}"
+            style_block = summarize_style_memory_for_prompt(
+                tenant_id, agent=self.AGENT_NAME, limit=3,
+            )
+            if style_block:
+                system_prompt = f"{system_prompt}\n\n{style_block}"
+            cancel_block = summarize_cancel_reasons_for_prompt(
+                tenant_id, agent=self.AGENT_NAME, limit=3,
+            )
+            if cancel_block:
+                system_prompt = f"{system_prompt}\n\n{cancel_block}"
         except Exception as e:
-            logger.debug("[%s] top_performers inject skipped: %s", self.AGENT_NAME, e)
+            logger.debug("[%s] feedback prompt inject skipped: %s", self.AGENT_NAME, e)
 
         # Content library recall: scan the tenant's archive for older
         # outputs by this same agent whose title overlaps the task. Lets

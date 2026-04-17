@@ -396,12 +396,25 @@ export default function InboxPage() {
 
   const handleCancelDraft = async (item: InboxItem) => {
     if (!tenantId || actionLoading) return;
+    // Optional feedback loop: ask WHY the draft was rejected so the
+    // reason can be replayed into future agent prompts via
+    // summarize_cancel_reasons_for_prompt. Blank / cancelled prompt
+    // still cancels the draft — the reason is strictly opt-in.
+    let reason = "";
+    if (typeof window !== "undefined") {
+      const entered = window.prompt(
+        "Optional: why are you cancelling this draft?\n(Leave blank to just cancel. Your reason helps the agent avoid the same mistake next time.)",
+        "",
+      );
+      // null → user hit Cancel on the prompt; still proceed with the cancel.
+      reason = (entered || "").trim();
+    }
     setActionLoading("cancel");
     try {
-      await inbox.cancelDraft(tenantId, item.id);
+      await inbox.cancelDraft(tenantId, item.id, reason);
       setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "cancelled" } : i)));
       if (selected?.id === item.id) setSelected({ ...item, status: "cancelled" });
-      showToast({ title: "Draft cancelled", variant: "info" });
+      showToast({ title: reason ? "Draft cancelled — feedback saved" : "Draft cancelled", variant: "info" });
     } catch (err: any) {
       showToast({
         title: "Couldn't cancel draft",
