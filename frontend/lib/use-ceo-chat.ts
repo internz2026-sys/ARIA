@@ -6,7 +6,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
-import { API_URL, getAuthHeaders } from "./api";
+import { API_URL, getAuthHeaders, ceoChat as ceoChatApi } from "./api";
 
 // ---- Types ----------------------------------------------------------------
 
@@ -48,6 +48,9 @@ interface CeoChatState {
   switchSession: (sid: string) => void;
   startNewChat: () => void;
   refreshSessions: () => void;
+  /** Hard-delete a session + its messages. If `sid` is the current
+   *  session the view resets to a fresh chat state. */
+  deleteSession: (sid: string) => Promise<void>;
 }
 
 // ---- Shared session key ---------------------------------------------------
@@ -259,7 +262,38 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
     setMessages([]);
   }, []);
 
-  const value: CeoChatState = { messages, sessions, sessionId, sending, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat, refreshSessions };
+  const deleteSession = useCallback(async (sid: string) => {
+    const tid = getTenantId();
+    if (!tid || !sid) return;
+
+    // Snapshot for rollback on error — the list disappears instantly,
+    // but if the API call fails we restore it so the user doesn't
+    // think a session vanished when it's actually still in the DB.
+    const prevSessions = sessions;
+    setSessions((list) => list.filter((s) => s.id !== sid));
+
+    const wasCurrent = sid === sessionId;
+    if (wasCurrent) {
+      // Start a fresh chat state right away — the user's mental model
+      // is "delete this conversation" → they expect the view to clear,
+      // not to be left looking at a about-to-be-404 session.
+      const fresh = makeSessionId();
+      localStorage.setItem(SESSION_KEY, fresh);
+      touchSessionTimestamp();
+      setSessionId(fresh);
+      setMessages([]);
+    }
+
+    try {
+      await ceoChatApi.deleteSession(tid, sid);
+    } catch {
+      // Restore list on failure; the current-session reset is left as
+      // a new empty chat (harmless — user can re-switch or discard).
+      if (mountedRef.current) setSessions(prevSessions);
+    }
+  }, [sessions, sessionId]);
+
+  const value: CeoChatState = { messages, sessions, sessionId, sending, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat, refreshSessions, deleteSession };
 
   return React.createElement(CeoChatContext.Provider, { value }, children);
 }

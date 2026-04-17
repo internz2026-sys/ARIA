@@ -5703,6 +5703,51 @@ async def list_chat_sessions(tenant_id: str):
         return {"sessions": []}
 
 
+@app.delete("/api/ceo/chat/sessions/{tenant_id}/{session_id}")
+async def delete_chat_session(tenant_id: str, session_id: str):
+    """Hard-delete a CEO chat session.
+
+    The chat_messages table has ON DELETE CASCADE on its session_id
+    foreign key (see backend/sql/create_chat_tables.sql), so dropping
+    the session row also drops every message attached to it. No
+    orphan messages are left behind.
+
+    Scoped by tenant_id so a caller can't delete another tenant's
+    session even if they guessed the session_id. Also clears any
+    in-process chat lock for that session_id so the next fresh
+    session can take its slot without a stale mutex.
+    """
+    sb = _get_supabase()
+
+    # Verify tenant ownership before deleting — session_ids are tenant-
+    # prefixed (`chat_{tenant_id}_{ts}`) but we still double-check.
+    row = (
+        sb.table("chat_sessions")
+        .select("id,tenant_id")
+        .eq("id", session_id)
+        .limit(1)
+        .execute()
+    )
+    if not row.data:
+        # Idempotent: if the row is already gone, treat as success so
+        # double-clicks from the UI don't surface a 404.
+        return {"ok": True, "deleted": 0}
+    if row.data[0].get("tenant_id") != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+
+    sb.table("chat_sessions").delete().eq("id", session_id).execute()
+
+    # Drop the in-memory session lock + history for this session so the
+    # backend doesn't keep stale state around after the DB row is gone.
+    try:
+        _chat_sessions.pop(session_id, None)
+        _chat_session_locks.pop(session_id, None)
+    except Exception:
+        pass
+
+    return {"ok": True, "deleted": 1}
+
+
 # ─── Project Tasks API ───
 @app.get("/api/tasks/{tenant_id}")
 async def list_tasks(tenant_id: str):

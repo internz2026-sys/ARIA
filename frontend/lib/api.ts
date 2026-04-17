@@ -204,6 +204,15 @@ export const ceoActions = {
     }),
 };
 
+export const ceoChat = {
+  /** List saved sessions for the sidebar/history picker. */
+  listSessions: (tenantId: string) =>
+    fetchAPI(`/api/ceo/chat/sessions/${tenantId}`),
+  /** Hard-delete a session + its messages (cascade). Idempotent on 404. */
+  deleteSession: (tenantId: string, sessionId: string) =>
+    fetchAPI(`/api/ceo/chat/sessions/${tenantId}/${sessionId}`, { method: "DELETE" }),
+};
+
 export const usage = {
   getDashboard: (tenantId: string) => fetchAPI(`/api/usage/${tenantId}`),
 };
