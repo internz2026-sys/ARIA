@@ -186,7 +186,13 @@ export default function OfficeKanban() {
               <path d="M1 14 L14 1 M5 14 L14 5 M9 14 L14 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </div>
-          <div className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8] shrink-0">
+          <div
+            onMouseDown={(e) => {
+              if ((e.target as HTMLElement).closest("button")) return;
+              handleMouseDown(e);
+            }}
+            className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing select-none"
+          >
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full" style={{ background: "linear-gradient(135deg, #FF6B35, #F7418F)" }} />
               <h3 className="text-sm font-semibold text-[#2C2C2A]">Task Board</h3>

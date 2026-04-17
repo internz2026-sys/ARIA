@@ -239,8 +239,17 @@ export default function FloatingChat() {
               <path d="M1 14 L14 1 M5 14 L14 5 M9 14 L14 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
             </svg>
           </div>
-          {/* Header — panel is anchored to the button; not independently draggable */}
-          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0">
+          {/* Header — doubles as a drag handle. Grabbing it anywhere that
+              isn't a button drags BOTH the panel and the toggle button
+              together, because they share the same useDraggable position.
+              Clicks on child buttons are filtered out so they still work. */}
+          <div
+            onMouseDown={(e) => {
+              if ((e.target as HTMLElement).closest("button")) return;
+              handleMouseDown(e);
+            }}
+            className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing select-none"
+          >
             <button
               onClick={() => setShowHistory(v => !v)}
               className={`p-1.5 rounded-lg transition-colors ${showHistory ? "bg-[#EEEDFE] text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#2C2C2A] hover:bg-[#F8F8F6]"}`}
