@@ -236,6 +236,128 @@ async def _followup_nudge_loop():
         await asyncio.sleep(INTERVAL_SECS)
 
 
+async def _content_repurpose_loop():
+    """Weekly sweep: surface aging evergreen content for a refresh.
+
+    Every 7 days, looks at content_library_entries for each tenant and
+    picks the oldest blog_post / article / landing_page rows that are
+    more than 90 days old and haven't been flagged for refresh in the
+    last 30 days. Creates a low-key inbox suggestion row (type=
+    'refresh_suggestion') the user can act on — does NOT auto-dispatch
+    the content_writer, which would feel spammy.
+
+    The suggestion body is a short markdown block: title of the aging
+    asset + a one-liner on why we flagged it. User sees it in the
+    inbox and can ask the CEO to refresh a specific one.
+    """
+    _log = logging.getLogger("aria.content_repurpose")
+    INTERVAL_SECS = 7 * 24 * 60 * 60  # every 7 days
+    AGING_DAYS = 90
+    DEDUP_DAYS = 30
+    MAX_SUGGESTIONS_PER_SWEEP = 3
+
+    # Wait 10 minutes after boot so the loop doesn't pile on during
+    # rebuilds. On a cold VPS restart the earlier loops take precedence.
+    await asyncio.sleep(600)
+
+    while True:
+        try:
+            sb = _get_supabase()
+            now = datetime.now(timezone.utc)
+            age_cutoff = (now - timedelta(days=AGING_DAYS)).isoformat()
+            dedup_cutoff = (now - timedelta(days=DEDUP_DAYS)).isoformat()
+
+            # Unique tenants with any aging content
+            tenants_res = (
+                sb.table("content_library_entries")
+                .select("tenant_id")
+                .in_("type", ["blog_post", "article", "landing_page"])
+                .lt("created_at", age_cutoff)
+                .limit(500)
+                .execute()
+            )
+            tenant_ids = list({r["tenant_id"] for r in (tenants_res.data or []) if r.get("tenant_id")})
+
+            suggestions_created = 0
+            for tenant_id in tenant_ids:
+                try:
+                    # Find already-suggested entries so we don't re-flag
+                    # the same asset within DEDUP_DAYS.
+                    existing_res = (
+                        sb.table("inbox_items")
+                        .select("metadata, created_at")
+                        .eq("tenant_id", tenant_id)
+                        .eq("type", "refresh_suggestion")
+                        .gte("created_at", dedup_cutoff)
+                        .execute()
+                    )
+                    suggested_library_ids: set = set()
+                    for r in existing_res.data or []:
+                        meta = r.get("metadata") or {}
+                        if isinstance(meta, str):
+                            try:
+                                import json as _json
+                                meta = _json.loads(meta)
+                            except Exception:
+                                meta = {}
+                        lid = (meta or {}).get("library_entry_id")
+                        if lid:
+                            suggested_library_ids.add(lid)
+
+                    # Oldest aging entries, up to MAX_SUGGESTIONS_PER_SWEEP.
+                    entries_res = (
+                        sb.table("content_library_entries")
+                        .select("id, type, title, created_at")
+                        .eq("tenant_id", tenant_id)
+                        .in_("type", ["blog_post", "article", "landing_page"])
+                        .lt("created_at", age_cutoff)
+                        .order("created_at", desc=False)
+                        .limit(MAX_SUGGESTIONS_PER_SWEEP + len(suggested_library_ids))
+                        .execute()
+                    )
+                    picked = 0
+                    for entry in entries_res.data or []:
+                        if picked >= MAX_SUGGESTIONS_PER_SWEEP:
+                            break
+                        if entry["id"] in suggested_library_ids:
+                            continue
+                        title = (entry.get("title") or "Untitled")[:120]
+                        age_days = (now - datetime.fromisoformat(
+                            entry["created_at"].replace("Z", "+00:00")
+                        )).days
+                        body = (
+                            f"**{title}** was published {age_days} days ago. "
+                            "Facts, examples, or positioning may be stale — consider asking the "
+                            "Content Writer to refresh it.\n\n"
+                            f"_To refresh, open CEO Chat and say:_ "
+                            f"**Refresh the blog post titled \"{title}\" — update any stale facts and modernize the voice.**"
+                        )
+                        from backend.services import inbox as inbox_service
+                        inbox_service.create_item(
+                            tenant_id=tenant_id,
+                            agent="content_writer",
+                            type="refresh_suggestion",
+                            title=f"Refresh candidate: {title}",
+                            content=body,
+                            status="ready",
+                            priority="low",
+                        )
+                        suggestions_created += 1
+                        picked += 1
+                except Exception as e:
+                    _log.debug("repurpose sweep tenant=%s failed: %s", tenant_id, e)
+
+            if suggestions_created:
+                _log.info(
+                    "Content repurpose: surfaced %d aging-asset suggestions across %d tenants",
+                    suggestions_created, len(tenant_ids),
+                )
+        except Exception as e:
+            _log.warning("Content repurpose sweep failed: %s", e)
+
+        await asyncio.sleep(INTERVAL_SECS)
+
+
 async def _paperclip_office_sync_loop():
     """Background loop: import completed Paperclip issues to inbox + sync Virtual Office.
 
@@ -346,11 +468,13 @@ async def lifespan(app: FastAPI):
     scheduler_task = asyncio.create_task(_scheduler_executor_loop())
     office_sync_task = asyncio.create_task(_paperclip_office_sync_loop())
     followup_task = asyncio.create_task(_followup_nudge_loop())
+    repurpose_task = asyncio.create_task(_content_repurpose_loop())
     yield
     sync_task.cancel()
     scheduler_task.cancel()
     office_sync_task.cancel()
     followup_task.cancel()
+    repurpose_task.cancel()
     # Close the shared Paperclip httpx client so we don't leak connections
     # on graceful shutdown (uvicorn reload during dev, container stop in prod).
     try:
