@@ -1750,27 +1750,54 @@ class UpdateOnboarding(BaseModel):
     thirty_day_goal: str | None = None
 
 
+def _apply_onboarding_edit(config: "TenantConfig", field: str, value) -> None:
+    """Apply a single onboarding field edit to BOTH the legacy nested config
+    shape AND the flat gtm_profile mirror in one place.
+
+    Why two writes per field: several sub-agents read from the legacy nested
+    fields (config.icp.target_titles, config.product.differentiators, etc.)
+    while CEO chat context and the agent brief read from config.gtm_profile.
+    Keeping the two in sync here means edits always propagate to every agent.
+    """
+    gp = config.gtm_profile
+    if field == "business_name":
+        config.business_name = value
+        gp.business_name = value
+    elif field == "offer":
+        config.product.description = value
+        config.description = value
+        gp.offer = value
+    elif field == "target_audience":
+        config.icp.target_titles = [t.strip() for t in value.split(",") if t.strip()]
+        gp.audience = value
+    elif field == "problem_solved":
+        config.icp.pain_points = [p.strip() for p in value.split(",") if p.strip()]
+        gp.problem = value
+    elif field == "differentiator":
+        config.product.differentiators = [d.strip() for d in value.split(",") if d.strip()]
+        gp.differentiator = value
+    elif field == "channels":
+        config.channels = value
+        gp.primary_channels = value
+    elif field == "brand_voice":
+        config.brand_voice.tone = value
+        gp.brand_voice = value
+    elif field == "thirty_day_goal":
+        config.gtm_playbook.action_plan_30 = value
+        gp.goal_30_days = value
+
+
+_ONBOARDING_EDITABLE_FIELDS = (
+    "business_name", "offer", "target_audience", "problem_solved",
+    "differentiator", "channels", "brand_voice", "thirty_day_goal",
+)
+
+
 @app.post("/api/tenant/{tenant_id}/update-onboarding")
 async def update_onboarding(tenant_id: str, body: UpdateOnboarding):
-    """Update specific onboarding fields on an existing tenant, then regenerate brief.
-
-    Writes to BOTH representations of the 8 onboarding answers so downstream
-    agents see a consistent view no matter which they read:
-
-      legacy nested fields      flat gtm_profile mirror
-      ─────────────────────     ─────────────────────────
-      business_name        →    gtm_profile.business_name
-      product.description  →    gtm_profile.offer
-      icp.target_titles    →    gtm_profile.audience
-      icp.pain_points      →    gtm_profile.problem
-      product.differentiators → gtm_profile.differentiator
-      channels             →    gtm_profile.primary_channels
-      brand_voice.tone     →    gtm_profile.brand_voice
-      gtm_playbook.action_plan_30 → gtm_profile.goal_30_days
-
-    positioning_summary and 30_day_gtm_focus are regenerated from the new
-    answers via _ensure_generated_fields (deterministic — no LLM call).
-    agent_brief is rebuilt after the writes so CEO chat context stays fresh.
+    """Update specific onboarding fields on an existing tenant, regenerate
+    derived gtm_profile fields and the agent brief so edits propagate to
+    every downstream consumer.
     """
     from backend.config.brief import generate_agent_brief
     from backend.onboarding_agent import _ensure_generated_fields
@@ -1780,52 +1807,16 @@ async def update_onboarding(tenant_id: str, body: UpdateOnboarding):
     except Exception:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    # Apply updates to the LEGACY nested fields.
-    if body.business_name is not None:
-        config.business_name = body.business_name
-    if body.offer is not None:
-        config.product.description = body.offer
-        config.description = body.offer
-    if body.target_audience is not None:
-        config.icp.target_titles = [t.strip() for t in body.target_audience.split(",") if t.strip()]
-    if body.problem_solved is not None:
-        config.icp.pain_points = [p.strip() for p in body.problem_solved.split(",") if p.strip()]
-    if body.differentiator is not None:
-        config.product.differentiators = [d.strip() for d in body.differentiator.split(",") if d.strip()]
-    if body.channels is not None:
-        config.channels = body.channels
-    if body.brand_voice is not None:
-        config.brand_voice.tone = body.brand_voice
-    if body.thirty_day_goal is not None:
-        config.gtm_playbook.action_plan_30 = body.thirty_day_goal
+    for field in _ONBOARDING_EDITABLE_FIELDS:
+        value = getattr(body, field)
+        if value is not None:
+            _apply_onboarding_edit(config, field, value)
 
-    # MIRROR into the flat gtm_profile. CEO chat + several sub-agents read
-    # these for brand/audience context; leaving them stale would mean edits
-    # silently don't apply to agent output.
+    # Regenerate derived fields (positioning_summary, 30_day_gtm_focus) from
+    # the refreshed answers. _ensure_generated_fields is deterministic — just
+    # string interpolation over the gtm_profile dict, no LLM call.
     gp = config.gtm_profile
-    if body.business_name is not None:
-        gp.business_name = body.business_name
-    if body.offer is not None:
-        gp.offer = body.offer
-    if body.target_audience is not None:
-        gp.audience = body.target_audience
-    if body.problem_solved is not None:
-        gp.problem = body.problem_solved
-    if body.differentiator is not None:
-        gp.differentiator = body.differentiator
-    if body.channels is not None:
-        gp.primary_channels = body.channels
-    if body.brand_voice is not None:
-        gp.brand_voice = body.brand_voice
-    if body.thirty_day_goal is not None:
-        gp.goal_30_days = body.thirty_day_goal
-
-    # Regenerate derived fields (positioning_summary, 30_day_gtm_focus) so the
-    # CEO's positioning line reflects the new answers. Deterministic — just
-    # string interpolation over the updated gtm_profile, no LLM call.
     gp_dict = gp.model_dump()
-    # Clear the derived fields so _ensure_generated_fields actually rebuilds
-    # them from the new inputs instead of keeping the stale sentence.
     gp_dict["positioning_summary"] = ""
     gp_dict["30_day_gtm_focus"] = ""
     regen = _ensure_generated_fields(gp_dict)
@@ -1835,8 +1826,7 @@ async def update_onboarding(tenant_id: str, body: UpdateOnboarding):
     config.onboarding_status = "completed"
     config.skipped_fields = []
 
-    # Regenerate the condensed agent brief so CEO chat (which uses it as
-    # business context) sees the edits on the next message.
+    # Regenerate the condensed agent brief so CEO chat picks up the edits.
     try:
         config.agent_brief = await generate_agent_brief(config)
     except Exception as e:
