@@ -13,7 +13,7 @@ import re
 from backend.config.tenant_schema import (
     TenantConfig, ICPConfig, ProductConfig, GTMPlaybook, BrandVoice, GTMProfile,
 )
-from backend.tools.claude_cli import call_claude, MODEL_HAIKU
+from backend.tools.claude_cli import call_claude, MODEL_HAIKU, MODEL_SONNET
 
 logger = logging.getLogger("aria.onboarding")
 
@@ -100,27 +100,34 @@ EXAMPLES OF VALID INFERENCE
 - 30_day_gtm_focus:
   "Over the next 30 days, ARIA should prioritize <channels> to support the goal of <goal_30_days>, using a <brand_voice> tone."
 
-CHECKLIST VALIDATION — BE GENEROUS
-Your default should be to ACCEPT the answer and check the field. Only reject in extreme cases.
+CHECKLIST VALIDATION — STRICT ANSWER MATCHING
 
-CORE RULE: If the user replied to the current question with anything that could reasonably be interpreted as an answer for that field, mark it complete. Always prefer accepting over rejecting. When in doubt, accept.
+The user's reply MUST actually answer the specific question being asked. If it doesn't, re-ask the same question and DO NOT advance to the next one.
 
-ACCEPT all of the following:
-- Any word, phrase, or sentence that relates to the current field
-- Short answers: "yes", "social", "leads", "professional", single words are fine
-- Casual phrasing: "idk maybe email", "like a friendly tone", "grow I guess"
-- Partial answers: "customers" for audience, "sales" for goal, "better" for differentiator
-- Answers that need normalization: normalize and accept, never reject just to ask for a cleaner version
-- Even vague answers like "grow", "people", "online", "good" — normalize them and accept
-- "all of them" for channels -> normalize to ["email", "social", "ads", "content"] and accept
-- "not sure" or "idk" for any field -> store as "not specified" and mark complete, move on
+CORE RULE: Only mark a field complete when the user's reply clearly addresses that field's topic. If the answer is off-topic, unrelated, or doesn't match the field being asked, politely re-ask the SAME question. Do NOT move on, do NOT guess, do NOT accept unrelated answers.
 
-REJECT only if:
-- The reply is completely empty
-- The reply is pure nonsense (random characters, spam)
-- The reply is clearly a question back to ARIA with no answer embedded (e.g. "what do you mean?")
+ACCEPT the answer (and move to the next question) when:
+- The reply directly addresses the current question's topic
+- Partial but on-topic answers (e.g. "customers" when asked about audience — acceptable; follow up only if it needs a small clarification, otherwise accept)
+- Casual phrasing that still answers the topic ("like a friendly tone" for brand voice)
+- Short on-topic answers ("social", "email" for channels)
 
-That's it. Those three cases are the ONLY reasons to not check a field. Everything else gets accepted.
+RE-ASK the same question (do NOT advance) when:
+- The reply is off-topic (e.g. answers about audience when asked about channels)
+- The reply repeats a previous answer that already covered a different field
+- The reply is a question back to ARIA ("what do you mean?")
+- The reply is empty, nonsense, or random characters
+- The reply doesn't clearly relate to the current field's topic
+
+When re-asking, be polite and brief. Explain what kind of answer you need. Example: "That sounds more like your target audience. Which channels should ARIA focus on first: email, social, ads, or content?"
+
+NORMALIZATION
+When accepting an on-topic answer, normalize casual wording into clean stored values:
+- "grow" -> "increase growth"
+- "online" -> ["content", "social"]
+- "good" (for brand voice) -> "professional"
+- "idk maybe email" -> ["email"]
+- "all of them" for channels -> ["email", "social", "ads", "content"]
 
 NORMALIZATION
 Always normalize casual answers into clean stored values rather than asking again:
@@ -132,13 +139,12 @@ Always normalize casual answers into clean stored values rather than asking agai
 - "idk maybe email" -> ["email"]
 
 FIELD MATCHING
-Classify each answer into the current field by default. Only assign to a different field if the answer obviously belongs elsewhere. If a message answers multiple fields, mark all of them.
+Only accept answers that match the CURRENT question's field. If the user's reply clearly belongs to a different topic than the one you just asked, do NOT store it — re-ask the current question instead.
 
 INTELLIGENT EXTRACTION
-- If the answer could belong to the current question, assign it there
-- If the answer clearly belongs to a different field, store it there and still ask the current question
-- If a message contains multiple valid answers, extract and mark all matching fields
-- Default assumption: the user is answering the question that was just asked
+- If the answer is on-topic for the current field, accept it.
+- If the answer is off-topic or unrelated, re-ask the same question and do not advance.
+- Never guess or infer values for fields that have not been explicitly asked and answered.
 
 RE-ONBOARDING / EDIT MODE
 - If previous onboarding exists, do not block access.
@@ -289,6 +295,37 @@ FIELD_QUESTIONS = {
     "goal_30_days": "What is your main goal for the next 30 days?",
 }
 
+# Keyword patterns used to detect which onboarding field the LLM is CURRENTLY
+# asking about. The source of truth for "where we are" is the LLM's latest
+# question, NOT a blind counter. This stops the checklist from advancing
+# when the LLM re-asks the same question (e.g. "Who is your ideal customer?"
+# three times because the first answer was too vague).
+_FIELD_QUESTION_KEYWORDS = [
+    ("business_name", ["business or brand name", "business name", "brand name"]),
+    ("product_or_offer", ["product, service, or offer", "do you sell", "what do you sell"]),
+    ("target_audience", ["ideal customer", "target audience", "who is your customer"]),
+    ("problem_solved", ["problem does your offer solve", "what problem", "pain point"]),
+    ("differentiator", ["different from competitors", "makes your offer different", "differentiate"]),
+    ("channels", ["which channels", "email, social, ads", "channels should aria"]),
+    ("brand_voice", ["what tone", "brand voice", "professional, friendly"]),
+    ("goal_30_days", ["next 30 days", "30-day goal", "main goal for the next"]),
+]
+
+
+def _detect_asked_field(text: str) -> str | None:
+    """Detect which onboarding field the LLM's response is asking about.
+
+    Only matches text containing a '?' to avoid false positives on the final
+    summary (which has labels like "**Differentiator:**" but no question mark).
+    """
+    if "?" not in text:
+        return None
+    t = text.lower()
+    for field, keywords in _FIELD_QUESTION_KEYWORDS:
+        if any(kw in t for kw in keywords):
+            return field
+    return None
+
 def _ensure_generated_fields(gp: dict) -> dict:
     """Fill in positioning_summary and 30_day_gtm_focus if the model left them empty."""
     if not gp.get("positioning_summary"):
@@ -402,23 +439,18 @@ class OnboardingAgent:
     async def process_message(self, user_input: str) -> str:
         self.messages.append({"role": "user", "content": user_input})
 
-        # Remember which field the user was answering BEFORE we call the LLM.
-        current_field_idx = self.current_topic_index
-        current_field = (
-            ONBOARDING_FIELDS[current_field_idx]
-            if current_field_idx < len(ONBOARDING_FIELDS)
+        # Snapshot state BEFORE LLM call so we can compute progress hints.
+        pre_validated = set(self.validated_fields)
+        pre_current_idx = self.current_topic_index
+        pre_current_field = (
+            ONBOARDING_FIELDS[pre_current_idx]
+            if pre_current_idx < len(ONBOARDING_FIELDS)
             else None
         )
 
-        # Auto-validate the current field immediately — the user replied,
-        # so we assume they answered the question. This is the reliable
-        # default; the LLM tag is a bonus refinement, not a gate.
-        if current_field:
-            self.validated_fields.add(current_field)
-
         # Build progress directive injected into system prompt.
-        answered = self.questions_answered
-        validated_list = ", ".join(sorted(self.validated_fields)) or "none"
+        answered = len(pre_validated) + len(self.skipped_topics)
+        validated_list = ", ".join(sorted(pre_validated)) or "none"
         progress = (
             f"Fields validated so far: [{validated_list}] ({answered}/{self.max_questions}). "
         )
@@ -430,31 +462,33 @@ class OnboardingAgent:
                 "Output ONLY the plain-text summary."
             )
         else:
-            next_field = ONBOARDING_FIELDS[self.current_topic_index]
             remaining = self.max_questions - answered
             progress += (
-                f"Current question field: {next_field}. "
-                f"Only {answered} of {self.max_questions} questions have been answered "
+                f"Current question field: {pre_current_field}. "
+                f"Only {answered} of {self.max_questions} questions answered "
                 f"({remaining} remaining). "
                 f"DO NOT produce the final summary yet. "
                 f"DO NOT output 'Onboarding Complete' or any summary block. "
-                f"Ask ONLY the next question for the '{next_field}' field "
-                f"(suggested wording: \"{FIELD_QUESTIONS.get(next_field, '')}\"). "
-                f"Even if the user's previous answer seemed detailed, "
-                f"you must still ask the remaining {remaining} question(s) one at a time."
+                f"If the user's last reply did NOT answer the '{pre_current_field}' "
+                f"question, politely re-ask the same question — do NOT move on and "
+                f"do NOT accept an off-topic answer. "
+                f"Suggested wording for the current question: "
+                f"\"{FIELD_QUESTIONS.get(pre_current_field or '', '')}\"."
             )
 
-        # Use higher max_tokens for the final summary.
+        # Use higher max_tokens for the final summary. Use Sonnet instead of
+        # Haiku for onboarding — Sonnet follows the strict validation rules
+        # much better (Haiku tended to re-ask the same question 3-4 times or
+        # hallucinate answers for un-asked fields).
         tokens = 1000 if answered >= self.max_questions else 500
         assistant_text = await call_claude(
             SYSTEM_PROMPT + "\n\n" + progress,
             messages=self.messages,
             max_tokens=tokens,
-            model=MODEL_HAIKU,
+            model=MODEL_SONNET,
         )
 
-        # Strip the [VALIDATED: ...] tag if present (cleanup only — we
-        # already advanced progress above so the tag is not required).
+        # Strip the [VALIDATED: ...] tag if present.
         cleaned_text, _tag_fields = _parse_validated_tag(assistant_text)
 
         # Safety net: strip any JSON that leaked into the visible response.
@@ -462,28 +496,58 @@ class OnboardingAgent:
 
         # Safety net: if the LLM produced a premature "Onboarding Complete"
         # summary while fewer than max_questions fields are validated, replace
-        # it with a canned next-question prompt. The LLM sometimes hallucinates
-        # answers for remaining fields from a single detailed user reply.
+        # it with a canned next-question prompt.
         if (
-            self.questions_answered < self.max_questions
+            answered < self.max_questions
             and "onboarding complete" in cleaned_text.lower()
         ):
-            next_field = ONBOARDING_FIELDS[self.current_topic_index]
             cleaned_text = FIELD_QUESTIONS.get(
-                next_field,
-                f"Tell me about: {next_field.replace('_', ' ')}.",
+                pre_current_field or "",
+                f"Tell me about: {(pre_current_field or 'the next topic').replace('_', ' ')}.",
             )
             logger.warning(
                 "Onboarding: LLM produced premature summary at %d/%d; "
                 "replaced with canned question for field=%s",
-                self.questions_answered, self.max_questions, next_field,
+                answered, self.max_questions, pre_current_field,
             )
 
-        # Store the cleaned text (without metadata) in conversation history.
+        # Advance validation based on the LLM's LATEST question. This is the
+        # source of truth — if the LLM re-asks the same field, we do NOT
+        # advance the checklist. If the LLM moves on to field X, every field
+        # before X is considered answered.
+        asked_field = _detect_asked_field(cleaned_text)
+        is_final_summary = (
+            answered >= self.max_questions - 1
+            and "onboarding complete" in cleaned_text.lower()
+        )
+
+        if is_final_summary:
+            # Final turn — validate every field. The summary confirms the flow
+            # is done, including the last answer the user just provided.
+            for f in ONBOARDING_FIELDS:
+                self.validated_fields.add(f)
+        elif asked_field and asked_field in ONBOARDING_FIELDS:
+            asked_idx = ONBOARDING_FIELDS.index(asked_field)
+            if asked_idx > pre_current_idx:
+                # LLM moved on — user's last answer was accepted for
+                # pre_current_field (and any fields between them).
+                for f in ONBOARDING_FIELDS[pre_current_idx:asked_idx]:
+                    self.validated_fields.add(f)
+            # If asked_idx <= pre_current_idx: LLM is re-asking the same (or
+            # an earlier) field. User's answer was rejected — do NOT advance.
+            else:
+                logger.info(
+                    "Onboarding: LLM re-asked field=%s (current=%s) — "
+                    "user's answer was rejected, checklist not advanced",
+                    asked_field, pre_current_field,
+                )
+        # If no field detected and not a summary: ambiguous LLM output, keep
+        # validation state unchanged. User's next reply will resolve it.
+
+        # Store the cleaned text in conversation history.
         self.messages.append({"role": "assistant", "content": cleaned_text})
 
-        # Detect completion — count-based only. String-based detection was
-        # unsafe because the LLM occasionally produces a summary prematurely.
+        # Completion — count-based only.
         if not self._complete and self.questions_answered >= self.max_questions:
             self._complete = True
 
