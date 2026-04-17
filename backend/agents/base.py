@@ -148,6 +148,65 @@ class BaseAgent:
             )
             logger.info("[%s] Loaded skill MD (%d chars)", self.AGENT_NAME, len(skill_md))
 
+        # Analytics feedback: prepend the agent's most recent approved /
+        # sent / published outputs so the next generation can mimic what
+        # actually got greenlit. Empty string when the tenant has no
+        # history yet (first-run), so new tenants don't pay a cost.
+        # Lives in BaseAgent so every subclass picks it up automatically
+        # without each agent having to rewire its system prompt.
+        try:
+            from backend.services.asset_lookup import summarize_top_performers_for_prompt
+            perf_block = summarize_top_performers_for_prompt(
+                tenant_id, agent=self.AGENT_NAME, limit=3,
+            )
+            if perf_block:
+                system_prompt = f"{system_prompt}\n\n{perf_block}"
+        except Exception as e:
+            logger.debug("[%s] top_performers inject skipped: %s", self.AGENT_NAME, e)
+
+        # Content library recall: scan the tenant's archive for older
+        # outputs by this same agent whose title overlaps the task. Lets
+        # the model adapt a prior asset instead of cold-generating a
+        # near-duplicate. Uses a cheap ILIKE on a small sample of task
+        # tokens — Qdrant-backed semantic search would be nicer but
+        # would add a service dependency for marginal gain at small
+        # tenant scales.
+        try:
+            from backend.services.asset_lookup import get_related_content
+
+            # Turn the task description into ~3 content keywords for the
+            # ILIKE. Skip common / short stopwords — otherwise every task
+            # matches on "the" and we flood the prompt.
+            stop = {"the", "and", "for", "with", "from", "into", "this", "that",
+                    "your", "our", "write", "create", "draft", "make", "send",
+                    "post", "tweet", "email", "about", "using", "tell", "them"}
+            words = [w.strip(".,!?:;\"'").lower() for w in (context_value or "").split()]
+            keywords = [w for w in words if len(w) >= 5 and w not in stop][:3]
+            rows: list = []
+            for kw in keywords:
+                rows.extend(get_related_content(tenant_id, topic_query=kw, limit=2))
+                if len(rows) >= 3:
+                    break
+            # De-dup by id
+            seen: set = set()
+            uniq = []
+            for r in rows:
+                rid = r.get("id")
+                if rid and rid not in seen:
+                    seen.add(rid)
+                    uniq.append(r)
+                if len(uniq) >= 3:
+                    break
+            if uniq:
+                lines = ["## Related prior work (adapt before regenerating)"]
+                for r in uniq:
+                    title = (r.get("title") or "")[:80]
+                    body_preview = (r.get("body") or "")[:160].replace("\n", " ")
+                    lines.append(f"- {title} — {body_preview}")
+                system_prompt = f"{system_prompt}\n\n" + "\n".join(lines)
+        except Exception as e:
+            logger.debug("[%s] content_library recall skipped: %s", self.AGENT_NAME, e)
+
         from backend.tools.claude_cli import call_claude  # lazy to avoid circular __init__
 
         logger.info("[%s] Running for tenant %s (model=%s, max_tokens=%d, context=%s)",

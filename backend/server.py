@@ -3599,35 +3599,39 @@ def _markdown_to_basic_html(text: str) -> str:
 
 
 def _enrich_task_desc_with_crm(task_desc: str, tenant_id: str) -> str:
-    """If task_desc mentions a contact name from the CRM, append their email
-    so the delegated agent can use it as the recipient. Otherwise return
-    the task description unchanged.
+    """Enrich a delegated task with CRM context so the downstream agent
+    can personalize its output.
 
-    The CEO's CRM-context heuristic only triggers on "send email to <name>"
-    style phrasing -- "create marketing email for Hanz" doesn't include a
-    CRM noun, so the system prompt doesn't get the CRM dump and the CEO
-    has no email to pass through to the email_marketer. This helper
-    closes that gap by doing a cheap CRM lookup right before dispatch
-    and inlining matched contacts into the task description.
+    What gets appended when a contact name matches in the task:
+    - contact email (so email_marketer has a recipient)
+    - contact status (lead / customer / churned) and notes field
+    - latest deal per matched contact (title, stage, value) so the
+      agent can reference "about your [deal_title]" in email copy
+      without the CEO having to quote it manually
+
+    The CEO's CRM-context heuristic only triggers on "send email to X"
+    phrasing — "create marketing email for Hanz" or "follow up with
+    Tina" skip the heuristic, so this helper does the lookup at dispatch
+    time and inlines the data directly into the task description.
     """
     if not task_desc or not tenant_id:
         return task_desc
     try:
         sb = _get_supabase()
-        contacts = (
+        contacts_res = (
             sb.table("crm_contacts")
-            .select("name,email,company_id,status")
+            .select("id,name,email,company_id,status,notes")
             .eq("tenant_id", tenant_id)
             .order("created_at", desc=True)
             .limit(100)
             .execute()
         )
-        if not contacts.data:
+        if not contacts_res.data:
             return task_desc
 
         task_lower = task_desc.lower()
         matches: list[dict] = []
-        for c in contacts.data:
+        for c in contacts_res.data:
             name = (c.get("name") or "").strip()
             if not name:
                 continue
@@ -3641,17 +3645,56 @@ def _enrich_task_desc_with_crm(task_desc: str, tenant_id: str) -> str:
         if not matches:
             return task_desc
 
-        # Append matched contacts to the task description so the agent
-        # has the email address (and any status info) when generating.
-        contact_lines = []
+        # Best-effort deal lookup for matched contacts — one query, all
+        # matched contacts at once. Ordered by most recent so the agent
+        # sees the current opportunity, not a stale one.
+        deals_by_contact: dict[str, dict] = {}
+        try:
+            contact_ids = [m["id"] for m in matches if m.get("id")]
+            if contact_ids:
+                deals_res = (
+                    sb.table("crm_deals")
+                    .select("title,stage,value,contact_id,updated_at")
+                    .eq("tenant_id", tenant_id)
+                    .in_("contact_id", contact_ids)
+                    .order("updated_at", desc=True)
+                    .execute()
+                )
+                # Keep only the FIRST (most recent) deal per contact.
+                for d in (deals_res.data or []):
+                    cid = d.get("contact_id")
+                    if cid and cid not in deals_by_contact:
+                        deals_by_contact[cid] = d
+        except Exception:
+            pass
+
+        # Render rich context lines per matched contact so the email_marketer
+        # can pull name + email + status + deal + notes into the copy.
+        lines: list[str] = []
         for c in matches:
             email = c.get("email") or "(no email)"
             status = c.get("status") or ""
-            contact_lines.append(f"  - {c['name']} <{email}>" + (f" [{status}]" if status else ""))
+            notes = (c.get("notes") or "").strip()
+            header = f"  - {c['name']} <{email}>"
+            if status:
+                header += f" [{status}]"
+            lines.append(header)
+            deal = deals_by_contact.get(c.get("id"))
+            if deal:
+                bits = [deal.get("title") or "deal"]
+                if deal.get("stage"):
+                    bits.append(f"stage: {deal['stage']}")
+                if deal.get("value"):
+                    bits.append(f"value: ${deal['value']}")
+                lines.append(f"      Deal: {' — '.join(bits)}")
+            if notes:
+                snippet = notes[:240].replace("\n", " ").strip()
+                lines.append(f"      Notes: {snippet}")
+
         return (
             f"{task_desc}\n\n"
-            f"CRM contacts mentioned in this task (use as recipient):\n"
-            + "\n".join(contact_lines)
+            f"CRM context for mentioned contacts (use for personalization):\n"
+            + "\n".join(lines)
         )
     except Exception as e:
         logging.getLogger("aria.crm").debug("CRM enrichment failed: %s", e)
