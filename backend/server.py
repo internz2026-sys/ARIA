@@ -2321,148 +2321,16 @@ async def gmail_status(tenant_id: str):
 
 # ─── Gmail Send Helpers ───
 #
-# All three Gmail send endpoints (general send, approve-send, send-reply)
-# previously open-coded the same access-token refresh dance, plus
-# the thread-context lookup + plaintext→HTML wrapping that replies need.
-# Keeping those concerns here means one place to reason about token
-# expiry, one place to evolve the MIME wrapping, and one place to patch
-# if Google's API changes.
-
-
-async def _gmail_send_with_refresh(
-    tenant_id: str,
-    *,
-    to: str,
-    subject: str,
-    html_body: str,
-    thread_id: str = "",
-    in_reply_to: str = "",
-) -> dict:
-    """Send an email via Gmail with automatic access-token refresh.
-
-    Returns the raw `gmail_tool.send_email` result dict. Non-auth send
-    errors (5xx, bad request, etc.) are returned verbatim so the caller
-    can surface them appropriately. Raises HTTPException only when the
-    Gmail connection is unrecoverably broken (no tokens, refresh
-    explicitly denied) — that signals "ask the user to reconnect"
-    rather than "retry later".
-    """
-    from backend.tools import gmail_tool
-
-    config = get_tenant_config(tenant_id)
-    access_token = config.integrations.google_access_token
-    refresh_token = config.integrations.google_refresh_token
-
-    # Proactively refresh if we have a refresh token but no access token.
-    if not access_token and refresh_token:
-        try:
-            access_token = await gmail_tool.refresh_access_token(refresh_token)
-            config.integrations.google_access_token = access_token
-            save_tenant_config(config)
-        except Exception:
-            pass
-
-    if not access_token:
-        raise HTTPException(
-            status_code=400,
-            detail="Gmail not connected. Please log in with Google to grant email access.",
-        )
-
-    async def _do_send(tok: str) -> dict:
-        return await gmail_tool.send_email(
-            access_token=tok,
-            to=to,
-            subject=subject,
-            html_body=html_body,
-            from_email=config.owner_email,
-            thread_id=thread_id,
-            in_reply_to=in_reply_to,
-        )
-
-    result = await _do_send(access_token)
-
-    # Reactive refresh on a 401 from the send itself.
-    if result.get("error") == "token_expired" and refresh_token:
-        try:
-            new_token = await gmail_tool.refresh_access_token(refresh_token)
-            config.integrations.google_access_token = new_token
-            save_tenant_config(config)
-            result = await _do_send(new_token)
-        except Exception as e:
-            config.integrations.google_access_token = None
-            if getattr(e, "is_revoked", False):
-                config.integrations.google_refresh_token = None
-            save_tenant_config(config)
-            raise HTTPException(
-                status_code=401,
-                detail="Gmail token expired. Please reconnect Gmail in Settings.",
-            )
-
-    return result
-
-
-async def _resolve_reply_thread_context(
-    tenant_id: str,
-    thread_db_id: str,
-    access_token: str = "",
-) -> tuple[str, str]:
-    """Resolve (gmail_thread_id, in_reply_to_header) for a reply target.
-
-    Gmail threads via `threadId`; other mail clients thread via the
-    In-Reply-To header. Looking the header up requires one extra Gmail
-    API call per send, so we keep it best-effort — any failure just
-    returns an empty string and the reply still sends (it just appears
-    as a fresh message to non-Gmail recipients).
-    """
-    sb = _get_supabase()
-    gmail_thread_id = ""
-    in_reply_to = ""
-
-    try:
-        t_row = sb.table("email_threads").select("gmail_thread_id").eq(
-            "id", thread_db_id
-        ).eq("tenant_id", tenant_id).single().execute()
-        if t_row.data:
-            gmail_thread_id = t_row.data.get("gmail_thread_id") or ""
-    except Exception:
-        return "", ""
-
-    if not gmail_thread_id or not access_token:
-        return gmail_thread_id, ""
-
-    try:
-        last_inbound = sb.table("email_messages").select("gmail_message_id").eq(
-            "thread_id", thread_db_id
-        ).eq("tenant_id", tenant_id).eq("direction", "inbound").order(
-            "message_timestamp", desc=True
-        ).limit(1).execute()
-        if last_inbound.data:
-            gmsg_id = last_inbound.data[0].get("gmail_message_id")
-            if gmsg_id:
-                from backend.tools import gmail_tool as _gt
-                fetched = await _gt.get_message(access_token, gmsg_id)
-                in_reply_to = fetched.get("message_id_header", "") or ""
-    except Exception:
-        pass
-
-    return gmail_thread_id, in_reply_to
-
-
-def _user_text_to_html(text: str) -> str:
-    """Convert plain-text user input into lightly styled HTML paragraphs.
-
-    Blank lines separate paragraphs; single line breaks become <br>.
-    Input is escaped before any markup is added — trust nothing.
-    """
-    import html as _html_mod
-
-    escaped = _html_mod.escape(text)
-    paragraphs = [p.replace("\n", "<br>") for p in escaped.split("\n\n") if p.strip()]
-    if not paragraphs:
-        return f'<p style="margin:0; line-height:1.6;">{escaped}</p>'
-    return "".join(
-        f'<p style="margin:0 0 12px 0; line-height:1.6;">{p}</p>' for p in paragraphs
-    )
+# The pure helpers (send-with-refresh, resolve-reply-thread-context,
+# plaintext->HTML) live in backend/services/email_sender.py. We keep
+# single-line aliases here so the existing call sites in this file
+# keep working while they're still in server.py. Any new code should
+# import from backend.services.email_sender directly.
+from backend.services.email_sender import (
+    send_with_refresh as _gmail_send_with_refresh,
+    resolve_reply_thread_context as _resolve_reply_thread_context,
+    user_text_to_html as _user_text_to_html,
+)
 
 
 # ─── Gmail Send API ───
