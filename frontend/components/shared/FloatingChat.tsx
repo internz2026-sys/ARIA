@@ -117,38 +117,38 @@ export default function FloatingChat() {
     setShowHistory(false);
   }
 
-  // Panel position — offset from button so it follows when button is dragged
+  // Panel position — always anchored flush to the button. Panel is not
+  // independently draggable; it follows the button 1:1 so the two always
+  // read as ONE unit. The previous design had a separate panel drag that
+  // let users park the panel far from its toggle, which looked broken.
   const wH = typeof window !== "undefined" ? window.innerHeight : 800;
   const wW = typeof window !== "undefined" ? window.innerWidth : 1200;
+  const PANEL_W = 420;
+  const PANEL_GAP = 8; // small breathing room between button and panel
+  const BUTTON_H = 52;
   const pH = Math.min(520, wH - 80);
-  const [panelOffset, setPanelOffset] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
-  const panelDragRef = useRef<{ startX: number; startY: number; startDx: number; startDy: number } | null>(null);
 
-  // Reset offset when panel reopens
-  useEffect(() => { if (open) setPanelOffset({ dx: 0, dy: 0 }); }, [open]);
+  // Horizontal: keep the panel's right edge aligned with the button's
+  // right edge when the button is in the right half of the screen, and
+  // left-align when it's in the left half. Clamped so the panel never
+  // spills off either edge.
+  const buttonRightEdge = pos.x + 170; // button is ~170px wide
+  const rawPanelX = pos.x > wW * 0.4 ? buttonRightEdge - PANEL_W : pos.x;
+  const basePanelX = Math.min(Math.max(20, rawPanelX), wW - PANEL_W - 20);
 
-  const basePanelX = Math.max(20, pos.x > wW * 0.4 ? pos.x + 170 - 420 : pos.x);
-  const basePanelY = pos.y > wH * 0.35 ? Math.max(20, pos.y - pH - 12) : pos.y + 56 + 12;
+  // Vertical: panel above the button when it's in the lower 65% of the
+  // screen, otherwise below. Small gap so there's a visible (but tight)
+  // seam — makes it obvious the two belong together.
+  const basePanelY = pos.y > wH * 0.35
+    ? Math.max(20, pos.y - pH - PANEL_GAP)
+    : Math.min(wH - pH - 20, pos.y + BUTTON_H + PANEL_GAP);
 
   const panelStyle: React.CSSProperties = {
-    position: "fixed", width: 420, maxWidth: "calc(100vw - 40px)", height: pH,
-    left: basePanelX + panelOffset.dx,
-    top: basePanelY + panelOffset.dy,
+    position: "fixed", width: PANEL_W, maxWidth: "calc(100vw - 40px)", height: pH,
+    left: basePanelX,
+    top: basePanelY,
     zIndex: 61,
   };
-
-  const onPanelHeaderDown = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    e.preventDefault();
-    panelDragRef.current = { startX: e.clientX, startY: e.clientY, startDx: panelOffset.dx, startDy: panelOffset.dy };
-    function onMove(ev: MouseEvent) {
-      const d = panelDragRef.current!;
-      setPanelOffset({ dx: d.startDx + ev.clientX - d.startX, dy: d.startDy + ev.clientY - d.startY });
-    }
-    function onUp() { panelDragRef.current = null; document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, [panelOffset]);
 
   if (pos.x < 0) return null;
 
@@ -178,8 +178,8 @@ export default function FloatingChat() {
 
       {open && (
         <div ref={panelRef} data-floating-widget="ceo-chat" style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
-          {/* Header — drag to move panel */}
-          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing" onMouseDown={onPanelHeaderDown}>
+          {/* Header — panel is anchored to the button; not independently draggable */}
+          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0">
             <button
               onClick={() => setShowHistory(v => !v)}
               className={`p-1.5 rounded-lg transition-colors ${showHistory ? "bg-[#EEEDFE] text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#2C2C2A] hover:bg-[#F8F8F6]"}`}
