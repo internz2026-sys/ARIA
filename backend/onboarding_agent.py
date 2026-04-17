@@ -48,7 +48,7 @@ QUESTION RULES
 THE 8 REQUIRED PROMPTS
 1. What is your business or brand name?
 2. What product, service, or offer do you sell?
-3. Who is your ideal customer?
+3. Who or what will you sell this to?
 4. What main problem does your offer solve?
 5. What makes your offer different from competitors?
 6. Which channels should ARIA focus on first: email, social, ads, or content?
@@ -80,7 +80,7 @@ The GTM profile must always include:
 FIELD MAPPING RULES
 - business_name = business/brand name
 - offer = product/service/offer
-- audience = ideal customer
+- audience = who or what the user sells to (person persona, business, org, etc.)
 - problem = main problem solved
 - differentiator = unique advantage
 - primary_channels = selected channels
@@ -100,26 +100,29 @@ EXAMPLES OF VALID INFERENCE
 - 30_day_gtm_focus:
   "Over the next 30 days, ARIA should prioritize <channels> to support the goal of <goal_30_days>, using a <brand_voice> tone."
 
-CHECKLIST VALIDATION — STRICT ANSWER MATCHING
+CHECKLIST VALIDATION — ACCEPT ANY ON-TOPIC ANSWER
 
-The user's reply MUST actually answer the specific question being asked. If it doesn't, re-ask the same question and DO NOT advance to the next one.
+Your default is to ACCEPT the user's answer and move on. Only re-ask when the answer is clearly NOT about the current topic.
 
-CORE RULE: Only mark a field complete when the user's reply clearly addresses that field's topic. If the answer is off-topic, unrelated, or doesn't match the field being asked, politely re-ask the SAME question. Do NOT move on, do NOT guess, do NOT accept unrelated answers.
+CORE RULE: If the user's reply mentions anything related to the current field's topic, accept it and move on. Do NOT demand more specificity, do NOT demand demographics, do NOT demand titles or company sizes — any clear on-topic answer is enough.
 
-ACCEPT the answer (and move to the next question) when:
-- The reply directly addresses the current question's topic
-- Partial but on-topic answers (e.g. "customers" when asked about audience — acceptable; follow up only if it needs a small clarification, otherwise accept)
-- Casual phrasing that still answers the topic ("like a friendly tone" for brand voice)
-- Short on-topic answers ("social", "email" for channels)
+EXAMPLES OF ACCEPTABLE ANSWERS (DO NOT RE-ASK THESE):
+- For audience "Who or what will you sell this to?":
+  - "Parochial schools in the Philippines" — ACCEPT (B2B answer, clear customer)
+  - "Small business owners" — ACCEPT
+  - "Developers" — ACCEPT
+  - "Catholic schools" — ACCEPT
+  - "K-12 administrators" — ACCEPT
+- For channels: "email", "social", "all of them" — all ACCEPT
+- For brand voice: "professional", "casual", "friendly" — all ACCEPT
+- For goal: "grow revenue", "50 signups", "get users" — all ACCEPT
 
-RE-ASK the same question (do NOT advance) when:
-- The reply is off-topic (e.g. answers about audience when asked about channels)
-- The reply repeats a previous answer that already covered a different field
-- The reply is a question back to ARIA ("what do you mean?")
-- The reply is empty, nonsense, or random characters
-- The reply doesn't clearly relate to the current field's topic
+RE-ASK THE SAME QUESTION ONLY WHEN:
+- The reply is completely empty or random characters
+- The reply is clearly a question back to ARIA ("what do you mean?", "huh?")
+- The reply is about a completely different topic (e.g. user answers with a pricing question when asked about audience)
 
-When re-asking, be polite and brief. Explain what kind of answer you need. Example: "That sounds more like your target audience. Which channels should ARIA focus on first: email, social, ads, or content?"
+When re-asking, be polite and brief.
 
 NORMALIZATION
 When accepting an on-topic answer, normalize casual wording into clean stored values:
@@ -128,6 +131,10 @@ When accepting an on-topic answer, normalize casual wording into clean stored va
 - "good" (for brand voice) -> "professional"
 - "idk maybe email" -> ["email"]
 - "all of them" for channels -> ["email", "social", "ads", "content"]
+
+B2B vs B2C: both are valid customer answers. Schools, businesses,
+organizations, or individuals — all count as legitimate "who will you sell to"
+answers. Never reject a B2B answer just because it's not a person persona.
 
 NORMALIZATION
 Always normalize casual answers into clean stored values rather than asking again:
@@ -287,7 +294,7 @@ ONBOARDING_FIELDS = [
 FIELD_QUESTIONS = {
     "business_name": "What is your business or brand name?",
     "product_or_offer": "What product, service, or offer do you sell?",
-    "target_audience": "Who is your ideal customer?",
+    "target_audience": "Who or what will you sell this to?",
     "problem_solved": "What main problem does your offer solve?",
     "differentiator": "What makes your offer different from competitors?",
     "channels": "Which channels should ARIA focus on first: email, social, ads, or content?",
@@ -303,7 +310,13 @@ FIELD_QUESTIONS = {
 _FIELD_QUESTION_KEYWORDS = [
     ("business_name", ["business or brand name", "business name", "brand name"]),
     ("product_or_offer", ["product, service, or offer", "do you sell", "what do you sell"]),
-    ("target_audience", ["ideal customer", "target audience", "who is your customer"]),
+    ("target_audience", [
+        "who or what will you sell",
+        "sell this to",
+        "ideal customer",
+        "target audience",
+        "who is your customer",
+    ]),
     ("problem_solved", ["problem does your offer solve", "what problem", "pain point"]),
     ("differentiator", ["different from competitors", "makes your offer different", "differentiate"]),
     ("channels", ["which channels", "email, social, ads", "channels should aria"]),
