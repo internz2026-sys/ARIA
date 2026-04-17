@@ -312,7 +312,7 @@ export default function FloatingChat() {
                 value={stt.listening && stt.transcript ? stt.transcript : input}
                 onChange={e => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; } }}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                placeholder={stt.listening ? "Listening... (sends after 5s of silence)" : "Ask the CEO..."} disabled={sending} rows={1}
+                placeholder={stt.listening ? "Listening... (sends after 3s of silence)" : "Ask the CEO..."} disabled={sending} rows={1}
                 className="flex-1 min-h-[36px] max-h-[200px] px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none" />
               {tts.supported && (
                 <button

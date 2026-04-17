@@ -46,7 +46,7 @@ interface UseSpeechToTextReturn {
   clearError: () => void;
 }
 
-const SILENCE_DELAY_MS = 5000; // Auto-send after 5s of silence
+const SILENCE_DELAY_MS = 3000; // Auto-send after 3s of silence
 
 function mapErrorCode(code: string | undefined): SttError {
   switch (code) {
