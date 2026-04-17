@@ -192,7 +192,16 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
         if (mountedRef.current) {
           // AbortError means the user cancelled — already handled in cancel()
           if (err?.name !== "AbortError") {
-            setMessages((p) => [...p, { role: "assistant", content: "Connection error — is the backend running?" }]);
+            // Distinguish common failure modes so users get a useful message
+            // instead of "is the backend running?" for every failure.
+            const msg = err?.message || "";
+            let text = "Couldn't reach the CEO. Please try again.";
+            if (/Failed to fetch|NetworkError|network/i.test(msg)) {
+              text = "Network error — check your internet connection and try again.";
+            } else if (/timeout|timed out/i.test(msg)) {
+              text = "The CEO took too long to respond. Try a simpler prompt or try again in a moment.";
+            }
+            setMessages((p) => [...p, { role: "assistant", content: text }]);
           }
         }
       }
