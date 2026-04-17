@@ -877,8 +877,41 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── Inbox Read ──
     elif entity == "inbox_item" and operation == "read":
-        status_filter = params.get("status", "")
-        items = inbox_service.list_items(tenant_id, status=status_filter, page=1, page_size=10)
+        # The CEO tends to pass `status` values that are really TYPES
+        # ("email", "email_sequence", "social_post", "image"). The DB
+        # column for those is `type`, not `status`, so the original
+        # strict .eq("status", X) query returned 0 rows and the chat
+        # showed "Your inbox is empty" when the inbox was fine. Route
+        # type-shaped values to a type filter post-fetch so the agent
+        # just gets what it asked for either way.
+        status_filter = (params.get("status") or "").strip()
+        type_filter = (params.get("type") or "").strip()
+
+        _KNOWN_STATUSES = {
+            "processing", "ready", "draft_pending_approval", "needs_review",
+            "sending", "sent", "completed", "failed", "cancelled", "approved",
+            "published",
+        }
+        effective_status = status_filter if status_filter in _KNOWN_STATUSES else ""
+        if status_filter and status_filter not in _KNOWN_STATUSES and not type_filter:
+            # Treat the mis-parameterized value as a type hint instead.
+            type_filter = status_filter
+
+        # Fetch a larger page when a type filter is set — the upstream
+        # list_items only filters by status, so we need room to post-
+        # filter without losing recent rows.
+        page_size = 20 if type_filter else 10
+        items = inbox_service.list_items(
+            tenant_id, status=effective_status, page=1, page_size=page_size,
+        )
+        if type_filter:
+            rows = items.get("items") or []
+            filtered = [r for r in rows if (r.get("type") or "") == type_filter]
+            items = {
+                **items,
+                "items": filtered[:10],
+                "total": len(filtered),
+            }
         return items
 
     # ── CRM Company Read ──

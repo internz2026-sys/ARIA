@@ -5528,6 +5528,29 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     if _is_duplicate_media_write(tenant_id, body):
         return {"item": None, "skipped": "duplicate_media_write"}
 
+    # Normalize agent slug — Paperclip skill curls sometimes send the
+    # hyphenated display form ("email-marketer", "content-writer") or
+    # title case ("Email Marketer") instead of the canonical underscore
+    # slug. Coerce here so inbox rows are consistent and the frontend
+    # agent-color / name lookup doesn't fall back to gray defaults.
+    _AGENT_SLUG_ALIASES = {
+        "email-marketer": "email_marketer",
+        "content-writer": "content_writer",
+        "social-manager": "social_manager",
+        "ad-strategist": "ad_strategist",
+        "media-designer": "media",
+        "media_designer": "media",
+        "email marketer": "email_marketer",
+        "content writer": "content_writer",
+        "social manager": "social_manager",
+        "ad strategist": "ad_strategist",
+        "media designer": "media",
+    }
+    if body.agent:
+        canon = _AGENT_SLUG_ALIASES.get(body.agent.strip().lower(), body.agent)
+        if canon != body.agent:
+            body.agent = canon
+
     # Apply the same parser the watcher uses, so the rich fields
     # populate even when the agent skipped them in its POST body.
     title = body.title
