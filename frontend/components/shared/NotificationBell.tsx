@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useNotifications, Notification } from "@/lib/use-notifications";
-import { formatDateAgo, cleanNotificationBody } from "@/lib/utils";
+import { formatDateAgo, cleanNotificationBody, stripMarkdown } from "@/lib/utils";
 
 const CATEGORY_COLORS: Record<string, { bg: string; text: string; label: string }> = {
   inbox: { bg: "bg-[#EEEDFE]", text: "text-[#534AB7]", label: "Inbox" },
@@ -14,7 +14,7 @@ const CATEGORY_COLORS: Record<string, { bg: string; text: string; label: string 
 
 
 export default function NotificationBell() {
-  const { notifications, badges, markAsRead } = useNotifications();
+  const { notifications, markAsRead } = useNotifications();
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
@@ -37,7 +37,15 @@ export default function NotificationBell() {
     if (n.href) router.push(n.href);
   }
 
-  const count = badges.total;
+  // Count is derived from the local notifications array (the same
+  // array the dropdown renders below), NOT from the backend's
+  // total_unread badge counter. That number rolls up inbox-action-needed
+  // items AND notification rows, so "Mark all read" on the bell never
+  // zeroed it out — the action-needed portion wasn't a notification in
+  // the first place. Counting local is_read=false rows guarantees the
+  // badge matches exactly what the user sees in the panel, and
+  // markAsRead's optimistic update drops the count to 0 instantly.
+  const count = notifications.reduce((n, x) => n + (x.is_read ? 0 : 1), 0);
   const displayCount = count > 99 ? "99+" : count;
 
   return (
@@ -100,7 +108,7 @@ export default function NotificationBell() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-[#2C2C2A] truncate flex-1">
-                          {n.title}
+                          {stripMarkdown(n.title)}
                         </span>
                         <span className="text-[10px] text-[#9E9C95] shrink-0">
                           {formatDateAgo(n.created_at)}

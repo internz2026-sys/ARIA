@@ -2583,7 +2583,13 @@ class MarkReadRequest(BaseModel):
 
 @app.post("/api/notifications/{tenant_id}/mark-read")
 async def mark_notifications_read(tenant_id: str, body: MarkReadRequest):
-    """Mark specific notification IDs (or all) as read."""
+    """Mark specific notification IDs (or all) as read.
+
+    Emits `notifications_read` via Socket.IO so other tabs / windows
+    open on the same tenant can drop their local is_read flags without
+    a manual refetch. Payload: `{ids: [...]}` where an empty array
+    means "mark-all-read".
+    """
     sb = _get_supabase()
     now = datetime.now(timezone.utc).isoformat()
     if body.ids:
@@ -2594,6 +2600,18 @@ async def mark_notifications_read(tenant_id: str, body: MarkReadRequest):
         sb.table("notifications").update({"is_read": True, "updated_at": now}).eq(
             "tenant_id", tenant_id
         ).eq("is_read", False).execute()
+
+    # Best-effort multi-tab sync. A socket hiccup shouldn't fail the
+    # API call — the caller's optimistic local update still holds.
+    try:
+        await sio.emit(
+            "notifications_read",
+            {"ids": body.ids or [], "tenant_id": tenant_id},
+            room=tenant_id,
+        )
+    except Exception as e:
+        logger.debug("notifications_read emit failed (non-fatal): %s", e)
+
     return {"ok": True}
 
 

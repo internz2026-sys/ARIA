@@ -150,12 +150,31 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       // single count(*) over an indexed column.
       const handleInboxMutation = () => { fetchCounts(); };
 
+      // Multi-tab sync: when Tab A marks notifications read, the
+      // backend emits `notifications_read` so Tab B can drop the same
+      // rows' is_read flag locally without waiting for a manual refetch.
+      // Payload: { ids: string[] } — empty array = mark-all-read.
+      const handleNotificationsRead = (payload: { ids?: string[] } | null) => {
+        const ids = payload?.ids || [];
+        setNotifications(prev => prev.map(n => {
+          if (ids.length === 0 || ids.includes(n.id)) {
+            return { ...n, is_read: true };
+          }
+          return n;
+        }));
+        // Also refetch counts so the sidebar Inbox badge (driven by
+        // inbox-action-needed, not notification is_read) stays correct.
+        fetchCounts();
+      };
+
       socket.on("notification", handleNotification);
+      socket.on("notifications_read", handleNotificationsRead);
       socket.on("inbox_new_item", handleInboxMutation);
       socket.on("inbox_item_updated", handleInboxMutation);
       socket.on("inbox_item_deleted", handleInboxMutation);
       return () => {
         socket.off("notification", handleNotification);
+        socket.off("notifications_read", handleNotificationsRead);
         socket.off("inbox_new_item", handleInboxMutation);
         socket.off("inbox_item_updated", handleInboxMutation);
         socket.off("inbox_item_deleted", handleInboxMutation);
@@ -234,15 +253,33 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   async function markAsRead(ids?: string[]) {
     if (!tenantId) return;
+
+    // Optimistic update — apply the is_read=true change FIRST so the
+    // bell counter drops to 0 immediately. The bell's badge reads
+    // notifications.filter(!is_read).length (see NotificationBell.tsx)
+    // so this alone zeros the UI before the API round-trip completes.
+    const snapshot = notifications;
+    setNotifications(prev => prev.map(n => {
+      if (!ids || ids.length === 0) return { ...n, is_read: true };
+      return ids.includes(n.id) ? { ...n, is_read: true } : n;
+    }));
+
     try {
       await notificationsApi.markRead(tenantId, ids);
-      if (ids && ids.length > 0) {
-        setNotifications(prev => prev.map(n => ids.includes(n.id) ? { ...n, is_read: true } : n));
-      } else {
-        setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
-      }
+      // Re-sync the sidebar badges (conversations / system / inbox-
+      // action-needed) with the authoritative backend counts.
       fetchCounts();
-    } catch {}
+    } catch (err) {
+      // Revert on failure so the user doesn't see a false "0" while
+      // the server state is still unread. Surface a toast so the
+      // failure isn't invisible.
+      setNotifications(snapshot);
+      showToast({
+        title: "Couldn't mark as read",
+        body: "Network error — try again in a moment.",
+        variant: "error",
+      });
+    }
   }
 
   return (

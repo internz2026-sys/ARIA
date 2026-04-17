@@ -42,7 +42,59 @@ export function getInitials(name: string): string {
   return name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
 }
 
-/** Clean JSON/code artifacts from notification body text. */
+/** Strip markdown syntax down to a plain-text preview.
+ *
+ * Used by the notification bell + any other small-surface preview where
+ * we want a human-readable summary instead of raw agent output. Not a
+ * full markdown parser — just cheap regex passes that remove the
+ * characters users don't want to see (`##`, `**`, `_`, `>`, bullets,
+ * fenced code, inline links) while preserving the underlying text.
+ *
+ * Examples:
+ *   "## New Blog Post"              -> "New Blog Post"
+ *   "**Urgent:** Task ready"        -> "Urgent: Task ready"
+ *   "- Item one\n- Item two"        -> "Item one, Item two"
+ *   "[Click here](https://...)"     -> "Click here"
+ *   "> quoted text"                 -> "quoted text"
+ */
+export function stripMarkdown(text: string): string {
+  if (!text) return "";
+  let out = text;
+
+  // Fenced code blocks — drop entirely, a preview doesn't need them.
+  out = out.replace(/```[\s\S]*?```/g, " ");
+  // Inline code — keep the contents, drop the backticks.
+  out = out.replace(/`([^`]+)`/g, "$1");
+  // Inline links `[text](url)` — keep just the text.
+  out = out.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+  // Images `![alt](url)` — drop entirely (no alt shown in a one-liner).
+  out = out.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
+  // Bold **x** / __x__ -> x
+  out = out.replace(/\*\*([^*]+)\*\*/g, "$1");
+  out = out.replace(/__([^_]+)__/g, "$1");
+  // Italic *x* / _x_ -> x
+  out = out.replace(/(^|[^\*])\*([^*\n]+)\*(?!\*)/g, "$1$2");
+  out = out.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1$2");
+  // Strikethrough ~~x~~ -> x
+  out = out.replace(/~~([^~]+)~~/g, "$1");
+  // Leading markers on a line: headings, blockquotes, bullets, ordered lists.
+  out = out.replace(/^\s{0,3}#{1,6}\s+/gm, "");
+  out = out.replace(/^\s{0,3}>\s?/gm, "");
+  out = out.replace(/^\s{0,3}[-*+]\s+/gm, "");
+  out = out.replace(/^\s{0,3}\d+\.\s+/gm, "");
+  // Horizontal rules
+  out = out.replace(/^\s*---+\s*$/gm, " ");
+  // Stray formatting chars that survived the passes above
+  out = out.replace(/[*_>#]+/g, " ");
+  // Collapse whitespace (newlines -> single space) so the preview is one line.
+  out = out.replace(/\s+/g, " ").trim();
+  return out;
+}
+
+/** Clean JSON/code artifacts AND markdown syntax from notification body
+ * text. The bell shows this as a preview subtitle — raw agent output
+ * (fenced ```json blocks, ## headings, **bold** markers) shouldn't leak
+ * into non-technical user views. */
 export function cleanNotificationBody(body: string): string {
   if (!body) return "";
   let text = body.replace(/```\w*\n?/g, "").trim();
@@ -54,12 +106,13 @@ export function cleanNotificationBody(body: string): string {
       const parsed = JSON.parse(jsonStr.slice(0, jsonStr.lastIndexOf(jsonStr[0] === "[" ? "]" : "}") + 1));
       const data = Array.isArray(parsed) ? parsed[0] || {} : parsed;
       for (const key of ["text", "title", "description", "commentary", "body", "subject"]) {
-        if (data[key]) return String(data[key]).slice(0, 200);
+        if (data[key]) return stripMarkdown(String(data[key])).slice(0, 200);
       }
       const posts = data.posts || [];
-      if (posts[0]?.text) return posts[0].text.slice(0, 200);
+      if (posts[0]?.text) return stripMarkdown(posts[0].text).slice(0, 200);
     } catch {}
     text = text.replace(/[{}\[\]"\\]/g, "").replace(/\s+/g, " ").trim();
   }
-  return text.slice(0, 200);
+  // Final pass: strip markdown so `##` / `**` / `_` / bullets don't leak.
+  return stripMarkdown(text).slice(0, 200);
 }
