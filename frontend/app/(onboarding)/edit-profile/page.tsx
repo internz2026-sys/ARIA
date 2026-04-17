@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 
 const CHANNEL_OPTIONS = ["email", "social", "ads", "content"];
 const VOICE_OPTIONS = ["professional", "friendly", "bold", "luxury", "casual"];
@@ -56,8 +56,11 @@ export default function EditProfilePage() {
     }
     setTenantId(tid);
 
-    fetch(`${API_URL}/api/tenant/${tid}/onboarding-data`)
-      .then(r => r.json())
+    authFetch(`${API_URL}/api/tenant/${tid}/onboarding-data`)
+      .then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(d => {
         setData({
           business_name: d.business_name || "",
@@ -71,8 +74,8 @@ export default function EditProfilePage() {
         });
         setLoading(false);
       })
-      .catch(() => {
-        setError("Could not load your business profile.");
+      .catch((err) => {
+        setError(`Could not load your business profile: ${err?.message || "unknown error"}`);
         setLoading(false);
       });
   }, [router]);
@@ -108,7 +111,7 @@ export default function EditProfilePage() {
     });
 
     try {
-      const res = await fetch(`${API_URL}/api/tenant/${tenantId}/update-onboarding`, {
+      const res = await authFetch(`${API_URL}/api/tenant/${tenantId}/update-onboarding`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
