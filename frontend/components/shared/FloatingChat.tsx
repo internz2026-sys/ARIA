@@ -83,18 +83,11 @@ export default function FloatingChat() {
   // Scroll to bottom on new messages AND when panel opens
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, open]);
 
-  // Close on click outside (but not when clicking other floating widgets)
-  useEffect(() => {
-    if (!open) return;
-    function h(e: MouseEvent) {
-      const t = e.target as HTMLElement;
-      if (btnRef.current?.contains(t) || panelRef.current?.contains(t)) return;
-      if (t.closest?.("[data-floating-widget]")) return; // ignore other widgets
-      setOpen(false);
-    }
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [open, btnRef]);
+  // Persistent panel — the panel stays open until the user explicitly
+  // closes it (via the X button, the CEO Chat toggle, or Escape).
+  // Clicking outside the panel or navigating to other pages doesn't
+  // dismiss it. This was the old behaviour users complained about:
+  // losing the in-progress message because they clicked the sidebar.
 
   function handleSend() {
     const text = input.trim();
