@@ -135,6 +135,107 @@ async def _scheduler_executor_loop():
             _log.warning("Scheduler executor loop failed: %s", e)
 
 
+async def _followup_nudge_loop():
+    """Background loop: draft 7-day follow-up nudges for stale threads.
+
+    Sweeps every 6 hours. For each tenant, finds email_threads where
+    status=='awaiting_reply' and last_message_at is older than 7 days.
+    For each such thread, if there isn't ALREADY a recent nudge draft
+    sitting in the inbox (lookback: 7 days), spawn one via the same
+    agent pipeline the manual "Generate Reply Draft" button uses, with
+    custom_instructions biased toward a gentle, low-pressure nudge.
+
+    Drafts land as draft_pending_approval in the inbox so the user
+    still controls what actually sends — this is the FIRST recurring
+    agent-driven cron in ARIA, and keeping human-in-the-loop is why.
+    """
+    _log = logging.getLogger("aria.followup_nudge")
+    INTERVAL_SECS = 6 * 60 * 60  # every 6 hours
+    STALE_DAYS = 7
+    MAX_PER_TENANT = 3  # cap nudges per sweep to avoid burst sending
+
+    # On container start, wait a minute before the first sweep so the
+    # rest of the boot path settles. Without this the loop can race
+    # Supabase init during rebuilds.
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            sb = _get_supabase()
+            now = datetime.now(timezone.utc)
+            stale_cutoff = (now - timedelta(days=STALE_DAYS)).isoformat()
+            nudge_recent_cutoff = (now - timedelta(days=STALE_DAYS)).isoformat()
+
+            stale = (
+                sb.table("email_threads")
+                .select("id, tenant_id, contact_email, subject, last_message_at")
+                .eq("status", "awaiting_reply")
+                .lt("last_message_at", stale_cutoff)
+                .order("last_message_at", desc=False)
+                .limit(100)
+                .execute()
+            )
+            threads_by_tenant: dict[str, list[dict]] = {}
+            for t in stale.data or []:
+                threads_by_tenant.setdefault(t["tenant_id"], []).append(t)
+
+            drafted = 0
+            for tenant_id, threads in threads_by_tenant.items():
+                # Dedupe: skip threads that already have a draft/nudge
+                # inbox row created within the stale window so we don't
+                # spam the user with duplicate drafts.
+                try:
+                    existing = (
+                        sb.table("inbox_items")
+                        .select("email_draft")
+                        .eq("tenant_id", tenant_id)
+                        .eq("agent", "email_marketer")
+                        .gte("created_at", nudge_recent_cutoff)
+                        .limit(100)
+                        .execute()
+                    )
+                    threaded_ids = set()
+                    for r in existing.data or []:
+                        d = r.get("email_draft") or {}
+                        if isinstance(d, dict) and d.get("reply_to_thread_id"):
+                            threaded_ids.add(d["reply_to_thread_id"])
+                except Exception:
+                    threaded_ids = set()
+
+                queued = 0
+                for t in threads:
+                    if queued >= MAX_PER_TENANT:
+                        break
+                    if t["id"] in threaded_ids:
+                        continue
+                    try:
+                        await generate_draft_reply(
+                            tenant_id,
+                            DraftReplyRequest(
+                                thread_id=t["id"],
+                                custom_instructions=(
+                                    "7-day follow-up nudge. Be brief, warm, and low-pressure — "
+                                    "reference the original subject, acknowledge they may be busy, "
+                                    "and ask one simple next-step question. Avoid salesy language."
+                                ),
+                            ),
+                        )
+                        drafted += 1
+                        queued += 1
+                        # Tiny stagger so we don't hammer the model all at once.
+                        await asyncio.sleep(2)
+                    except Exception as e:
+                        _log.debug("nudge draft failed (tenant=%s thread=%s): %s",
+                                   tenant_id, t["id"], e)
+
+            if drafted:
+                _log.info("Follow-up nudges: drafted %d stale-thread reminders", drafted)
+        except Exception as e:
+            _log.warning("Follow-up nudge sweep failed: %s", e)
+
+        await asyncio.sleep(INTERVAL_SECS)
+
+
 async def _paperclip_office_sync_loop():
     """Background loop: import completed Paperclip issues to inbox + sync Virtual Office.
 
@@ -244,10 +345,12 @@ async def lifespan(app: FastAPI):
     sync_task = asyncio.create_task(_gmail_sync_loop())
     scheduler_task = asyncio.create_task(_scheduler_executor_loop())
     office_sync_task = asyncio.create_task(_paperclip_office_sync_loop())
+    followup_task = asyncio.create_task(_followup_nudge_loop())
     yield
     sync_task.cancel()
     scheduler_task.cancel()
     office_sync_task.cancel()
+    followup_task.cancel()
     # Close the shared Paperclip httpx client so we don't leak connections
     # on graceful shutdown (uvicorn reload during dev, container stop in prod).
     try:
@@ -6208,6 +6311,22 @@ Status: backlog (nice-to-have), to_do (queued), in_progress (starting now), done
 
 CRITICAL: "create an image of X", "make a picture of X", "design a banner for X", "generate a logo" → ALWAYS `media`, NEVER `content_writer`. Content Writer produces TEXT only and will return a useless URL string if given an image task.
 
+### Pipeline delegations (when the user asks for a multi-step chain)
+For asks that naturally span two agents in one breath ("create a product image AND use it in a launch email", "write a blog post AND post it to social"), emit ONE delegate block with a `then` field. The dispatcher runs step 1 immediately, waits 90 seconds (configurable via `delay_seconds` on the follow-up), then runs step 2 — by which time the upstream agent's output is in the inbox and the downstream agent will find it automatically via asset_lookup (images, blog posts, email hooks).
+
+```delegate
+{{"agent": "media", "task": "product hero image: ...", "then": {{"agent": "email_marketer", "task": "launch email with the hero image", "delay_seconds": 90}}}}
+```
+
+Valid pipeline patterns:
+- `media` → `email_marketer` (image-in-email)
+- `media` → `social_manager` (image-in-post)
+- `media` → `ad_strategist` (image-in-ad)
+- `content_writer` → `email_marketer` (blog digest email)
+- `content_writer` → `social_manager` (blog → thread)
+
+This is the ONLY way to emit more than one agent in a single turn — two separate `delegate` blocks in the same reply is still a bug (it triggers the "accidentally fired two agents" alert). Use `then` for intentional chains; otherwise stick to one block.
+
 ### One Delegate Per Message — HARD RULE
 Each user message gets EXACTLY ONE delegate block, never two. Do NOT chain delegations like "media for the image AND content_writer for a caption". If the user asked for ONLY an image, delegate ONLY to media. Bonus content the user did not ask for (captions, blog copy, social posts about the image) is forbidden — never auto-add a content_writer/social_manager delegate alongside a media one.
 
@@ -6388,14 +6507,48 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         if not any(marker in raw_lower for marker in refusal_markers):
             raw = REFUSAL_MESSAGE
 
-    # Parse delegation blocks
+    # Parse delegation blocks.
+    #
+    # Pipeline support: a delegate block can carry an optional `then`
+    # field pointing at a follow-up delegation. The CEO uses this for
+    # media -> email / media -> social / content_writer -> email kinds
+    # of chains in a single turn — the prompt's "one delegate per
+    # message" rule treats a pipeline as ONE intentional delegation
+    # even though it produces multiple sub-agent runs.
+    #
+    # Shape the CEO emits for a chain:
+    #   {"agent":"media","task":"...", "then":{"agent":"email_marketer","task":"...","delay_seconds":90}}
+    #
+    # We flatten that into sequential entries on the `delegations` list,
+    # each tagged with `_delay_seconds` (cumulative) so the dispatcher
+    # below knows when each step should fire. Later steps rely on the
+    # earlier steps' outputs being already indexed — asset_lookup's
+    # get_latest_image_url / get_recent_blog_post / get_recent_email_hook
+    # will find them once the inbox row has landed.
+    _VALID_AGENTS = ("content_writer", "email_marketer", "social_manager", "ad_strategist", "media")
     delegations = []
     clean_response = raw
     if "```delegate" in raw:
         for block in _DELEGATE_BLOCK_RE.findall(raw):
             d = _parse_codeblock_json(block, "delegate")
-            if d and d.get("agent") in ("content_writer", "email_marketer", "social_manager", "ad_strategist", "media"):
-                delegations.append(d)
+            if not d or d.get("agent") not in _VALID_AGENTS:
+                continue
+            # Unroll the .then chain. Cap at 4 steps so a malformed
+            # response can't produce an arbitrarily long pipeline.
+            chain: list[dict] = []
+            current = d
+            for _ in range(4):
+                chain.append({k: v for k, v in current.items() if k != "then"})
+                nxt = current.get("then")
+                if not isinstance(nxt, dict) or nxt.get("agent") not in _VALID_AGENTS:
+                    break
+                current = nxt
+            cumulative = 0
+            for i, step in enumerate(chain):
+                if i > 0:
+                    cumulative += int(step.get("delay_seconds") or 90)
+                step["_delay_seconds"] = cumulative
+                delegations.append(step)
         clean_response = _DELEGATE_BLOCK_RE.sub("", raw).strip()
 
     # Defensive: if the model promised delegation in prose but forgot the block,
@@ -6468,23 +6621,37 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         await _emit_agent_status(tenant_id, "ceo", "idle",
                                  action="chat_response_sent")
 
-    # Save delegations as tasks, emit status events, and execute in background
+    # Save delegations as tasks, emit status events, and execute in background.
+    #
+    # Delegations tagged with `_delay_seconds > 0` are pipeline follow-up
+    # steps — we defer their dispatch (task row insert, status emit, and
+    # agent run) until the delay expires so the upstream agent has time
+    # to land its output in the inbox first. This is what makes
+    # "media -> email" work as a single-turn chain: the email step runs
+    # after the media step's image row is already queryable.
     saved_tasks = []
-    for d in delegations:
+    _dispatch_logger = logging.getLogger("aria.ceo_chat.dispatch")
+
+    async def _execute_delegation(d: dict, cumulative_delay: int) -> None:
+        """Full per-delegation dispatch body.
+
+        Sleeps `cumulative_delay` seconds first so pipeline follow-ups
+        fire only after their upstream has landed. On the immediate-
+        dispatch path (delay=0) the sleep is a no-op.
+        """
+        if cumulative_delay > 0:
+            await asyncio.sleep(cumulative_delay)
+
         agent_id = d["agent"]
         task_desc = d.get("task", "")
 
         # Enrich the task description with CRM contact info before
-        # dispatch. The CEO's CRM-context heuristic doesn't fire on
-        # phrases like "create marketing email for Hanz" (no CRM noun),
-        # so the CEO has no email address to pass through to the
-        # email_marketer. This helper looks up the CRM directly and
-        # appends matched contacts (with emails) to the task_desc, so
-        # the agent can use the right recipient instead of a placeholder.
+        # dispatch (contacts by name → their emails / deals / notes).
         if tenant_id and agent_id in ("email_marketer", "social_manager", "ad_strategist", "content_writer"):
             task_desc = _enrich_task_desc_with_crm(task_desc, tenant_id)
 
-        # Save to Supabase tasks table — always start as in_progress
+        # Save task row (in_progress) so the Kanban board updates.
+        saved_task_id = None
         if tenant_id:
             try:
                 sb = _get_supabase()
@@ -6497,10 +6664,10 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 }
                 result = sb.table("tasks").insert(task_row).execute()
                 if result.data:
+                    saved_task_id = result.data[0]["id"]
                     saved_tasks.append(result.data[0])
-                    # Notify Kanban board of new task
                     await sio.emit("task_updated", {
-                        "id": result.data[0]["id"],
+                        "id": saved_task_id,
                         "agent": agent_id,
                         "status": "in_progress",
                         "task": task_desc,
@@ -6508,58 +6675,39 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
             except Exception:
                 pass
 
-        # Emit agent_status_change: CEO walks to meeting room, then agent does
+        # Walk-to-meeting choreography for the Virtual Office.
         if tenant_id:
-            # CEO starts moving to meeting room
             await _emit_agent_status(tenant_id, "ceo", "running",
                                      current_task=f"Briefing {agent_id} on: {task_desc[:60]}",
                                      action="walk_to_meeting")
-            # Target agent starts moving to meeting room
             await _emit_agent_status(tenant_id, agent_id, "running",
                                      current_task=task_desc,
                                      action="walk_to_meeting")
-        # Execute agent — route through Paperclip if connected, else local fallback.
-        # Loud logging here is critical: a silent failure inside this block was
-        # the previous bug and made it look like 'Paperclip orchestration is not
-        # being used' when really an import or task-creation error was being
-        # swallowed by a bare except.
-        _dispatch_logger = logging.getLogger("aria.ceo_chat.dispatch")
+
+        # Execute: Paperclip when available, local fallback otherwise.
         try:
             connected = paperclip_connected()
             paperclip_id = get_paperclip_agent_id(agent_id) if connected else None
             _dispatch_logger.warning(
-                "[ceo-dispatch] agent=%s paperclip_connected=%s paperclip_id=%s",
-                agent_id, connected, paperclip_id,
+                "[ceo-dispatch] agent=%s paperclip_connected=%s paperclip_id=%s delay=%s",
+                agent_id, connected, paperclip_id, cumulative_delay,
             )
 
             if connected and paperclip_id:
-                _dispatch_logger.warning(
-                    "[ceo-dispatch] routing %s through Paperclip (id=%s) with active inbox watcher",
-                    agent_id, paperclip_id,
-                )
-                # _dispatch_paperclip_and_watch_to_inbox handles dispatch +
-                # placeholder + adaptive polling + inbox write in one task,
-                # so the result lands in the inbox within ~1-2s of the agent
-                # finishing instead of waiting up to 5s for the global poller.
-                # Wrapped in _safe_background so any crash inside the task
-                # gets logged instead of disappearing as "Task exception
-                # was never retrieved".
                 _safe_background(
                     _dispatch_paperclip_and_watch_to_inbox(
                         tenant_id=tenant_id,
                         agent_id=agent_id,
                         task_desc=task_desc,
                         session_id=body.session_id,
-                        task_id=saved_tasks[-1]["id"] if saved_tasks else None,
+                        task_id=saved_task_id,
                         priority=d.get("priority", "medium"),
                     ),
                     label=f"paperclip-watch-{agent_id}",
                 )
             else:
                 _dispatch_logger.warning(
-                    "[ceo-dispatch] FALLING BACK to local for %s "
-                    "(connected=%s, paperclip_id=%s) — set PAPERCLIP_*_KEY env vars "
-                    "in .env to enable Paperclip routing",
+                    "[ceo-dispatch] FALLING BACK to local for %s (connected=%s, paperclip_id=%s)",
                     agent_id, connected, paperclip_id,
                 )
                 agent_module = AGENT_REGISTRY.get(agent_id)
@@ -6568,7 +6716,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                         _run_agent_to_inbox(
                             agent_module, agent_id, tenant_id, task_desc,
                             body.session_id,
-                            saved_tasks[-1]["id"] if saved_tasks else None,
+                            saved_task_id,
                             d.get("priority", "medium"),
                         ),
                         label=f"local-agent-{agent_id}",
@@ -6583,6 +6731,18 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 "[ceo-dispatch] FAILED to dispatch %s: %s\n%s",
                 agent_id, _disp_exc, traceback.format_exc(),
             )
+
+    for d in delegations:
+        delay = int(d.get("_delay_seconds") or 0)
+        if delay > 0:
+            # Pipeline follow-up — run the whole body in the background
+            # after the delay so the HTTP response doesn't block.
+            _safe_background(
+                _execute_delegation(d, delay),
+                label=f"pipeline-{d.get('agent')}-{delay}s",
+            )
+        else:
+            await _execute_delegation(d, 0)
 
     response_data = {
         "response": clean_response,
