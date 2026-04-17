@@ -5752,6 +5752,58 @@ async def list_chat_sessions(tenant_id: str):
         return {"sessions": []}
 
 
+class BulkDeleteSessionsRequest(BaseModel):
+    session_ids: list[str]
+
+
+@app.post("/api/ceo/chat/sessions/{tenant_id}/bulk-delete")
+async def bulk_delete_chat_sessions(tenant_id: str, body: BulkDeleteSessionsRequest):
+    """Bulk-delete multiple chat sessions in a single Supabase round-trip.
+
+    Uses `.in_("id", session_ids)` so the whole operation is one DELETE
+    regardless of how many rows are being removed. chat_messages cascade
+    via the existing ON DELETE CASCADE FK.
+
+    Tenant-scoped: the query filters by tenant_id so a caller can't
+    delete sessions that don't belong to them even if they guessed the
+    ids. Idempotent on "already gone" — the response reports the count
+    of rows that actually matched at delete-time so the UI can show
+    accurate feedback.
+    """
+    sb = _get_supabase()
+    ids = [sid for sid in (body.session_ids or []) if isinstance(sid, str) and sid]
+    if not ids:
+        return {"ok": True, "deleted": 0}
+
+    # Verify every id we're about to delete belongs to this tenant.
+    # Filter the incoming ids down to the ones that actually match,
+    # then run the DELETE against that safe list. That way a forged id
+    # for another tenant is silently dropped (not 403'd) so a bulk
+    # request with one bad id still processes the good ones.
+    owned = (
+        sb.table("chat_sessions")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .in_("id", ids)
+        .execute()
+    )
+    safe_ids = [r["id"] for r in (owned.data or [])]
+    if not safe_ids:
+        return {"ok": True, "deleted": 0}
+
+    sb.table("chat_sessions").delete().in_("id", safe_ids).execute()
+
+    # Drop in-memory session state for deleted sessions.
+    for sid in safe_ids:
+        try:
+            _chat_sessions.pop(sid, None)
+            _chat_session_locks.pop(sid, None)
+        except Exception:
+            pass
+
+    return {"ok": True, "deleted": len(safe_ids), "deleted_ids": safe_ids}
+
+
 @app.delete("/api/ceo/chat/sessions/{tenant_id}/{session_id}")
 async def delete_chat_session(tenant_id: str, session_id: str):
     """Hard-delete a CEO chat session.

@@ -51,6 +51,10 @@ interface CeoChatState {
   /** Hard-delete a session + its messages. If `sid` is the current
    *  session the view resets to a fresh chat state. */
   deleteSession: (sid: string) => Promise<void>;
+  /** Bulk-delete multiple sessions in one round-trip. Returns the
+   *  count of sessions actually removed. If any of the deleted ids is
+   *  the CURRENT session, the view resets to a fresh chat state. */
+  deleteSessions: (ids: string[]) => Promise<number>;
 }
 
 // ---- Shared session key ---------------------------------------------------
@@ -293,7 +297,33 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
     }
   }, [sessions, sessionId]);
 
-  const value: CeoChatState = { messages, sessions, sessionId, sending, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat, refreshSessions, deleteSession };
+  const deleteSessions = useCallback(async (ids: string[]): Promise<number> => {
+    const tid = getTenantId();
+    const cleanIds = (ids || []).filter(Boolean);
+    if (!tid || cleanIds.length === 0) return 0;
+
+    const prevSessions = sessions;
+    setSessions((list) => list.filter((s) => !cleanIds.includes(s.id)));
+
+    const currentGotDeleted = cleanIds.includes(sessionId);
+    if (currentGotDeleted) {
+      const fresh = makeSessionId();
+      localStorage.setItem(SESSION_KEY, fresh);
+      touchSessionTimestamp();
+      setSessionId(fresh);
+      setMessages([]);
+    }
+
+    try {
+      const res = await ceoChatApi.deleteSessions(tid, cleanIds);
+      return res?.deleted ?? cleanIds.length;
+    } catch {
+      if (mountedRef.current) setSessions(prevSessions);
+      return 0;
+    }
+  }, [sessions, sessionId]);
+
+  const value: CeoChatState = { messages, sessions, sessionId, sending, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat, refreshSessions, deleteSession, deleteSessions };
 
   return React.createElement(CeoChatContext.Provider, { value }, children);
 }

@@ -39,8 +39,43 @@ export default function CEOChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const { messages, sessions, sessionId, sending, send, switchSession, startNewChat, deleteSession } = useCeoChat();
+  const { messages, sessions, sessionId, sending, send, switchSession, startNewChat, deleteSession, deleteSessions } = useCeoChat();
   const { confirm } = useConfirm();
+
+  // ── Bulk select state ────────────────────────────────────────────
+  // `selectedIds` is a Set so toggling is O(1) and the master-checkbox
+  // "select all / some / none" state is a cheap size comparison.
+  // Cleared automatically when the session list changes (eg. after a
+  // bulk delete), when we unmount, and whenever the sidebar closes.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  // Clear selection when the user navigates away (unmount) — prevents
+  // accidental deletions on return to the page with stale selections.
+  useEffect(() => {
+    return () => setSelectedIds(new Set());
+  }, []);
+
+  // Clear selection when the sidebar is hidden (e.g. user collapses it
+  // to focus on a conversation) so re-opening is a clean slate.
+  useEffect(() => {
+    if (!sidebarOpen) setSelectedIds(new Set());
+  }, [sidebarOpen]);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) =>
+      prev.size === sessions.length ? new Set() : new Set(sessions.map((s) => s.id)),
+    );
+  }, [sessions]);
 
   async function handleDeleteSession(sid: string, title: string) {
     const ok = await confirm({
@@ -52,6 +87,29 @@ export default function CEOChatPage() {
     });
     if (ok) await deleteSession(sid);
   }
+
+  async function handleBulkDelete() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || bulkDeleting) return;
+    const ok = await confirm({
+      title: `Delete ${ids.length} conversation${ids.length === 1 ? "" : "s"}?`,
+      message: "This cannot be undone. All messages in these conversations will be permanently removed.",
+      confirmLabel: `Delete ${ids.length}`,
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
+    setBulkDeleting(true);
+    try {
+      await deleteSessions(ids);
+      setSelectedIds(new Set());
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
+  const allSelected = sessions.length > 0 && selectedIds.size === sessions.length;
+  const someSelected = selectedIds.size > 0 && selectedIds.size < sessions.length;
   const sendRef = useRef(send);
   sendRef.current = send;
   const stt = useSpeechToText(useCallback((text: string) => { if (text.trim()) sendRef.current(text.trim()); }, []));
@@ -119,42 +177,107 @@ export default function CEOChatPage() {
             </button>
           </div>
 
+          {/* Master checkbox + bulk action bar. Always-visible row so
+              users discover the bulk flow; the Delete button only
+              enables when at least one session is checked so the
+              affordance is present without being trigger-happy. */}
+          {sessions.length > 0 && (
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-[#E0DED8] bg-white/50">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  aria-label="Select all conversations"
+                  checked={allSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = someSelected;
+                  }}
+                  onChange={toggleSelectAll}
+                  className="w-4 h-4 accent-[#534AB7] cursor-pointer"
+                />
+                <span className="text-[10px] font-medium text-[#5F5E5A]">
+                  {selectedIds.size > 0 ? `${selectedIds.size} selected` : "Select all"}
+                </span>
+              </label>
+              {selectedIds.size > 0 && (
+                <button
+                  onClick={handleBulkDelete}
+                  disabled={bulkDeleting}
+                  className="ml-auto flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-red-500 hover:bg-red-50 rounded-md transition disabled:opacity-60"
+                >
+                  {bulkDeleting ? (
+                    <>
+                      <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
+                      </svg>
+                      Deleting...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                      </svg>
+                      Delete ({selectedIds.size})
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="flex-1 overflow-y-auto">
             {sessions.length === 0 ? (
               <p className="text-xs text-[#B0AFA8] text-center py-6">No chats yet</p>
             ) : (
-              sessions.map(s => (
-                // Flex row so the row-level switch button lives alongside
-                // a trash button. (button-in-button is invalid HTML.)
-                <div
-                  key={s.id}
-                  className={`group flex items-stretch border-b border-[#E0DED8]/50 transition ${
-                    s.id === sessionId
-                      ? "bg-white border-l-2 border-l-[#534AB7]"
-                      : "hover:bg-white/60"
-                  }`}
-                >
-                  <button
-                    onClick={() => switchSession(s.id)}
-                    className="flex-1 text-left px-3 py-2.5 min-w-0"
+              sessions.map(s => {
+                const checked = selectedIds.has(s.id);
+                return (
+                  // Flex row: checkbox | switch button (flex-1) | trash.
+                  // The checkbox is a distinct hit area — clicking it
+                  // toggles selection and never opens the session.
+                  <div
+                    key={s.id}
+                    className={`group flex items-stretch border-b border-[#E0DED8]/50 transition ${
+                      s.id === sessionId
+                        ? "bg-white border-l-2 border-l-[#534AB7]"
+                        : checked
+                          ? "bg-[#EEEDFE]/50"
+                          : "hover:bg-white/60"
+                    }`}
                   >
-                    <p className={`text-xs font-medium truncate ${s.id === sessionId ? "text-[#534AB7]" : "text-[#2C2C2A]"}`}>
-                      {s.title || "New chat"}
-                    </p>
-                    <p className="text-[10px] text-[#B0AFA8] mt-0.5">{formatDateAgo(s.updated_at)}</p>
-                  </button>
-                  <button
-                    onClick={() => handleDeleteSession(s.id, s.title)}
-                    className="px-2 text-[#B0AFA8] hover:text-red-500 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
-                    title="Delete this conversation"
-                    aria-label="Delete conversation"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                    </svg>
-                  </button>
-                </div>
-              ))
+                    <label
+                      className="flex items-center pl-3 pr-1 cursor-pointer"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleSelect(s.id)}
+                        aria-label={`Select conversation ${s.title || "New chat"}`}
+                        className="w-4 h-4 accent-[#534AB7] cursor-pointer"
+                      />
+                    </label>
+                    <button
+                      onClick={() => switchSession(s.id)}
+                      className="flex-1 text-left px-2 py-2.5 min-w-0"
+                    >
+                      <p className={`text-xs font-medium truncate ${s.id === sessionId ? "text-[#534AB7]" : "text-[#2C2C2A]"}`}>
+                        {s.title || "New chat"}
+                      </p>
+                      <p className="text-[10px] text-[#B0AFA8] mt-0.5">{formatDateAgo(s.updated_at)}</p>
+                    </button>
+                    <button
+                      onClick={() => handleDeleteSession(s.id, s.title)}
+                      className="px-2 text-[#B0AFA8] hover:text-red-500 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                      title="Delete this conversation"
+                      aria-label="Delete conversation"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                      </svg>
+                    </button>
+                  </div>
+                );
+              })
             )}
           </div>
         </div>

@@ -211,6 +211,12 @@ export const ceoChat = {
   /** Hard-delete a session + its messages (cascade). Idempotent on 404. */
   deleteSession: (tenantId: string, sessionId: string) =>
     fetchAPI(`/api/ceo/chat/sessions/${tenantId}/${sessionId}`, { method: "DELETE" }),
+  /** Bulk-delete many sessions in one round-trip. Returns {deleted, deleted_ids}. */
+  deleteSessions: (tenantId: string, sessionIds: string[]) =>
+    fetchAPI(`/api/ceo/chat/sessions/${tenantId}/bulk-delete`, {
+      method: "POST",
+      body: JSON.stringify({ session_ids: sessionIds }),
+    }),
 };
 
 export const usage = {
