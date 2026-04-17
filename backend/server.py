@@ -442,6 +442,51 @@ def poke_paperclip_poller() -> None:
         pass
 
 
+_NON_CANONICAL_AGENT_SLUGS = (
+    "email-marketer", "Email Marketer", "email marketer",
+    "content-writer", "Content Writer", "content writer",
+    "social-manager", "Social Manager", "social manager",
+    "ad-strategist", "Ad Strategist", "ad strategist",
+    "media-designer", "Media Designer", "media designer",
+    "media_designer",
+)
+
+
+def _cleanup_noncanonical_inbox_rows() -> int:
+    """Purge inbox rows with non-canonical agent slugs.
+
+    Runs once at backend startup. Every row whose agent is one of the
+    hyphenated / title-case / legacy display forms is a historical
+    duplicate from the window BEFORE the slug-normalization fix
+    landed — the canonical row with the underscore slug already
+    exists alongside it. This sweep removes the ghost rows so users
+    don't have to click Delete on each one.
+
+    Safe to run every boot: once no rows match the filter the delete
+    is a cheap no-op. Logs the count so we can spot regressions if
+    the dedupe ever backslides.
+    """
+    try:
+        sb = _get_supabase()
+        existing = (
+            sb.table("inbox_items")
+            .select("id", count="exact")
+            .in_("agent", list(_NON_CANONICAL_AGENT_SLUGS))
+            .limit(1)
+            .execute()
+        )
+        count = existing.count if existing.count is not None else len(existing.data or [])
+        if count <= 0:
+            return 0
+        sb.table("inbox_items").delete().in_(
+            "agent", list(_NON_CANONICAL_AGENT_SLUGS)
+        ).execute()
+        return count
+    except Exception as e:
+        logger.warning("Startup non-canonical inbox cleanup failed: %s", e)
+        return 0
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: initialize background loops + integrations.
@@ -465,6 +510,21 @@ async def lifespan(app: FastAPI):
             logger.info("Startup: ~/.claude.json is healthy (no restore needed)")
     except Exception as e:
         logger.warning("Startup .claude.json check failed: %s", e)
+
+    # One-shot cleanup: delete historical inbox rows whose agent slug
+    # is the hyphenated / display form. These exist because old
+    # Paperclip skill curls wrote with the display slug before the
+    # normalization fix landed; every one of them has a canonical
+    # underscore-slug twin. Safe no-op once the DB is clean.
+    try:
+        purged = _cleanup_noncanonical_inbox_rows()
+        if purged:
+            logger.warning(
+                "Startup: purged %d non-canonical inbox rows (hyphenated agent slugs)",
+                purged,
+            )
+    except Exception as e:
+        logger.warning("Startup inbox cleanup failed: %s", e)
 
     # Initialize semantic cache (Qdrant)
     try:
