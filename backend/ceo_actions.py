@@ -877,6 +877,7 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── Inbox Read ──
     elif entity == "inbox_item" and operation == "read":
+        import asyncio as _asyncio
         # Three-tier search so the CEO stops saying "Your inbox is empty"
         # when the inbox visibly isn't:
         #
@@ -908,19 +909,35 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
             # Route mis-parameterized "status" → type filter.
             type_filter = status_filter
 
-        # Primary fetch.
+        # Primary fetch — with a short retry loop to bridge the gap
+        # between "agent just finished" and "inbox row visible via
+        # Supabase". The Paperclip-watcher -> inbox write is async
+        # and usually lands within ~1s, but a cold moment (new
+        # session, first-call cache misses) can push it past 2s.
+        # Two retries spaced 500ms apart covers that without feeling
+        # laggy to the user — 1.5s total worst case.
         page_size = 20 if type_filter else 10
-        items = inbox_service.list_items(
-            tenant_id, status=effective_status, page=1, page_size=page_size,
-        )
-        if type_filter:
-            rows = items.get("items") or []
-            filtered = [r for r in rows if (r.get("type") or "") == type_filter]
-            items = {
-                **items,
-                "items": filtered[:10],
-                "total": len(filtered),
-            }
+
+        async def _fetch() -> dict:
+            raw = inbox_service.list_items(
+                tenant_id, status=effective_status, page=1, page_size=page_size,
+            )
+            if type_filter:
+                rows_ = raw.get("items") or []
+                filt = [r for r in rows_ if (r.get("type") or "") == type_filter]
+                return {**raw, "items": filt[:10], "total": len(filt)}
+            return raw
+
+        items = await _fetch()
+        # Only retry when the CALLER asked for a specific filter and it
+        # missed — unfiltered queries returning empty means the tenant
+        # genuinely has nothing, retrying won't change that.
+        if not items.get("items") and (effective_status or type_filter):
+            for _ in range(2):
+                await _asyncio.sleep(0.5)
+                items = await _fetch()
+                if items.get("items"):
+                    break
 
         filter_used = {}
         if effective_status:

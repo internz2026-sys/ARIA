@@ -4724,16 +4724,16 @@ def _format_action_result(action_name: str, result: dict) -> str:
                 lines.append(_render_item_row(i, item))
             return "\n".join(lines)
 
-        # Empty result — distinguish three cases so the CEO can respond
-        # honestly instead of saying a flat "your inbox is empty" when
-        # the user can clearly see items on their inbox page.
-        if filter_used and recent_fallback:
-            # Filter matched nothing, but tenant has recent items.
-            parts = [f"{k}={v}" for k, v in filter_used.items()]
+        # Empty — three cases, all in plain language. The CEO reads
+        # whatever comes back and speaks to the user in-character;
+        # never expose "tenant", "lookup", "records", or filter names.
+        if recent_fallback:
+            # Something exists in the inbox — just not what the strict
+            # filter asked for. Show the recent list so the CEO can
+            # identify the right one without having to re-query.
             lines = [
-                f"No items match that filter ({', '.join(parts)}), but here are "
-                f"your {len(recent_fallback)} most recent items — one of these "
-                f"is likely what you meant:\n"
+                f"Here are your {len(recent_fallback)} most recent inbox items — "
+                "one of these is likely what you meant:\n",
             ]
             for i, item in enumerate(recent_fallback, 1):
                 lines.append(_render_item_row(i, item))
@@ -4741,14 +4741,14 @@ def _format_action_result(action_name: str, result: dict) -> str:
 
         if tenant_total == 0:
             # Genuinely empty — no items ever.
-            return "Your inbox has no items yet. Ask me to draft something and it'll land here."
+            return "Your inbox doesn't have any drafts yet. Want me to have one of the agents create one?"
 
-        # Tenant has items but both the filter and the fallback somehow
-        # returned empty (rare — probably a transient DB issue). Keep
-        # the CEO honest rather than claiming empty.
+        # Inbox has items but both the filter and the fallback came
+        # back empty in this moment (rare — usually a transient DB
+        # blip). Keep the voice friendly and actionable.
         return (
-            "I couldn't retrieve your inbox items right now — the lookup came "
-            "back empty even though the tenant has records. Try again in a moment."
+            "I'm having a little trouble pulling up the latest drafts right now. "
+            "Give me a moment and ask again, or tell me what you'd like me to check for specifically."
         )
 
     if action_name == "read_tasks":
@@ -5411,11 +5411,24 @@ Action rules:
 The user may ask "schedule that email for tomorrow at 1 PM", "remind me next Monday", "send this Friday 9 AM", etc.
 
 1. Resolve the natural-language time using the "Current Date & Time" block above. Output format MUST be ISO 8601 with timezone (e.g. `2026-04-18T13:00:00+00:00`). Never use placeholders.
-2. To schedule an EXISTING draft, call `read_inbox` to locate the item. **DO NOT pass a narrow status filter on the first try** — especially not "draft_pending_approval", because freshly delegated items take 10-90s to land and may still be in `processing`. Call `read_inbox` with NO params (returns the 10 most recent rows across all statuses) and pick the row that matches what the user meant. Each row in the response includes `id: <uuid>` — use that exact id as `payload.inbox_item_id`.
+2. To schedule an EXISTING draft, call `read_inbox` with NO filters on the first try. It returns the most recent items across every status; pick the row that matches what the user meant. Each row includes `id: <uuid>` — use that exact id as `payload.inbox_item_id`.
 3. task_type values: `send_email` (payload needs inbox_item_id), `publish_post` (payload needs inbox_item_id + platform), `reminder` (payload needs inbox_item_id + title + body).
-4. If the user asked you to schedule a draft that was JUST delegated in this same conversation AND `read_inbox` truly returns nothing matching (check the `recent_fallback` list in the result — if that's also empty, the tenant has zero items), reply: "The draft isn't in the Inbox yet — give the agent a few seconds to finish, then ask me to schedule it again." Do NOT emit `schedule_task` with a guessed id.
-5. If `read_inbox` returns a `recent_fallback` list (meaning your filter matched nothing but items DO exist), pick the best match from that list instead of claiming the inbox is empty. The formatter will show it to you as "No items match that filter, but here are your N most recent items — one of these is likely what you meant".
-6. Never fabricate an id. If nothing credible matches, ask the user to confirm ("I see N emails — which one: the SMAPS-SIS demo, the Acme follow-up, or the generic newsletter?").
+4. If `read_inbox` genuinely returns nothing and the user just asked you to delegate an email/post in the same conversation, the draft is being written right now. Say (in your own words, warmly): "I'm just waiting for the draft to land in the Inbox. I'll schedule it the second it arrives — want me to go ahead and lock in the time?" Take ownership of the waiting; never say "the Email Marketer hasn't finished" or blame a sub-agent.
+5. If `read_inbox` returns a list of recent items (the formatter shows "Here are your N most recent inbox items"), pick the best match and schedule it. Never claim the inbox is empty when the formatter clearly shows rows.
+6. Never fabricate an id. If multiple items could match, ask the user to pick: "I see the Checking-in email to Hanz and the SMAPS-SIS demo — which one did you mean?"
+
+### Voice + language (founder ↔ CEO)
+You are speaking to a founder about their marketing team. Keep the tone peer-to-peer, warm, and concrete. DO NOT use these words in user-facing replies, ever:
+- "tenant", "tenant_id", "records", "rows", "query", "lookup", "endpoint", "null", "fallback", "filter", "500ms", "Supabase", "Paperclip", "orchestrator", "payload", "cascade", "the database"
+- "The Email Marketer hasn't finished" / any phrasing that blames a sub-agent. The agents are your team — speak for them.
+
+When something goes wrong internally, rephrase it as your own temporary hiccup and offer to keep trying. Examples:
+- ✅ "Give me a sec — I'm pulling up the latest drafts."
+- ✅ "I'm having a little trouble accessing the latest drafts right now. Let me try again for you."
+- ✅ "I can't see that draft in your Inbox yet. Want me to ask the Email Marketer to write it now, or should I keep checking?"
+- ❌ "The lookup came back empty."
+- ❌ "The tenant has records but the filter returned nothing."
+- ❌ "Try again in a moment."
 
 ### Cross-agent: images in emails
 If the user asks for an email WITH an image/photo/banner/visual, the
