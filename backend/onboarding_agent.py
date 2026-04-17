@@ -339,6 +339,28 @@ def _detect_asked_field(text: str) -> str | None:
             return field
     return None
 
+
+def _count_asks_for_field(messages: list[dict], field: str) -> int:
+    """How many times has the LLM already asked about `field` in this session?
+
+    Used to escape a re-ask loop — if the LLM has asked the same field 2+
+    times, we force-accept on the next turn instead of letting it re-ask a
+    third time.
+    """
+    keywords = dict(_FIELD_QUESTION_KEYWORDS).get(field, [])
+    if not keywords:
+        return 0
+    count = 0
+    for m in messages:
+        if m.get("role") != "assistant":
+            continue
+        text = (m.get("content") or "").lower()
+        if "?" not in text:
+            continue
+        if any(kw in text for kw in keywords):
+            count += 1
+    return count
+
 def _ensure_generated_fields(gp: dict) -> dict:
     """Fill in positioning_summary and 30_day_gtm_focus if the model left them empty."""
     if not gp.get("positioning_summary"):
@@ -476,18 +498,30 @@ class OnboardingAgent:
             )
         else:
             remaining = self.max_questions - answered
+            prior_asks = (
+                _count_asks_for_field(self.messages, pre_current_field)
+                if pre_current_field else 0
+            )
             progress += (
                 f"Current question field: {pre_current_field}. "
                 f"Only {answered} of {self.max_questions} questions answered "
                 f"({remaining} remaining). "
                 f"DO NOT produce the final summary yet. "
                 f"DO NOT output 'Onboarding Complete' or any summary block. "
-                f"If the user's last reply did NOT answer the '{pre_current_field}' "
-                f"question, politely re-ask the same question — do NOT move on and "
-                f"do NOT accept an off-topic answer. "
-                f"Suggested wording for the current question: "
-                f"\"{FIELD_QUESTIONS.get(pre_current_field or '', '')}\"."
+                f"You MUST use this EXACT wording for the current question: "
+                f"\"{FIELD_QUESTIONS.get(pre_current_field or '', '')}\". "
+                f"Do NOT paraphrase or rephrase this question — use it verbatim."
             )
+            if prior_asks >= 2:
+                # Escape hatch — we've already asked this field twice. Force
+                # acceptance to break the re-ask loop regardless of how vague
+                # the user's reply seems.
+                progress += (
+                    f" CRITICAL: You have already asked about '{pre_current_field}' "
+                    f"{prior_asks} times. The user's last reply MUST be accepted "
+                    f"as the answer — no matter how brief or imperfect it is. "
+                    f"Do NOT re-ask again. Move on to the NEXT question immediately."
+                )
 
         # Use higher max_tokens for the final summary. Use Sonnet instead of
         # Haiku for onboarding — Sonnet follows the strict validation rules
@@ -546,14 +580,40 @@ class OnboardingAgent:
                 # pre_current_field (and any fields between them).
                 for f in ONBOARDING_FIELDS[pre_current_idx:asked_idx]:
                     self.validated_fields.add(f)
-            # If asked_idx <= pre_current_idx: LLM is re-asking the same (or
-            # an earlier) field. User's answer was rejected — do NOT advance.
             else:
-                logger.info(
-                    "Onboarding: LLM re-asked field=%s (current=%s) — "
-                    "user's answer was rejected, checklist not advanced",
-                    asked_field, pre_current_field,
-                )
+                # LLM is re-asking the same (or earlier) field. If this is
+                # the 3rd+ ask of the same field, OVERRIDE the LLM — force
+                # validation and ask the next field instead.
+                prior_asks = _count_asks_for_field(self.messages, pre_current_field or "")
+                # messages already has this turn's assistant reply appended
+                # below, so prior_asks counts the current ask too after append.
+                # We check before append: count assistant messages in self.messages
+                # (does not yet include current cleaned_text).
+                if pre_current_field and prior_asks >= 2:
+                    logger.warning(
+                        "Onboarding: LLM re-asked field=%s for the %dth time; "
+                        "overriding — force-accepting and moving on",
+                        pre_current_field, prior_asks + 1,
+                    )
+                    self.validated_fields.add(pre_current_field)
+                    # Replace the LLM's repeated question with the next field's
+                    # canned question.
+                    next_idx = pre_current_idx + 1
+                    if next_idx < len(ONBOARDING_FIELDS):
+                        next_field = ONBOARDING_FIELDS[next_idx]
+                        cleaned_text = FIELD_QUESTIONS.get(
+                            next_field,
+                            f"Tell me about: {next_field.replace('_', ' ')}.",
+                        )
+                    else:
+                        # All fields answered — let completion detection handle.
+                        cleaned_text = cleaned_text
+                else:
+                    logger.info(
+                        "Onboarding: LLM re-asked field=%s (current=%s) — "
+                        "user's answer was rejected, checklist not advanced",
+                        asked_field, pre_current_field,
+                    )
         # If no field detected and not a summary: ambiguous LLM output, keep
         # validation state unchanged. User's next reply will resolve it.
 
