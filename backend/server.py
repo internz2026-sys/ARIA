@@ -442,14 +442,16 @@ def poke_paperclip_poller() -> None:
         pass
 
 
-_NON_CANONICAL_AGENT_SLUGS = (
-    "email-marketer", "Email Marketer", "email marketer",
-    "content-writer", "Content Writer", "content writer",
-    "social-manager", "Social Manager", "social manager",
-    "ad-strategist", "Ad Strategist", "ad strategist",
-    "media-designer", "Media Designer", "media designer",
-    "media_designer",
-)
+# Historical slug variants derived from the alias map PLUS the title-case
+# forms that sometimes came from Paperclip's display layer. Keeping the
+# list generated from _AGENT_SLUG_ALIASES.keys() makes it impossible for
+# the cleanup filter to drift from what the normalizer accepts.
+_NON_CANONICAL_AGENT_SLUGS: tuple[str, ...] = tuple({
+    *_AGENT_SLUG_ALIASES.keys(),
+    # Title-case variants that sometimes land from Paperclip's UI.
+    "Email Marketer", "Content Writer", "Social Manager",
+    "Ad Strategist", "Media Designer",
+})
 
 
 def _cleanup_noncanonical_inbox_rows() -> int:
@@ -2331,6 +2333,67 @@ from backend.services.email_sender import (
     resolve_reply_thread_context as _resolve_reply_thread_context,
     user_text_to_html as _user_text_to_html,
 )
+
+
+# ─── Inbox Dedup / Sanitization Constants ────────────────────────────────
+#
+# Paperclip skill curls occasionally POST with the display form of the
+# agent slug ("email-marketer", "Email Marketer", "media-designer") or
+# the legacy `media_designer` underscore. Everything else in the system
+# (watcher placeholders, CEO dispatch, UI color/name maps) uses the
+# canonical underscore slug. This alias map normalizes incoming writes.
+# Module-level so create_inbox_item doesn't rebuild it on every request
+# and so _cleanup_noncanonical_inbox_rows can source the KEYS for its
+# purge filter from a single truth.
+_AGENT_SLUG_ALIASES: dict[str, str] = {
+    "email-marketer": "email_marketer",
+    "content-writer": "content_writer",
+    "social-manager": "social_manager",
+    "ad-strategist": "ad_strategist",
+    "media-designer": "media",
+    "media_designer": "media",
+    "email marketer": "email_marketer",
+    "content writer": "content_writer",
+    "social manager": "social_manager",
+    "ad strategist": "ad_strategist",
+    "media designer": "media",
+}
+
+
+def _canon_agent_slug(raw: str | None) -> str | None:
+    """Return the canonical agent slug for any alias form, or `raw` on miss."""
+    if not raw:
+        return raw
+    return _AGENT_SLUG_ALIASES.get(raw.strip().lower(), raw)
+
+
+def _looks_like_confirmation_message(content: str) -> bool:
+    """True if the incoming content is an agent's "saved!" status message.
+
+    These show up as SECOND inbox writes right after the agent's real
+    content — rejecting them prevents duplicate rows with text like
+    "✅ Email draft saved to ARIA Inbox" cluttering the inbox next to
+    the actual email they're confirming.
+    """
+    text = (content or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "saved to aria inbox" in text
+        or "saved to inbox" in text
+        or "successfully saved" in text
+        or "draft created and saved" in text
+        or "draft id:" in text
+        or text.startswith((
+            "✅",
+            ":white_check_mark:",
+            "[saved]",
+            "[done]",
+            "## task complete",
+            "## email draft complete",
+            "email draft created",
+        ))
+    )
 
 
 # ─── Gmail Send API ───
@@ -4631,6 +4694,123 @@ def _save_inbox_item(
         return None
 
 
+async def _execute_delegation(
+    tenant_id: str,
+    session_id: str | None,
+    d: dict,
+    cumulative_delay: int,
+    saved_tasks: list[dict] | None,
+) -> None:
+    """Full per-delegation dispatch body, usable inline OR as a background task.
+
+    Sleeps `cumulative_delay` seconds first so pipeline follow-ups
+    fire only after their upstream has landed; 0 is a no-op for the
+    immediate-dispatch path. The body:
+
+      1. Enrich task_desc with CRM context (email / social / ads /
+         content-writer only — media doesn't need CRM).
+      2. Insert a `tasks` row in `in_progress` so the Kanban board
+         shows the agent as working.
+      3. Emit walk_to_meeting choreography for the Virtual Office.
+      4. Dispatch through Paperclip if connected + registered, else
+         fall back to the local `AGENT_REGISTRY[agent_id].run`.
+
+    `saved_tasks`, when supplied, gets appended with the inserted
+    tasks row so the HTTP response can include it. Pass None for
+    background (delayed) dispatches — the task still persists to
+    the DB, the UI picks it up via the socket event.
+    """
+    if cumulative_delay > 0:
+        await asyncio.sleep(cumulative_delay)
+
+    _log = logging.getLogger("aria.ceo_chat.dispatch")
+    agent_id = d["agent"]
+    task_desc = d.get("task", "")
+
+    if tenant_id and agent_id in ("email_marketer", "social_manager", "ad_strategist", "content_writer"):
+        task_desc = _enrich_task_desc_with_crm(task_desc, tenant_id)
+
+    saved_task_id: str | None = None
+    if tenant_id:
+        try:
+            sb = _get_supabase()
+            task_row = {
+                "tenant_id": tenant_id,
+                "agent": agent_id,
+                "task": task_desc,
+                "priority": d.get("priority", "medium"),
+                "status": "in_progress",
+            }
+            result = sb.table("tasks").insert(task_row).execute()
+            if result.data:
+                saved_task_id = result.data[0]["id"]
+                if saved_tasks is not None:
+                    saved_tasks.append(result.data[0])
+                await sio.emit("task_updated", {
+                    "id": saved_task_id,
+                    "agent": agent_id,
+                    "status": "in_progress",
+                    "task": task_desc,
+                }, room=tenant_id)
+        except Exception:
+            pass
+
+    if tenant_id:
+        await _emit_agent_status(tenant_id, "ceo", "running",
+                                 current_task=f"Briefing {agent_id} on: {task_desc[:60]}",
+                                 action="walk_to_meeting")
+        await _emit_agent_status(tenant_id, agent_id, "running",
+                                 current_task=task_desc,
+                                 action="walk_to_meeting")
+
+    try:
+        connected = paperclip_connected()
+        paperclip_id = get_paperclip_agent_id(agent_id) if connected else None
+        _log.warning(
+            "[ceo-dispatch] agent=%s paperclip_connected=%s paperclip_id=%s delay=%s",
+            agent_id, connected, paperclip_id, cumulative_delay,
+        )
+
+        if connected and paperclip_id:
+            _safe_background(
+                _dispatch_paperclip_and_watch_to_inbox(
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    task_desc=task_desc,
+                    session_id=session_id,
+                    task_id=saved_task_id,
+                    priority=d.get("priority", "medium"),
+                ),
+                label=f"paperclip-watch-{agent_id}",
+            )
+        else:
+            _log.warning(
+                "[ceo-dispatch] FALLING BACK to local for %s (connected=%s, paperclip_id=%s)",
+                agent_id, connected, paperclip_id,
+            )
+            agent_module = AGENT_REGISTRY.get(agent_id)
+            if agent_module:
+                _safe_background(
+                    _run_agent_to_inbox(
+                        agent_module, agent_id, tenant_id, task_desc,
+                        session_id,
+                        saved_task_id,
+                        d.get("priority", "medium"),
+                    ),
+                    label=f"local-agent-{agent_id}",
+                )
+            else:
+                _log.error(
+                    "[ceo-dispatch] no agent_module for %s in AGENT_REGISTRY", agent_id,
+                )
+    except Exception as _disp_exc:
+        import traceback
+        _log.error(
+            "[ceo-dispatch] FAILED to dispatch %s: %s\n%s",
+            agent_id, _disp_exc, traceback.format_exc(),
+        )
+
+
 async def _run_agent_to_inbox(
     agent_module, agent_id: str, tenant_id: str, task_desc: str,
     session_id: str | None = None, task_id: str | None = None,
@@ -5422,62 +5602,27 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     """
     sb = _get_supabase()
 
-    # ── Reject confirmation/status messages ────────────────────────────
-    # Agents POST "Saved successfully!" status messages as SECOND inbox
-    # items, immediately after they POST the real content. Detect those
-    # and short-circuit so they don't create duplicate rows.
-    #
-    # No length filter -- the previous 600-char cap let through long
-    # confirmation messages like "✅ Email draft created and saved
-    # to ARIA inbox Draft ID: 023c59e9-... Email Details: <full echo
-    # of the email>" which were 1000+ chars. The pattern markers
-    # alone are reliable enough: a real email draft NEVER starts
-    # with ✅ or contains the literal phrase "saved to ARIA inbox".
-    _content_lower = (body.content or "").strip().lower()
-    _is_confirmation = (
-        "saved to aria inbox" in _content_lower
-        or "saved to inbox" in _content_lower
-        or _content_lower.startswith(("✅", ":white_check_mark:", "[saved]", "[done]", "## task complete", "## email draft complete"))
-        or "successfully saved" in _content_lower
-        or "draft created and saved" in _content_lower
-        or "draft id:" in _content_lower
-        or _content_lower.startswith("email draft created")
-    )
-    if _is_confirmation:
+    # ── Pre-insert gates ──────────────────────────────────────────────
+    # Cheap, content-only checks that can reject the write outright before
+    # we spend time parsing / looking things up. Each returns a terminal
+    # response so the endpoint stays a flat sequence of guards.
+    if _looks_like_confirmation_message(body.content):
         logging.getLogger("aria.inbox").info(
             "[inbox-create] rejecting confirmation/status message from %s "
-            "(content=%r) -- not creating duplicate row",
-            body.agent, body.content[:120],
+            "(content=%r)", body.agent, (body.content or "")[:120],
         )
         return {"item": None, "skipped": "confirmation_message"}
 
-    # Reject duplicate media writes from the legacy aria-backend-api skill
-    # (the canonical row was already created by /api/media/.../generate).
     if _is_duplicate_media_write(tenant_id, body):
+        # Legacy skill curl writing a media summary AFTER the canonical
+        # row was already created by /api/media/.../generate.
         return {"item": None, "skipped": "duplicate_media_write"}
 
-    # Normalize agent slug — Paperclip skill curls sometimes send the
-    # hyphenated display form ("email-marketer", "content-writer") or
-    # title case ("Email Marketer") instead of the canonical underscore
-    # slug. Coerce here so inbox rows are consistent and the frontend
-    # agent-color / name lookup doesn't fall back to gray defaults.
-    _AGENT_SLUG_ALIASES = {
-        "email-marketer": "email_marketer",
-        "content-writer": "content_writer",
-        "social-manager": "social_manager",
-        "ad-strategist": "ad_strategist",
-        "media-designer": "media",
-        "media_designer": "media",
-        "email marketer": "email_marketer",
-        "content writer": "content_writer",
-        "social manager": "social_manager",
-        "ad strategist": "ad_strategist",
-        "media designer": "media",
-    }
-    if body.agent:
-        canon = _AGENT_SLUG_ALIASES.get(body.agent.strip().lower(), body.agent)
-        if canon != body.agent:
-            body.agent = canon
+    # Normalize the agent slug in place so everything downstream (dedup
+    # queries, stored row, emitted socket payload) sees one canonical
+    # form regardless of whether the skill curl sent "email-marketer",
+    # "Email Marketer", or "email_marketer".
+    body.agent = _canon_agent_slug(body.agent) or body.agent
 
     # Apply the same parser the watcher uses, so the rich fields
     # populate even when the agent skipped them in its POST body.
@@ -6785,120 +6930,22 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     # to land its output in the inbox first. This is what makes
     # "media -> email" work as a single-turn chain: the email step runs
     # after the media step's image row is already queryable.
-    saved_tasks = []
-    _dispatch_logger = logging.getLogger("aria.ceo_chat.dispatch")
-
-    async def _execute_delegation(d: dict, cumulative_delay: int) -> None:
-        """Full per-delegation dispatch body.
-
-        Sleeps `cumulative_delay` seconds first so pipeline follow-ups
-        fire only after their upstream has landed. On the immediate-
-        dispatch path (delay=0) the sleep is a no-op.
-        """
-        if cumulative_delay > 0:
-            await asyncio.sleep(cumulative_delay)
-
-        agent_id = d["agent"]
-        task_desc = d.get("task", "")
-
-        # Enrich the task description with CRM contact info before
-        # dispatch (contacts by name → their emails / deals / notes).
-        if tenant_id and agent_id in ("email_marketer", "social_manager", "ad_strategist", "content_writer"):
-            task_desc = _enrich_task_desc_with_crm(task_desc, tenant_id)
-
-        # Save task row (in_progress) so the Kanban board updates.
-        saved_task_id = None
-        if tenant_id:
-            try:
-                sb = _get_supabase()
-                task_row = {
-                    "tenant_id": tenant_id,
-                    "agent": agent_id,
-                    "task": task_desc,
-                    "priority": d.get("priority", "medium"),
-                    "status": "in_progress",
-                }
-                result = sb.table("tasks").insert(task_row).execute()
-                if result.data:
-                    saved_task_id = result.data[0]["id"]
-                    saved_tasks.append(result.data[0])
-                    await sio.emit("task_updated", {
-                        "id": saved_task_id,
-                        "agent": agent_id,
-                        "status": "in_progress",
-                        "task": task_desc,
-                    }, room=tenant_id)
-            except Exception:
-                pass
-
-        # Walk-to-meeting choreography for the Virtual Office.
-        if tenant_id:
-            await _emit_agent_status(tenant_id, "ceo", "running",
-                                     current_task=f"Briefing {agent_id} on: {task_desc[:60]}",
-                                     action="walk_to_meeting")
-            await _emit_agent_status(tenant_id, agent_id, "running",
-                                     current_task=task_desc,
-                                     action="walk_to_meeting")
-
-        # Execute: Paperclip when available, local fallback otherwise.
-        try:
-            connected = paperclip_connected()
-            paperclip_id = get_paperclip_agent_id(agent_id) if connected else None
-            _dispatch_logger.warning(
-                "[ceo-dispatch] agent=%s paperclip_connected=%s paperclip_id=%s delay=%s",
-                agent_id, connected, paperclip_id, cumulative_delay,
-            )
-
-            if connected and paperclip_id:
-                _safe_background(
-                    _dispatch_paperclip_and_watch_to_inbox(
-                        tenant_id=tenant_id,
-                        agent_id=agent_id,
-                        task_desc=task_desc,
-                        session_id=body.session_id,
-                        task_id=saved_task_id,
-                        priority=d.get("priority", "medium"),
-                    ),
-                    label=f"paperclip-watch-{agent_id}",
-                )
-            else:
-                _dispatch_logger.warning(
-                    "[ceo-dispatch] FALLING BACK to local for %s (connected=%s, paperclip_id=%s)",
-                    agent_id, connected, paperclip_id,
-                )
-                agent_module = AGENT_REGISTRY.get(agent_id)
-                if agent_module:
-                    _safe_background(
-                        _run_agent_to_inbox(
-                            agent_module, agent_id, tenant_id, task_desc,
-                            body.session_id,
-                            saved_task_id,
-                            d.get("priority", "medium"),
-                        ),
-                        label=f"local-agent-{agent_id}",
-                    )
-                else:
-                    _dispatch_logger.error(
-                        "[ceo-dispatch] no agent_module for %s in AGENT_REGISTRY", agent_id,
-                    )
-        except Exception as _disp_exc:
-            import traceback
-            _dispatch_logger.error(
-                "[ceo-dispatch] FAILED to dispatch %s: %s\n%s",
-                agent_id, _disp_exc, traceback.format_exc(),
-            )
+    saved_tasks: list[dict] = []
 
     for d in delegations:
         delay = int(d.get("_delay_seconds") or 0)
         if delay > 0:
             # Pipeline follow-up — run the whole body in the background
-            # after the delay so the HTTP response doesn't block.
+            # after the delay so the HTTP response doesn't block. The
+            # `saved_tasks` list doesn't catch the follow-up's task row
+            # (it fires after the HTTP response), which is fine — the
+            # Kanban UI picks it up via the socket event anyway.
             _safe_background(
-                _execute_delegation(d, delay),
+                _execute_delegation(tenant_id, body.session_id, d, delay, None),
                 label=f"pipeline-{d.get('agent')}-{delay}s",
             )
         else:
-            await _execute_delegation(d, 0)
+            await _execute_delegation(tenant_id, body.session_id, d, 0, saved_tasks)
 
     response_data = {
         "response": clean_response,
