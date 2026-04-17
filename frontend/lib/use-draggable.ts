@@ -29,7 +29,12 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
   const onDragStartRef = useRef<(() => void) | null>(null);
   const rafRef = useRef<number | null>(null);
 
-  // Init position on mount — restore from localStorage if available
+  // Init position on mount — restore from localStorage if available,
+  // then clamp to the current viewport. Previously the initial position
+  // was used verbatim, which meant a caller that passed
+  // `window.innerWidth - 200` for the x anchor could land the button
+  // off-screen on narrow phones (<400px) or on rotation. Clamping here
+  // guarantees the widget is always reachable without a drag first.
   useEffect(() => {
     let p = { x: initialX, y: initialY };
     if (storageKey) {
@@ -37,13 +42,27 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
         const saved = localStorage.getItem(`aria_widget_pos_${storageKey}`);
         if (saved) {
           const parsed = JSON.parse(saved);
-          // Validate position is still within viewport
           if (parsed.x >= 0 && parsed.x < window.innerWidth - 60 && parsed.y >= 0 && parsed.y < window.innerHeight - 40) {
             p = parsed;
           }
         }
       } catch {}
     }
+
+    // Clamp to viewport with a bigger bottom safe-area on narrow
+    // (mobile) viewports so the button doesn't cover the OS keyboard
+    // or a system nav bar when it eventually opens. The margin on
+    // mobile matches Tailwind `bottom-20` (~5rem) — same visual
+    // budget the prompt calls out.
+    const isNarrow = window.innerWidth < 768;
+    const maxX = Math.max(0, window.innerWidth - 180);
+    const bottomSafe = isNarrow ? 96 : 56;
+    const maxY = Math.max(0, window.innerHeight - bottomSafe);
+    p = {
+      x: Math.max(8, Math.min(maxX, p.x)),
+      y: Math.max(8, Math.min(maxY, p.y)),
+    };
+
     setPos(p);
     posRef.current = p;
     if (btnRef.current) {
@@ -70,8 +89,13 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
         onDragStartRef.current?.();
       }
       if (d.moved && btn) {
+        // Keep the same bottom safe-area policy as the mount-time
+        // clamp: mobile needs more breathing room below so the
+        // button doesn't end up under the keyboard / bottom nav.
+        const isNarrow = window.innerWidth < 768;
+        const bottomSafe = isNarrow ? 96 : 56;
         const nx = Math.max(0, Math.min(window.innerWidth - 180, d.elX + dx));
-        const ny = Math.max(0, Math.min(window.innerHeight - 56, d.elY + dy));
+        const ny = Math.max(0, Math.min(window.innerHeight - bottomSafe, d.elY + dy));
         btn.style.transform = `translate3d(${nx}px, ${ny}px, 0)`;
         posRef.current = { x: nx, y: ny };
         // Sync React state so panels follow (RAF-throttled)

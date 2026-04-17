@@ -25,7 +25,9 @@ export default function ToastContainer() {
   }
 
   return (
-    <div className="fixed top-4 right-4 z-[70] flex flex-col gap-2 w-[360px] pointer-events-none">
+    // Mobile: shrink to viewport width minus 2rem so toasts don't
+    // overflow on narrow phones. Desktop: 360px like before.
+    <div className="fixed top-4 right-4 z-[70] flex flex-col gap-2 w-[calc(100vw-2rem)] max-w-[360px] pointer-events-none">
       {toasts.map((t) => (
         <div
           key={t.id}

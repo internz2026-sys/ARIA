@@ -66,7 +66,11 @@ export default function NotificationBell() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-[380px] bg-white rounded-xl border border-[#E0DED8] shadow-xl z-[80] overflow-hidden">
+        // Mobile: shrink to viewport width minus 1rem of padding so the
+        // dropdown never overflows the right edge. Desktop: the original
+        // 380px fixed width. `right-0` anchors the right edge so it
+        // grows leftward on small screens rather than spilling off.
+        <div className="absolute right-0 top-full mt-2 w-[calc(100vw-2rem)] max-w-[380px] bg-white rounded-xl border border-[#E0DED8] shadow-xl z-[80] overflow-hidden">
           {/* Header — "Mark all read" always visible when there's any
               notification at all, disabled when nothing's unread so the
               user can see the affordance even after clearing. */}

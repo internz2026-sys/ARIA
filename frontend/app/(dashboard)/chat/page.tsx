@@ -99,7 +99,10 @@ export default function CEOChatPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-120px)]">
+    // `dvh` (dynamic viewport height) shrinks when the mobile keyboard
+    // opens, so the chat input stays visible above the keyboard instead
+    // of being pushed off-screen. On desktop it behaves like `vh`.
+    <div className="flex h-[calc(100dvh-120px)]">
       {/* ─── Chat History Sidebar ─── */}
       <div className={`${sidebarOpen ? "w-[260px]" : "w-0"} shrink-0 transition-all duration-200 overflow-hidden border-r border-[#E0DED8]`}>
         <div className="w-[260px] h-full flex flex-col bg-[#F8F8F6]">
