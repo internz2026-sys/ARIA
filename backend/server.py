@@ -1752,15 +1752,35 @@ class UpdateOnboarding(BaseModel):
 
 @app.post("/api/tenant/{tenant_id}/update-onboarding")
 async def update_onboarding(tenant_id: str, body: UpdateOnboarding):
-    """Update specific onboarding fields on an existing tenant, then regenerate brief."""
+    """Update specific onboarding fields on an existing tenant, then regenerate brief.
+
+    Writes to BOTH representations of the 8 onboarding answers so downstream
+    agents see a consistent view no matter which they read:
+
+      legacy nested fields      flat gtm_profile mirror
+      ─────────────────────     ─────────────────────────
+      business_name        →    gtm_profile.business_name
+      product.description  →    gtm_profile.offer
+      icp.target_titles    →    gtm_profile.audience
+      icp.pain_points      →    gtm_profile.problem
+      product.differentiators → gtm_profile.differentiator
+      channels             →    gtm_profile.primary_channels
+      brand_voice.tone     →    gtm_profile.brand_voice
+      gtm_playbook.action_plan_30 → gtm_profile.goal_30_days
+
+    positioning_summary and 30_day_gtm_focus are regenerated from the new
+    answers via _ensure_generated_fields (deterministic — no LLM call).
+    agent_brief is rebuilt after the writes so CEO chat context stays fresh.
+    """
     from backend.config.brief import generate_agent_brief
+    from backend.onboarding_agent import _ensure_generated_fields
 
     try:
         config = get_tenant_config(tenant_id)
     except Exception:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    # Apply updates only for provided fields
+    # Apply updates to the LEGACY nested fields.
     if body.business_name is not None:
         config.business_name = body.business_name
     if body.offer is not None:
@@ -1779,10 +1799,44 @@ async def update_onboarding(tenant_id: str, body: UpdateOnboarding):
     if body.thirty_day_goal is not None:
         config.gtm_playbook.action_plan_30 = body.thirty_day_goal
 
+    # MIRROR into the flat gtm_profile. CEO chat + several sub-agents read
+    # these for brand/audience context; leaving them stale would mean edits
+    # silently don't apply to agent output.
+    gp = config.gtm_profile
+    if body.business_name is not None:
+        gp.business_name = body.business_name
+    if body.offer is not None:
+        gp.offer = body.offer
+    if body.target_audience is not None:
+        gp.audience = body.target_audience
+    if body.problem_solved is not None:
+        gp.problem = body.problem_solved
+    if body.differentiator is not None:
+        gp.differentiator = body.differentiator
+    if body.channels is not None:
+        gp.primary_channels = body.channels
+    if body.brand_voice is not None:
+        gp.brand_voice = body.brand_voice
+    if body.thirty_day_goal is not None:
+        gp.goal_30_days = body.thirty_day_goal
+
+    # Regenerate derived fields (positioning_summary, 30_day_gtm_focus) so the
+    # CEO's positioning line reflects the new answers. Deterministic — just
+    # string interpolation over the updated gtm_profile, no LLM call.
+    gp_dict = gp.model_dump()
+    # Clear the derived fields so _ensure_generated_fields actually rebuilds
+    # them from the new inputs instead of keeping the stale sentence.
+    gp_dict["positioning_summary"] = ""
+    gp_dict["30_day_gtm_focus"] = ""
+    regen = _ensure_generated_fields(gp_dict)
+    gp.positioning_summary = regen.get("positioning_summary", "")
+    gp.thirty_day_gtm_focus = regen.get("30_day_gtm_focus", "")
+
     config.onboarding_status = "completed"
     config.skipped_fields = []
 
-    # Regenerate brief with updated data
+    # Regenerate the condensed agent brief so CEO chat (which uses it as
+    # business context) sees the edits on the next message.
     try:
         config.agent_brief = await generate_agent_brief(config)
     except Exception as e:
