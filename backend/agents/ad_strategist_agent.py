@@ -1,9 +1,26 @@
 """Ad Strategist Agent — Facebook/Meta ads advisor with copy-paste setup guides."""
 from __future__ import annotations
 
+import logging
+import re
+
 from backend.agents.base import BaseAgent, MODEL_HAIKU
 
+logger = logging.getLogger("aria.ad_strategist")
+
 _agent = None
+
+# Triggers for attaching a recent Media Agent image as the hero creative
+# for the ad. Kept in the agent (not asset_lookup) so the lookback and
+# keyword policy can diverge from email/social without coupling.
+_IMAGE_INTENT_RE = re.compile(
+    r"\b(image|images|photo|photos|picture|pictures|banner|hero|"
+    r"visual|visuals|graphic|graphics|creative|creatives|"
+    r"thumbnail|screenshot|screenshots)\b",
+    re.IGNORECASE,
+)
+_URL_RE = re.compile(r"https?://\S+?\.(?:png|jpg|jpeg|gif|webp|svg)(?:\?\S*)?", re.IGNORECASE)
+_MEDIA_LOOKBACK_MIN = 60  # ads tolerate slightly staler images than email/social
 
 
 class AdStrategistAgent(BaseAgent):
@@ -75,4 +92,27 @@ AGENT_NAME = AdStrategistAgent.AGENT_NAME
 
 
 async def run(tenant_id: str, context: dict | None = None) -> dict:
-    return await _get().run(tenant_id, context)
+    """Cross-agent hook: if the ad task mentions a hero image / creative
+    or pastes a URL, attach the latest Media Agent image so the ad draft
+    ships with a visual. The image URL rides on the result dict as
+    `image_url` — the frontend's ad editor picks it up next to the copy.
+    """
+    result = await _get().run(tenant_id, context)
+
+    action = (context or {}).get("action", "") or ""
+    image_url: str | None = None
+    m = _URL_RE.search(action)
+    if m:
+        image_url = m.group(0)
+    elif _IMAGE_INTENT_RE.search(action):
+        try:
+            from backend.services.asset_lookup import get_latest_image_url
+            image_url = get_latest_image_url(tenant_id, within_minutes=_MEDIA_LOOKBACK_MIN)
+        except Exception as e:
+            logger.warning("[ad_strategist] media lookup failed for %s: %s", tenant_id, e)
+
+    if image_url:
+        result["image_url"] = image_url
+        logger.info("[ad_strategist] attaching hero image to ad draft for %s", tenant_id)
+
+    return result

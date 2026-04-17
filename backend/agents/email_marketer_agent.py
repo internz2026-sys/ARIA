@@ -1,10 +1,8 @@
 """Email Marketer Agent — produces email campaigns and sends via Gmail."""
 from __future__ import annotations
 
-import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
 
 from backend.agents.base import BaseAgent, MODEL_HAIKU
 
@@ -36,10 +34,23 @@ _IMAGE_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# How far back to look for a Media Agent output when the email task
-# mentions an image but doesn't paste a URL. Keep tight — older assets
-# were probably for a different campaign and shouldn't auto-attach.
+# Task phrases that say "digest / tease / repurpose the latest blog post
+# from the Content Writer into an email". When matched, we pull the most
+# recent content_writer inbox row and feed its title + excerpt to the
+# agent as source material.
+_BLOG_DIGEST_RE = re.compile(
+    r"\b(newsletter.*(blog|post|article)|digest|recap|repurpose.*blog|"
+    r"tease.*blog|email.*(blog|post|article)|blog.*email|"
+    r"latest (blog|post|article))\b",
+    re.IGNORECASE,
+)
+
+# How far back to look for teammate outputs. Image lookback is tight
+# because stale media assets get cross-campaign-leaky fast; blog
+# lookback is looser because a Content Writer post is a deliberate
+# artifact that stays relevant for longer.
 _MEDIA_LOOKBACK_MINUTES = 30
+_BLOG_LOOKBACK_MINUTES = 180
 
 
 class EmailMarketerAgent(BaseAgent):
@@ -74,7 +85,15 @@ Keep concise, value-driven, one CTA per email.
 {send_note}"""
 
     def build_user_message(self, action: str, context: dict | None) -> str:
-        return action or "Draft a newsletter campaign."
+        """Prepend any cross-agent source material so the model sees it
+        alongside the user's task. Kept in the user message (not the
+        system prompt) because it's per-task context, not agent identity.
+        """
+        source = (context or {}).get("source_content", "")
+        base = action or "Draft a newsletter campaign."
+        if source:
+            return f"{source}\n\n---\n\n{base}"
+        return base
 
 
 def _get():
@@ -117,51 +136,32 @@ def _extract_image_urls_from_text(text: str) -> list[str]:
 
 
 def _find_recent_media_image(tenant_id: str) -> str | None:
-    """Find the most recent Media Agent image in the tenant's inbox.
+    """Thin wrapper around the shared asset_lookup primitive.
 
-    Used when the email task mentions "image / photo / banner / visual"
-    but the CEO didn't paste a URL. We pull the newest `type='image'`
-    inbox row within the lookback window and extract the URL either from
-    the row's metadata or from the markdown body.
-
-    Returns None on any lookup failure — the email then goes out
-    text-only rather than failing the whole task.
+    Kept as a local name so call sites below don't have to import the
+    service module directly and to preserve the 30-min window that's
+    right for email attachments specifically (social/ads may want
+    different windows).
     """
-    try:
-        from backend.services.supabase import get_db
+    from backend.services.asset_lookup import get_latest_image_url
+    return get_latest_image_url(tenant_id, within_minutes=_MEDIA_LOOKBACK_MINUTES)
 
-        sb = get_db()
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=_MEDIA_LOOKBACK_MINUTES)).isoformat()
-        rows = (
-            sb.table("inbox_items")
-            .select("id, content, metadata, created_at")
-            .eq("tenant_id", tenant_id)
-            .eq("type", "image")
-            .eq("agent", "media")
-            .gte("created_at", cutoff)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if not rows.data:
-            return None
-        row = rows.data[0]
-        # Prefer structured metadata (canonical), fall back to scraping
-        # the markdown body the media agent wrote for display.
-        meta = row.get("metadata") or {}
-        if isinstance(meta, str):
-            try:
-                meta = json.loads(meta)
-            except Exception:
-                meta = {}
-        url = (meta or {}).get("image_url")
-        if url:
-            return url
-        urls = _extract_image_urls_from_text(row.get("content") or "")
-        return urls[0] if urls else None
-    except Exception as e:
-        logger.warning("[email_marketer] media asset lookup failed for %s: %s", tenant_id, e)
-        return None
+
+def _find_recent_blog_source(tenant_id: str) -> str:
+    """Return a source-content block built from the latest Content
+    Writer output, shaped for the email agent's user message. Empty
+    string on miss — callers concatenate and move on.
+    """
+    from backend.services.asset_lookup import get_recent_blog_post
+    row = get_recent_blog_post(tenant_id, within_minutes=_BLOG_LOOKBACK_MINUTES)
+    if not row:
+        return ""
+    title = row.get("title", "")
+    body = (row.get("content") or "")[:2500]
+    return (
+        "[SOURCE: Content Writer blog post — digest this into an email]\n"
+        f"Title: {title}\n\n{body}"
+    )
 
 
 def _render_email_image_block(url: str) -> str:
@@ -321,6 +321,25 @@ async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict
 
 
 async def run(tenant_id: str, context: dict | None = None) -> dict:
+    # Cross-agent context injection: if the task describes a newsletter /
+    # digest / email-about-our-blog, pull the Content Writer's most
+    # recent output and pipe it in as source_content. The class's
+    # build_user_message prepends it for the model to see.
+    task_desc = (context or {}).get("action", "")
+    if task_desc and _BLOG_DIGEST_RE.search(task_desc):
+        blog_source = _find_recent_blog_source(tenant_id)
+        if blog_source:
+            context = dict(context or {})
+            # Preserve any source_content the caller already set; just
+            # append so both survive.
+            existing = context.get("source_content", "")
+            context["source_content"] = (
+                f"{existing}\n\n{blog_source}" if existing else blog_source
+            )
+            logger.info(
+                "[email_marketer] digesting Content Writer blog for tenant %s", tenant_id,
+            )
+
     result = await _get().run(tenant_id, context)
 
     content = result.get("result", "")
@@ -328,7 +347,6 @@ async def run(tenant_id: str, context: dict | None = None) -> dict:
         return result
 
     # Extract recipient from the original task description
-    task_desc = (context or {}).get("action", "")
     recipient = _extract_recipient(task_desc)
 
     # Also try to extract recipient from agent output if not found in task
