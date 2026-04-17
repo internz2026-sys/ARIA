@@ -120,16 +120,16 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         // Add to notifications list
         setNotifications(prev => [n, ...prev].slice(0, 50));
 
-        // Update badge counts locally
-        setBadges(prev => {
-          const cat = n.category;
-          return {
-            inbox: prev.inbox + (cat === "inbox" ? 1 : 0),
-            conversations: prev.conversations + (cat === "conversation" ? 1 : 0),
-            system: prev.system + (cat === "system" ? 1 : 0),
-            total: prev.total + 1,
-          };
-        });
+        // Optimistically bump only the categories that STILL reflect raw
+        // notification-event counts. The `inbox` badge is now driven by
+        // inbox_items action status (pending_approval / needs_review /
+        // failed) — refetched when those items actually change, below.
+        setBadges(prev => ({
+          inbox: prev.inbox,
+          conversations: prev.conversations + (n.category === "conversation" ? 1 : 0),
+          system: prev.system + (n.category === "system" ? 1 : 0),
+          total: prev.total + (n.category !== "inbox" ? 1 : 0),
+        }));
 
         // Show toast for high-priority or important types
         if (n.priority === "high" || ["reply_received", "approval_needed", "system_alert", "gmail_disconnected"].includes(n.type)) {
@@ -145,10 +145,23 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         }
       };
 
+      // Any inbox_items mutation could change the action-needed count, so
+      // refetch counts when one fires. Cheap — the backend query is a
+      // single count(*) over an indexed column.
+      const handleInboxMutation = () => { fetchCounts(); };
+
       socket.on("notification", handleNotification);
-      return () => { socket.off("notification", handleNotification); };
+      socket.on("inbox_new_item", handleInboxMutation);
+      socket.on("inbox_item_updated", handleInboxMutation);
+      socket.on("inbox_item_deleted", handleInboxMutation);
+      return () => {
+        socket.off("notification", handleNotification);
+        socket.off("inbox_new_item", handleInboxMutation);
+        socket.off("inbox_item_updated", handleInboxMutation);
+        socket.off("inbox_item_deleted", handleInboxMutation);
+      };
     } catch {}
-  }, [tenantId]);
+  }, [tenantId, fetchCounts]);
 
   // Refetch counts on reconnect
   useEffect(() => {

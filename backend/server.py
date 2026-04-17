@@ -2659,22 +2659,45 @@ async def trigger_sync_all():
 
 @app.get("/api/notifications/{tenant_id}/counts")
 async def notification_counts(tenant_id: str):
-    """Get unread notification counts by category."""
+    """Return counts used by the sidebar badges.
+
+    The sidebar's "Inbox" badge is meant to tell the user how many inbox
+    items are waiting on THEIR action — not a raw count of system events.
+    We compute it directly from inbox_items (pending_approval + needs_review
+    + failed) so the badge always matches the tab totals the user sees on
+    the inbox page. The old `inbox_unread` field is kept for back-compat
+    with any caller that still reads it.
+    """
     sb = _get_supabase()
-    result = sb.table("notifications").select("category", count="exact").eq(
+
+    # Per-category notification counts (used by Conversations + System badges).
+    notif_result = sb.table("notifications").select("category", count="exact").eq(
         "tenant_id", tenant_id
     ).eq("is_read", False).execute()
-    # Count per category from raw rows
-    counts: dict[str, int] = {}
-    for row in (result.data or []):
+    notif_counts: dict[str, int] = {}
+    for row in (notif_result.data or []):
         cat = row.get("category", "other")
-        counts[cat] = counts.get(cat, 0) + 1
-    total = sum(counts.values())
+        notif_counts[cat] = notif_counts.get(cat, 0) + 1
+
+    # Inbox action-needed count — drives the sidebar Inbox badge.
+    try:
+        inbox_result = sb.table("inbox_items").select("status").eq(
+            "tenant_id", tenant_id
+        ).in_("status", ["draft_pending_approval", "needs_review", "failed"]).execute()
+        inbox_action_needed = len(inbox_result.data or [])
+    except Exception as e:
+        logger.warning("inbox action count failed: %s", e)
+        inbox_action_needed = 0
+
+    total = inbox_action_needed + notif_counts.get("conversation", 0) + notif_counts.get("system", 0)
+
     return {
-        "inbox_unread": counts.get("inbox", 0),
-        "conversations_unread": counts.get("conversation", 0),
-        "system_unread": counts.get("system", 0),
-        "status_unread": counts.get("status", 0),
+        # Sidebar uses this for the Inbox badge.
+        "inbox_unread": inbox_action_needed,
+        "inbox_action_needed": inbox_action_needed,
+        "conversations_unread": notif_counts.get("conversation", 0),
+        "system_unread": notif_counts.get("system", 0),
+        "status_unread": notif_counts.get("status", 0),
         "total_unread": total,
     }
 
