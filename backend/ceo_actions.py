@@ -456,6 +456,22 @@ ACTION_REGISTRY: dict[str, dict] = {
         "confirm": ConfirmLevel.NONE,
         "risk": "none",
     },
+    "schedule_pending_draft": {
+        "entity": "scheduled_task",
+        "operation": "schedule_pending",
+        "description": (
+            "Queue a future schedule for a draft that a sub-agent is STILL PRODUCING. "
+            "Use when the user asks 'create X AND schedule it for Y' — emit a delegate "
+            "block for the create, AND this action block with scheduled_at + agent so "
+            "the backend auto-fires schedule_task the moment the draft lands in the "
+            "inbox. Works for ANY sub-agent (email_marketer, social_manager, "
+            "content_writer, ad_strategist, media)."
+        ),
+        "required_fields": ["scheduled_at", "agent"],
+        "optional_fields": ["task_type", "platform", "task_hint"],
+        "confirm": ConfirmLevel.NONE,
+        "risk": "low",
+    },
     "reschedule_task": {
         "entity": "scheduled_task",
         "operation": "update",
@@ -985,13 +1001,15 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
             return raw
 
         items = await _fetch()
-        # Retry up to 3 times (500ms gap each) when the caller asked
-        # for a specific filter and it missed. This covers the case
-        # where Paperclip just finished an agent run but the inbox
-        # row hasn't been indexed/visible yet. Only retry for filtered
-        # queries — unfiltered empty means the tenant truly has
-        # nothing, no point hammering Postgres.
-        if not items.get("items") and (effective_status or type_filter):
+        # Retry up to 3 times (500ms gap each) whenever the fetch
+        # returns empty — filter or not. The race we keep hitting is
+        # "agent just finished, inbox row not yet visible to the
+        # CEO's follow-up turn." Retrying unconditionally covers both
+        # narrow-filter-misses AND the raw "give me the latest"
+        # case. If the tenant truly has zero items, the retries are
+        # cheap no-ops; if Postgres is lagging, we catch the row on
+        # attempt 2 or 3 instead of giving up.
+        if not items.get("items"):
             for _ in range(3):
                 await _asyncio.sleep(0.5)
                 items = await _fetch()
@@ -1149,6 +1167,47 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
             )
         elif operation == "cancel":
             return sched_service.cancel_task(tenant_id, params["id"])
+        elif operation == "schedule_pending":
+            # Queue a schedule that fires the moment the sub-agent's
+            # inbox row lands. Stores to the module-level dict in
+            # server.py and spawns a polling task. Applies to ANY
+            # sub-agent — the `agent` param routes the watcher to the
+            # right type of output.
+            import asyncio as _asyncio
+            from datetime import datetime as _dt, timezone as _tz
+            from backend.server import _pending_schedules, _watch_and_fire_pending_schedule, _safe_background
+
+            valid_agents = ("email_marketer", "social_manager", "ad_strategist", "content_writer", "media")
+            agent_name = params.get("agent", "").strip()
+            scheduled_at = params.get("scheduled_at", "").strip()
+            if agent_name not in valid_agents:
+                return {"error": f"Invalid agent {agent_name!r}. Valid: {', '.join(valid_agents)}"}
+            if not scheduled_at:
+                return {"error": "scheduled_at is required (ISO 8601 with timezone)"}
+
+            session_id = params.get("session_id") or params.get("chat_session_id") or ""
+            pending = {
+                "tenant_id": tenant_id,
+                "agent": agent_name,
+                "scheduled_at": scheduled_at,
+                "task_type": params.get("task_type", ""),
+                "platform": params.get("platform", ""),
+                "task_hint": params.get("task_hint", ""),
+                "session_id": session_id,
+                "created_at": _dt.now(_tz.utc).isoformat(),
+            }
+            if session_id:
+                _pending_schedules.setdefault(session_id, []).append(pending)
+            _safe_background(
+                _watch_and_fire_pending_schedule(pending),
+                label=f"pending-schedule-{agent_name}",
+            )
+            return {
+                "queued": True,
+                "agent": agent_name,
+                "scheduled_at": scheduled_at,
+                "note": "Will fire once the sub-agent's inbox row lands.",
+            }
         elif operation == "execute":
             task = sched_service.get_task(tenant_id, params["id"])
             if not task:

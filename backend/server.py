@@ -4899,6 +4899,16 @@ def _format_action_result(action_name: str, result: dict) -> str:
 
     # ═══════════ Scheduler operations ═══════════
 
+    if action_name == "schedule_pending_draft":
+        if result.get("error"):
+            return f"**Couldn't queue the schedule:** {result['error']}"
+        when = result.get("scheduled_at", "")
+        when_human = when[:16].replace("T", " ") if when else "the requested time"
+        return (
+            f"**Locked in:** I'll schedule the draft for **{when_human}** "
+            "the moment the Email Marketer's output lands. No need to ask me again."
+        )
+
     if action_name == "schedule_task":
         t = result.get("task", {})
         if t:
@@ -5020,6 +5030,158 @@ _CRM_VERB_RE = _re_crm.compile(
 
 # In-memory chat cache with LRU eviction (max 100 sessions)
 _chat_sessions: dict[str, list[dict]] = {}
+
+
+# ── Pending schedules — "create it AND schedule it" intents ───────────
+#
+# When a user says "write an email to X AND schedule it for April 18",
+# the CEO can't emit `schedule_task` immediately because the inbox row
+# doesn't exist yet (the sub-agent hasn't run). Instead the CEO emits
+# `schedule_pending_draft` with the intended scheduled_at + agent, and
+# we stash it here keyed by session_id. A background watcher polls for
+# the resulting inbox row and fires `sched_service.create_task` the
+# moment it shows up — so from the user's point of view, one request
+# does both things without any follow-up prompt.
+#
+# Entry shape: {
+#   tenant_id, agent, scheduled_at, task_type, platform, session_id,
+#   created_at (iso), task_hint (optional substring match)
+# }
+_pending_schedules: dict[str, list[dict]] = {}
+
+
+async def _watch_and_fire_pending_schedule(pending: dict) -> None:
+    """Background coroutine: poll for the sub-agent's inbox row, then
+    insert a scheduled_tasks row linking to it.
+
+    Lives up to `PENDING_SCHEDULE_TIMEOUT` seconds (2 min). Polls every
+    3s. On success emits a socket event so the chat / calendar UI
+    updates without a refresh. On timeout silently gives up — the CEO
+    prompt tells users to check back if the draft is very slow, so
+    we don't need a loud failure path.
+    """
+    PENDING_TIMEOUT_S = 120
+    POLL_INTERVAL_S = 3
+
+    tenant_id = pending["tenant_id"]
+    agent = pending["agent"]
+    created_at = pending["created_at"]  # ISO string
+    scheduled_at = pending["scheduled_at"]
+    task_type = pending.get("task_type") or _task_type_for_agent(agent)
+    platform = pending.get("platform", "")
+    session_id = pending.get("session_id", "")
+    task_hint = (pending.get("task_hint") or "").lower().strip()
+
+    sb = _get_supabase()
+    _log = logging.getLogger("aria.pending_schedule")
+    deadline = datetime.now(timezone.utc).timestamp() + PENDING_TIMEOUT_S
+
+    while datetime.now(timezone.utc).timestamp() < deadline:
+        await asyncio.sleep(POLL_INTERVAL_S)
+        try:
+            rows = (
+                sb.table("inbox_items")
+                .select("id, title, content, type, status, created_at")
+                .eq("tenant_id", tenant_id)
+                .eq("agent", agent)
+                .gte("created_at", created_at)
+                .neq("status", "processing")  # ignore the watcher's placeholder
+                .order("created_at", desc=True)
+                .limit(5)
+                .execute()
+            )
+            data = rows.data or []
+            # Optional narrow-down by task_hint (e.g. "Hanz") so a
+            # delegation that's unrelated to the pending schedule
+            # doesn't steal it. ILIKE semantics — case-insensitive,
+            # matches title or content.
+            picked = None
+            if task_hint:
+                for r in data:
+                    haystack = f"{r.get('title','')} {r.get('content','')}".lower()
+                    if task_hint in haystack:
+                        picked = r
+                        break
+            if not picked and data:
+                picked = data[0]
+            if not picked:
+                continue
+
+            # Insert the scheduled_tasks row. Reuse the same
+            # sched_service the `schedule_task` action uses so the
+            # Calendar page picks it up immediately.
+            from backend.services import scheduler as sched_service
+            payload = {"inbox_item_id": picked["id"]}
+            if platform:
+                payload["platform"] = platform
+            title_for_schedule = picked.get("title") or f"Scheduled {task_type}"
+            try:
+                created = sched_service.create_task(
+                    tenant_id=tenant_id,
+                    task_type=task_type,
+                    title=title_for_schedule,
+                    scheduled_at=scheduled_at,
+                    payload=payload,
+                    created_by="ceo",
+                    triggered_by_agent="ceo",
+                )
+                _log.info(
+                    "[pending-schedule] fired: tenant=%s agent=%s item=%s at=%s",
+                    tenant_id, agent, picked["id"], scheduled_at,
+                )
+                await sio.emit("scheduled_pending_fired", {
+                    "inbox_item_id": picked["id"],
+                    "scheduled_at": scheduled_at,
+                    "task_type": task_type,
+                    "title": title_for_schedule,
+                    "session_id": session_id,
+                    "scheduled_task_id": (created or {}).get("task", {}).get("id") if isinstance(created, dict) else None,
+                }, room=tenant_id)
+                # Also write a notification so the CEO chat + sidebar
+                # surface the confirmation without a manual refetch.
+                await _notify(
+                    tenant_id, "scheduled",
+                    f"Scheduled '{title_for_schedule[:60]}' for {scheduled_at[:16].replace('T',' ')}",
+                    body="",
+                    href="/calendar",
+                    category="status",
+                    priority="normal",
+                )
+            except Exception as e:
+                _log.warning("[pending-schedule] create_task failed: %s", e)
+            # Done — whether success or failure, we've acted; stop polling.
+            # Remove this entry from _pending_schedules so a second
+            # matching inbox row doesn't double-fire.
+            if session_id and session_id in _pending_schedules:
+                _pending_schedules[session_id] = [
+                    p for p in _pending_schedules[session_id] if p is not pending
+                ]
+            return
+        except Exception as e:
+            _log.debug("[pending-schedule] poll iteration failed: %s", e)
+
+    # Timeout path — release the pending entry so it doesn't leak.
+    if session_id and session_id in _pending_schedules:
+        _pending_schedules[session_id] = [
+            p for p in _pending_schedules[session_id] if p is not pending
+        ]
+    _log.info(
+        "[pending-schedule] timed out waiting for %s agent=%s tenant=%s",
+        session_id, agent, tenant_id,
+    )
+
+
+def _task_type_for_agent(agent: str) -> str:
+    """Default task_type for a pending schedule based on which agent is
+    producing the asset. Lets the CEO omit `task_type` in the common
+    cases — email_marketer → send_email, social_manager → publish_post,
+    everything else → reminder (user will see it in the Inbox).
+    """
+    mapping = {
+        "email_marketer": "send_email",
+        "social_manager": "publish_post",
+    }
+    return mapping.get(agent, "reminder")
 _MAX_CACHED_SESSIONS = 100
 
 # Per-session asyncio.Lock so two concurrent ceo_chat requests for the
@@ -5458,6 +5620,26 @@ Action rules:
 - CREATE can proceed when intent is clear; ask if data is missing.
 - The system appends the formatted result automatically — write a brief intro ("Here are your contacts:") and include the block. Do NOT fabricate results.
 
+### Create-AND-schedule in ONE turn (schedule_pending_draft)
+When the user says BOTH things in the same message — "create X AND schedule it for Y" — emit TWO blocks in your reply:
+
+1. The normal `delegate` block for the create (media / email_marketer / etc.).
+2. An `action` block for `schedule_pending_draft` with `scheduled_at` (ISO 8601) and `agent` (same one you just delegated to).
+
+The backend auto-fires the scheduled_task row the moment the sub-agent's inbox output lands — you do NOT need to wait for a follow-up turn from the user. Works for ALL sub-agents (email_marketer, content_writer, social_manager, ad_strategist, media).
+
+Optional but helpful: pass `task_hint` with a distinctive substring from the user's ask (e.g. "Hanz", "SMAPS", "product launch"). If there are several concurrent drafts, the hint narrows the match to the right one.
+
+Example — user says "create a marketing email for Hanz and schedule it for April 18 at 11 AM":
+```delegate
+{{"agent": "email_marketer", "task": "SEND: marketing email to Hanz (hdlcruz03@gmail.com) about SMAPS-SIS", "priority": "medium"}}
+```
+```action
+{{"action": "schedule_pending_draft", "params": {{"agent": "email_marketer", "scheduled_at": "2026-04-18T11:00:00+00:00", "task_hint": "Hanz"}}}}
+```
+
+Response to the user: "Got it — I'll have the Email Marketer draft the email now and lock in April 18 at 11 AM. It'll schedule automatically the moment the draft lands. No need to remind me."
+
 ### Scheduling workflow (schedule_task / reschedule_task)
 The user may ask "schedule that email for tomorrow at 1 PM", "remind me next Monday", "send this Friday 9 AM", etc.
 
@@ -5709,6 +5891,12 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         for a in ceo_actions:
             action_name = a.get("action", "")
             params = a.get("params", {})
+            # Auto-inject session_id for actions that need it — the CEO
+            # doesn't know its own session_id, so we stamp it in at
+            # dispatch time. Currently only schedule_pending_draft uses
+            # it (to scope pending schedules to this specific chat).
+            if action_name == "schedule_pending_draft" and body.session_id:
+                params = {**params, "session_id": body.session_id}
             try:
                 result = await execute_action(tenant_id, action_name, params, confirmed=False)
             except Exception as exec_exc:
