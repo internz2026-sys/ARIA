@@ -4695,13 +4695,61 @@ def _format_action_result(action_name: str, result: dict) -> str:
 
     if action_name == "read_inbox":
         items = result.get("items", [])
-        if not items:
-            return "Your inbox is empty."
-        lines = [f"**Inbox** ({len(items)} items)\n"]
-        for i, item in enumerate(items[:15], 1):
-            title = item.get("title", item.get("type", "Item"))
-            lines.append(f"{i}. **{title}** — {item.get('status', '—')} (from {item.get('agent', '—')})")
-        return "\n".join(lines)
+        filter_used = result.get("filter_used") or {}
+        tenant_total = result.get("tenant_total")
+        recent_fallback = result.get("recent_fallback") or []
+
+        # Helper — render rows with the ID visible so the CEO can feed
+        # it straight into schedule_task. The ID is what the scheduler
+        # uses to link payload.inbox_item_id → the right draft; without
+        # it the CEO has no way to reference a specific item.
+        def _render_item_row(i: int, it: dict) -> str:
+            title = it.get("title") or it.get("type") or "Item"
+            iid = it.get("id") or "—"
+            agent = it.get("agent") or "—"
+            status = it.get("status") or "—"
+            itype = it.get("type") or "—"
+            return (
+                f"{i}. **{title}** — {status} · {itype} · from {agent}\n"
+                f"   id: `{iid}`"
+            )
+
+        if items:
+            filter_note = ""
+            if filter_used:
+                parts = [f"{k}={v}" for k, v in filter_used.items()]
+                filter_note = f" (filter: {', '.join(parts)})"
+            lines = [f"**Inbox** — {len(items)} items{filter_note}\n"]
+            for i, item in enumerate(items[:15], 1):
+                lines.append(_render_item_row(i, item))
+            return "\n".join(lines)
+
+        # Empty result — distinguish three cases so the CEO can respond
+        # honestly instead of saying a flat "your inbox is empty" when
+        # the user can clearly see items on their inbox page.
+        if filter_used and recent_fallback:
+            # Filter matched nothing, but tenant has recent items.
+            parts = [f"{k}={v}" for k, v in filter_used.items()]
+            lines = [
+                f"No items match that filter ({', '.join(parts)}), but here are "
+                f"your {len(recent_fallback)} most recent items — one of these "
+                f"is likely what you meant:\n"
+            ]
+            for i, item in enumerate(recent_fallback, 1):
+                lines.append(_render_item_row(i, item))
+            return "\n".join(lines)
+
+        if tenant_total == 0:
+            # Genuinely empty — no items ever.
+            return "Your inbox has no items yet. Ask me to draft something and it'll land here."
+
+        # Tenant has items but both the filter and the fallback somehow
+        # returned empty (rare — probably a transient DB issue). Keep
+        # the CEO honest rather than claiming empty.
+        return (
+            "I couldn't retrieve your inbox items right now — the lookup came "
+            "back empty even though the tenant has records. Try again in a moment."
+        )
 
     if action_name == "read_tasks":
         tasks = result.get("tasks", [])
@@ -5363,10 +5411,11 @@ Action rules:
 The user may ask "schedule that email for tomorrow at 1 PM", "remind me next Monday", "send this Friday 9 AM", etc.
 
 1. Resolve the natural-language time using the "Current Date & Time" block above. Output format MUST be ISO 8601 with timezone (e.g. `2026-04-18T13:00:00+00:00`). Never use placeholders.
-2. If scheduling an EXISTING draft, first call `read_inbox` to locate the item (filter mentally by agent and recency), grab the `id`. Then emit `schedule_task` with `payload.inbox_item_id = <id>`.
+2. To schedule an EXISTING draft, call `read_inbox` to locate the item. **DO NOT pass a narrow status filter on the first try** — especially not "draft_pending_approval", because freshly delegated items take 10-90s to land and may still be in `processing`. Call `read_inbox` with NO params (returns the 10 most recent rows across all statuses) and pick the row that matches what the user meant. Each row in the response includes `id: <uuid>` — use that exact id as `payload.inbox_item_id`.
 3. task_type values: `send_email` (payload needs inbox_item_id), `publish_post` (payload needs inbox_item_id + platform), `reminder` (payload needs inbox_item_id + title + body).
-4. If the user asked you to schedule a draft that was JUST delegated to a sub-agent in this same conversation, the draft may not be in the Inbox yet. Reply: "The draft isn't in the Inbox yet — give the agent a few seconds to finish, then ask me to schedule it." Do NOT emit `schedule_task` with a guessed or placeholder id.
-5. Never fabricate an id — if read_inbox returns nothing matching, tell the user, don't make one up.
+4. If the user asked you to schedule a draft that was JUST delegated in this same conversation AND `read_inbox` truly returns nothing matching (check the `recent_fallback` list in the result — if that's also empty, the tenant has zero items), reply: "The draft isn't in the Inbox yet — give the agent a few seconds to finish, then ask me to schedule it again." Do NOT emit `schedule_task` with a guessed id.
+5. If `read_inbox` returns a `recent_fallback` list (meaning your filter matched nothing but items DO exist), pick the best match from that list instead of claiming the inbox is empty. The formatter will show it to you as "No items match that filter, but here are your N most recent items — one of these is likely what you meant".
+6. Never fabricate an id. If nothing credible matches, ask the user to confirm ("I see N emails — which one: the SMAPS-SIS demo, the Acme follow-up, or the generic newsletter?").
 
 ### Cross-agent: images in emails
 If the user asks for an email WITH an image/photo/banner/visual, the

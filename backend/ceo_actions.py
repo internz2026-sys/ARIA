@@ -877,13 +877,24 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
 
     # ── Inbox Read ──
     elif entity == "inbox_item" and operation == "read":
-        # The CEO tends to pass `status` values that are really TYPES
-        # ("email", "email_sequence", "social_post", "image"). The DB
-        # column for those is `type`, not `status`, so the original
-        # strict .eq("status", X) query returned 0 rows and the chat
-        # showed "Your inbox is empty" when the inbox was fine. Route
-        # type-shaped values to a type filter post-fetch so the agent
-        # just gets what it asked for either way.
+        # Three-tier search so the CEO stops saying "Your inbox is empty"
+        # when the inbox visibly isn't:
+        #
+        #   1. Try the exact filter the CEO asked for (status+type).
+        #   2. If that returns 0, fetch the 10 most recent items
+        #      *unfiltered* and surface those as `recent_fallback`.
+        #      Covers the "filter value was slightly wrong" case.
+        #   3. Report `tenant_total` regardless, so the formatter can
+        #      tell apart "tenant has zero items" from "filter matched
+        #      nothing but there ARE items".
+        #
+        # The CEO prompt is biased toward narrow filters (status=
+        # draft_pending_approval is common). A freshly delegated
+        # sub-agent takes 10-90s to produce its output, so immediately
+        # querying for pending drafts often races and shows empty.
+        # The recent_fallback gives the CEO something honest to say:
+        # "I didn't find a pending draft yet, but here's what's in the
+        # inbox — the Email Marketer row at the top is still processing."
         status_filter = (params.get("status") or "").strip()
         type_filter = (params.get("type") or "").strip()
 
@@ -894,12 +905,10 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
         }
         effective_status = status_filter if status_filter in _KNOWN_STATUSES else ""
         if status_filter and status_filter not in _KNOWN_STATUSES and not type_filter:
-            # Treat the mis-parameterized value as a type hint instead.
+            # Route mis-parameterized "status" → type filter.
             type_filter = status_filter
 
-        # Fetch a larger page when a type filter is set — the upstream
-        # list_items only filters by status, so we need room to post-
-        # filter without losing recent rows.
+        # Primary fetch.
         page_size = 20 if type_filter else 10
         items = inbox_service.list_items(
             tenant_id, status=effective_status, page=1, page_size=page_size,
@@ -912,6 +921,37 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
                 "items": filtered[:10],
                 "total": len(filtered),
             }
+
+        filter_used = {}
+        if effective_status:
+            filter_used["status"] = effective_status
+        if type_filter:
+            filter_used["type"] = type_filter
+
+        # When the filter matched nothing, check whether the tenant has
+        # any items at all so the formatter knows which empty-state
+        # message to show. Also attach a recent_fallback list so the
+        # CEO can say "not in that filter, but here's what I see".
+        if not items.get("items"):
+            tenant_total = 0
+            recent_fallback: list = []
+            try:
+                # Cheap count + recent 5 for the fallback list.
+                all_recent = inbox_service.list_items(
+                    tenant_id, status="", page=1, page_size=5,
+                )
+                tenant_total = all_recent.get("total") or len(all_recent.get("items") or [])
+                recent_fallback = all_recent.get("items") or []
+            except Exception:
+                pass
+            items = {
+                **items,
+                "filter_used": filter_used,
+                "tenant_total": tenant_total,
+                "recent_fallback": recent_fallback,
+            }
+        else:
+            items["filter_used"] = filter_used
         return items
 
     # ── CRM Company Read ──
