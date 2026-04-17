@@ -67,13 +67,17 @@ export default function NotificationBell() {
 
       {open && (
         <div className="absolute right-0 top-full mt-2 w-[380px] bg-white rounded-xl border border-[#E0DED8] shadow-xl z-[80] overflow-hidden">
-          {/* Header */}
+          {/* Header — "Mark all read" always visible when there's any
+              notification at all, disabled when nothing's unread so the
+              user can see the affordance even after clearing. */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8]">
             <h3 className="text-sm font-semibold text-[#2C2C2A]">Notifications</h3>
-            {count > 0 && (
+            {notifications.length > 0 && (
               <button
                 onClick={() => markAsRead()}
-                className="text-xs text-[#534AB7] hover:text-[#4840A0] font-medium"
+                disabled={count === 0}
+                className="text-xs font-medium text-[#534AB7] hover:text-[#4840A0] disabled:text-[#B0AFA8] disabled:cursor-not-allowed disabled:hover:text-[#B0AFA8]"
+                title={count === 0 ? "All notifications are already read" : "Mark all as read"}
               >
                 Mark all read
               </button>
