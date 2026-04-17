@@ -26,6 +26,7 @@ def create_item(
     task_id: str | None = None,
     chat_session_id: str | None = None,
     email_draft: dict | None = None,
+    metadata: dict | None = None,
 ) -> dict | None:
     """Insert a single inbox_items row and return the saved record.
 
@@ -33,6 +34,11 @@ def create_item(
     self-documenting and avoid argument-order bugs. Returns None on
     failure (logged at error level) so callers can decide whether to
     raise or fall through.
+
+    `metadata` is the jsonb sidecar column used by the repurpose cron
+    (library_entry_id dedup), the asset_lookup media path (image_url),
+    and other features that need structured side-channel data on a row.
+    Pass None to leave it unset — default.
     """
     try:
         row: dict = {
@@ -50,6 +56,8 @@ def create_item(
             row["chat_session_id"] = chat_session_id
         if email_draft:
             row["email_draft"] = email_draft
+        if metadata:
+            row["metadata"] = metadata
 
         result = get_db().table("inbox_items").insert(row).execute()
         saved = result.data[0] if result.data else None

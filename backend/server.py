@@ -333,6 +333,10 @@ async def _content_repurpose_loop():
                             f"**Refresh the blog post titled \"{title}\" — update any stale facts and modernize the voice.**"
                         )
                         from backend.services import inbox as inbox_service
+                        # metadata.library_entry_id is what the dedup
+                        # lookup above matches against, so NEVER skip it
+                        # here — without it every sweep would re-suggest
+                        # the same aging rows.
                         inbox_service.create_item(
                             tenant_id=tenant_id,
                             agent="content_writer",
@@ -341,6 +345,11 @@ async def _content_repurpose_loop():
                             content=body,
                             status="ready",
                             priority="low",
+                            metadata={
+                                "library_entry_id": entry["id"],
+                                "library_entry_type": entry.get("type"),
+                                "aging_days": age_days,
+                            },
                         )
                         suggestions_created += 1
                         picked += 1
