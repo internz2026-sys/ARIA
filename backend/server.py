@@ -1571,7 +1571,48 @@ async def create_scheduled_task(tenant_id: str, body: ScheduleTaskRequest):
     )
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
+    await _emit_scheduled_task_created(tenant_id, result.get("task"))
     return result
+
+
+async def _emit_scheduled_task_created(tenant_id: str, task: dict | None) -> None:
+    """Emit a scheduled_task_created Socket.IO event + a notification so
+    the Calendar page refetches and the sidebar/toast reflect the new
+    entry without a manual refresh.
+
+    Called from every path that inserts into scheduled_tasks: this HTTP
+    endpoint, the CEO's `schedule_task` / `schedule_pending_draft`
+    actions (via the chat handler), and the watcher in
+    _watch_and_fire_pending_schedule. Best-effort — a socket hiccup
+    never fails the underlying scheduling.
+    """
+    if not tenant_id or not task:
+        return
+    try:
+        await sio.emit("scheduled_task_created", {
+            "id": task.get("id"),
+            "tenant_id": tenant_id,
+            "task_type": task.get("task_type"),
+            "title": task.get("title"),
+            "scheduled_at": task.get("scheduled_at"),
+            "status": task.get("status"),
+            "payload": task.get("payload") or {},
+        }, room=tenant_id)
+    except Exception as e:
+        logger.debug("[scheduled_task_created] socket emit failed: %s", e)
+    # Friendly confirmation in the Notifications list + sidebar badge.
+    try:
+        when = (task.get("scheduled_at") or "")[:16].replace("T", " ")
+        await _notify(
+            tenant_id, "scheduled",
+            f"Scheduled: {task.get('title', 'Task')}",
+            body=f"Set for {when}",
+            href="/calendar",
+            category="status",
+            priority="normal",
+        )
+    except Exception:
+        pass
 
 
 @app.get("/api/schedule/{tenant_id}/tasks")
@@ -5129,6 +5170,11 @@ async def _watch_and_fire_pending_schedule(pending: dict) -> None:
                     "[pending-schedule] fired: tenant=%s agent=%s item=%s at=%s",
                     tenant_id, agent, picked["id"], scheduled_at,
                 )
+                # Emit scheduled_task_created so the Calendar page
+                # refetches via the same event every other scheduling
+                # path uses.
+                if isinstance(created, dict):
+                    await _emit_scheduled_task_created(tenant_id, created.get("task"))
                 await sio.emit("scheduled_pending_fired", {
                     "inbox_item_id": picked["id"],
                     "scheduled_at": scheduled_at,
@@ -5916,6 +5962,17 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 pending_confirmations.append(result)
             else:
                 action_results.append(result)
+
+                # Calendar sync: when the CEO's action actually inserted
+                # a scheduled_tasks row, fire the socket event so the
+                # Calendar page refetches immediately. Handles the direct
+                # `schedule_task` create path; the pending-schedule
+                # watcher fires its own emit from
+                # _watch_and_fire_pending_schedule.
+                if action_name == "schedule_task" and isinstance(result, dict):
+                    task_payload = result.get("result", {}).get("task") if "result" in result else result.get("task")
+                    if task_payload:
+                        await _emit_scheduled_task_created(tenant_id, task_payload)
 
     # Append formatted action results to the response so data appears in chat
     for ar in action_results:

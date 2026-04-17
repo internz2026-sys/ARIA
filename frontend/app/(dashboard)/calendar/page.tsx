@@ -180,6 +180,32 @@ export default function CalendarPage() {
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
+  // Real-time sync: when the CEO (or any other flow) creates,
+  // updates, or executes a scheduled task, the backend emits a
+  // Socket.IO event. Listening + refetching keeps the calendar
+  // in sync without requiring the user to refresh. Covers the
+  // "scheduled via chat, nothing on the calendar yet" complaint.
+  useEffect(() => {
+    if (!tenantId) return;
+    let cleanup: (() => void) | undefined;
+    try {
+      const { getSocket } = require("@/lib/socket");
+      const socket = getSocket();
+      const refetch = () => { fetchTasks(); };
+      socket.on("scheduled_task_created", refetch);
+      socket.on("scheduled_task_updated", refetch);
+      socket.on("scheduled_task_executed", refetch);
+      socket.on("scheduled_pending_fired", refetch);
+      cleanup = () => {
+        socket.off("scheduled_task_created", refetch);
+        socket.off("scheduled_task_updated", refetch);
+        socket.off("scheduled_task_executed", refetch);
+        socket.off("scheduled_pending_fired", refetch);
+      };
+    } catch {}
+    return () => { if (cleanup) cleanup(); };
+  }, [tenantId, fetchTasks]);
+
   function navigate(dir: number) {
     const d = new Date(currentDate);
     if (view === "month") d.setMonth(d.getMonth() + dir);
