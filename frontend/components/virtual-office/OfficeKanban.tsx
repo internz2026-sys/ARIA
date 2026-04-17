@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import KanbanBoard from "@/components/shared/KanbanBoard";
 import { useDraggable } from "@/lib/use-draggable";
+import { useResizablePanel } from "@/lib/use-resizable-panel";
 import { useTaskUpdates } from "@/lib/socket";
 import {
   type Task,
@@ -75,38 +76,41 @@ export default function OfficeKanban() {
   const active = tasks.filter((t) => t.status !== "done").length;
   const inProgress = tasks.filter((t) => t.status === "in_progress").length;
 
-  // Panel position — offset from button so it follows when button is dragged
+  // Panel position + size.
+  // - Position follows the button 1:1 (no independent drag, matches
+  //   FloatingChat). Drag the button and the panel moves with it.
+  // - Size is resizable via the native CSS `resize: both` corner grip and
+  //   persisted to localStorage. Restored on next mount.
   const wH = typeof window !== "undefined" ? window.innerHeight : 800;
   const wW = typeof window !== "undefined" ? window.innerWidth : 1200;
-  const [panelOffset, setPanelOffset] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
-  const panelDragRef = useRef<{ startX: number; startY: number; startDx: number; startDy: number } | null>(null);
+  const PANEL_GAP = 8;
+  const BUTTON_H = 52;
+  const { panelRef: resizeRef, size: panelSize } = useResizablePanel(
+    "aria-task-board-panel-size",
+    { w: 700, h: 440 },
+  );
 
-  useEffect(() => { if (open) setPanelOffset({ dx: 0, dy: 0 }); }, [open]);
-
-  const basePanelX = Math.max(20, pos.x > wW * 0.4 ? pos.x + 180 - 700 : pos.x);
-  const basePanelY = pos.y > wH * 0.4 ? Math.max(20, pos.y - 440 - 12) : pos.y + 56 + 12;
+  const buttonRightEdge = pos.x + 180; // button is ~180px wide
+  const rawPanelX = pos.x > wW * 0.4 ? buttonRightEdge - panelSize.w : pos.x;
+  const basePanelX = Math.min(Math.max(20, rawPanelX), wW - panelSize.w - 20);
+  const basePanelY = pos.y > wH * 0.4
+    ? Math.max(20, pos.y - panelSize.h - PANEL_GAP)
+    : Math.min(wH - panelSize.h - 20, pos.y + BUTTON_H + PANEL_GAP);
 
   const panelStyle: React.CSSProperties = {
     position: "fixed",
-    width: 700,
+    width: panelSize.w,
+    height: panelSize.h,
+    minWidth: 420,
+    minHeight: 320,
     maxWidth: "calc(100vw - 40px)",
-    left: basePanelX + panelOffset.dx,
-    top: basePanelY + panelOffset.dy,
+    maxHeight: "calc(100vh - 40px)",
+    resize: "both",
+    overflow: "hidden",
+    left: basePanelX,
+    top: basePanelY,
     zIndex: 61,
   };
-
-  const onPanelHeaderDown = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    e.preventDefault();
-    panelDragRef.current = { startX: e.clientX, startY: e.clientY, startDx: panelOffset.dx, startDy: panelOffset.dy };
-    function onMove(ev: MouseEvent) {
-      const d = panelDragRef.current!;
-      setPanelOffset({ dx: d.startDx + ev.clientX - d.startX, dy: d.startDy + ev.clientY - d.startY });
-    }
-    function onUp() { panelDragRef.current = null; document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }, [panelOffset]);
 
   if (pos.x < 0) return null;
 
@@ -143,8 +147,8 @@ export default function OfficeKanban() {
       </button>
 
       {open && (
-        <div ref={panelRef} data-floating-widget="task-board" style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8] cursor-grab active:cursor-grabbing" onMouseDown={onPanelHeaderDown}>
+        <div ref={resizeRef} data-floating-widget="task-board" style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8] shrink-0">
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full" style={{ background: "linear-gradient(135deg, #FF6B35, #F7418F)" }} />
               <h3 className="text-sm font-semibold text-[#2C2C2A]">Task Board</h3>
@@ -160,7 +164,7 @@ export default function OfficeKanban() {
               </svg>
             </button>
           </div>
-          <div className="p-3 max-h-[380px] overflow-y-auto">
+          <div className="p-3 flex-1 min-h-0 overflow-y-auto">
             {loading ? (
               <div className="flex items-center justify-center py-8">
                 <div className="w-6 h-6 border-2 border-[#FF6B35] border-t-transparent rounded-full animate-spin" />

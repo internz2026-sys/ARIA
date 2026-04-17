@@ -7,12 +7,15 @@ import { useCeoChat } from "@/lib/use-ceo-chat";
 import { formatDateAgo } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/render-markdown";
 import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
+import { useResizablePanel } from "@/lib/use-resizable-panel";
 import ConfirmationDialog from "@/components/shared/ConfirmationDialog";
 
 export default function FloatingChat() {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [showHistory, setShowHistory] = useState(false);
+  // panelRef kept for any future outside-click logic; resizeRef (from
+  // useResizablePanel) is what the panel element actually binds to.
   const panelRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -117,34 +120,45 @@ export default function FloatingChat() {
     setShowHistory(false);
   }
 
-  // Panel position — always anchored flush to the button. Panel is not
-  // independently draggable; it follows the button 1:1 so the two always
-  // read as ONE unit. The previous design had a separate panel drag that
-  // let users park the panel far from its toggle, which looked broken.
+  // Panel position + size.
+  //
+  // Position is derived purely from the button: no independent drag, so the
+  // two always read as ONE unit. Drag the button → the panel moves with it.
+  //
+  // Size is resizable via the native CSS `resize: both` corner grip and
+  // persisted to localStorage. Restored on mount. Default 420 × 520.
   const wH = typeof window !== "undefined" ? window.innerHeight : 800;
   const wW = typeof window !== "undefined" ? window.innerWidth : 1200;
-  const PANEL_W = 420;
-  const PANEL_GAP = 8; // small breathing room between button and panel
+  const PANEL_GAP = 8;
   const BUTTON_H = 52;
-  const pH = Math.min(520, wH - 80);
+  const defaultH = Math.min(520, wH - 80);
+  const { panelRef: resizeRef, size: panelSize } = useResizablePanel(
+    "aria-ceo-chat-panel-size",
+    { w: 420, h: defaultH },
+  );
 
-  // Horizontal: keep the panel's right edge aligned with the button's
-  // right edge when the button is in the right half of the screen, and
-  // left-align when it's in the left half. Clamped so the panel never
-  // spills off either edge.
-  const buttonRightEdge = pos.x + 170; // button is ~170px wide
-  const rawPanelX = pos.x > wW * 0.4 ? buttonRightEdge - PANEL_W : pos.x;
-  const basePanelX = Math.min(Math.max(20, rawPanelX), wW - PANEL_W - 20);
+  // Horizontal: right-align with button when button is in the right half,
+  // left-align otherwise. Clamped so the panel never spills off the viewport.
+  const buttonRightEdge = pos.x + 170;
+  const rawPanelX = pos.x > wW * 0.4 ? buttonRightEdge - panelSize.w : pos.x;
+  const basePanelX = Math.min(Math.max(20, rawPanelX), wW - panelSize.w - 20);
 
-  // Vertical: panel above the button when it's in the lower 65% of the
-  // screen, otherwise below. Small gap so there's a visible (but tight)
-  // seam — makes it obvious the two belong together.
+  // Vertical: panel above the button when it sits in the lower 65%, below
+  // otherwise. Keeps the seam between the two elements small.
   const basePanelY = pos.y > wH * 0.35
-    ? Math.max(20, pos.y - pH - PANEL_GAP)
-    : Math.min(wH - pH - 20, pos.y + BUTTON_H + PANEL_GAP);
+    ? Math.max(20, pos.y - panelSize.h - PANEL_GAP)
+    : Math.min(wH - panelSize.h - 20, pos.y + BUTTON_H + PANEL_GAP);
 
   const panelStyle: React.CSSProperties = {
-    position: "fixed", width: PANEL_W, maxWidth: "calc(100vw - 40px)", height: pH,
+    position: "fixed",
+    width: panelSize.w,
+    height: panelSize.h,
+    minWidth: 320,
+    minHeight: 360,
+    maxWidth: "calc(100vw - 40px)",
+    maxHeight: "calc(100vh - 40px)",
+    resize: "both",
+    overflow: "hidden",
     left: basePanelX,
     top: basePanelY,
     zIndex: 61,
@@ -177,7 +191,7 @@ export default function FloatingChat() {
       </button>
 
       {open && (
-        <div ref={panelRef} data-floating-widget="ceo-chat" style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col overflow-hidden">
+        <div ref={resizeRef} data-floating-widget="ceo-chat" style={panelStyle} className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl flex flex-col">
           {/* Header — panel is anchored to the button; not independently draggable */}
           <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0">
             <button
