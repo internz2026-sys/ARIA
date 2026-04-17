@@ -442,6 +442,67 @@ def poke_paperclip_poller() -> None:
         pass
 
 
+# ─── Inbox Dedup / Sanitization Constants ────────────────────────────────
+#
+# Paperclip skill curls occasionally POST with the display form of the
+# agent slug ("email-marketer", "Email Marketer", "media-designer") or
+# the legacy `media_designer` underscore. Everything else in the system
+# (watcher placeholders, CEO dispatch, UI color/name maps) uses the
+# canonical underscore slug. This alias map normalizes incoming writes.
+# Must be defined BEFORE _NON_CANONICAL_AGENT_SLUGS below (which derives
+# its filter from .keys()) — Python evaluates module-level statements
+# top-to-bottom at import time.
+_AGENT_SLUG_ALIASES: dict[str, str] = {
+    "email-marketer": "email_marketer",
+    "content-writer": "content_writer",
+    "social-manager": "social_manager",
+    "ad-strategist": "ad_strategist",
+    "media-designer": "media",
+    "media_designer": "media",
+    "email marketer": "email_marketer",
+    "content writer": "content_writer",
+    "social manager": "social_manager",
+    "ad strategist": "ad_strategist",
+    "media designer": "media",
+}
+
+
+def _canon_agent_slug(raw: str | None) -> str | None:
+    """Return the canonical agent slug for any alias form, or `raw` on miss."""
+    if not raw:
+        return raw
+    return _AGENT_SLUG_ALIASES.get(raw.strip().lower(), raw)
+
+
+def _looks_like_confirmation_message(content: str) -> bool:
+    """True if the incoming content is an agent's "saved!" status message.
+
+    These show up as SECOND inbox writes right after the agent's real
+    content — rejecting them prevents duplicate rows with text like
+    "✅ Email draft saved to ARIA Inbox" cluttering the inbox next to
+    the actual email they're confirming.
+    """
+    text = (content or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "saved to aria inbox" in text
+        or "saved to inbox" in text
+        or "successfully saved" in text
+        or "draft created and saved" in text
+        or "draft id:" in text
+        or text.startswith((
+            "✅",
+            ":white_check_mark:",
+            "[saved]",
+            "[done]",
+            "## task complete",
+            "## email draft complete",
+            "email draft created",
+        ))
+    )
+
+
 # Historical slug variants derived from the alias map PLUS the title-case
 # forms that sometimes came from Paperclip's display layer. Keeping the
 # list generated from _AGENT_SLUG_ALIASES.keys() makes it impossible for
@@ -2328,65 +2389,11 @@ async def gmail_status(tenant_id: str):
 # callers moved to routers/email.py, so no aliases remain in this module.
 
 
-# ─── Inbox Dedup / Sanitization Constants ────────────────────────────────
-#
-# Paperclip skill curls occasionally POST with the display form of the
-# agent slug ("email-marketer", "Email Marketer", "media-designer") or
-# the legacy `media_designer` underscore. Everything else in the system
-# (watcher placeholders, CEO dispatch, UI color/name maps) uses the
-# canonical underscore slug. This alias map normalizes incoming writes.
-# Module-level so create_inbox_item doesn't rebuild it on every request
-# and so _cleanup_noncanonical_inbox_rows can source the KEYS for its
-# purge filter from a single truth.
-_AGENT_SLUG_ALIASES: dict[str, str] = {
-    "email-marketer": "email_marketer",
-    "content-writer": "content_writer",
-    "social-manager": "social_manager",
-    "ad-strategist": "ad_strategist",
-    "media-designer": "media",
-    "media_designer": "media",
-    "email marketer": "email_marketer",
-    "content writer": "content_writer",
-    "social manager": "social_manager",
-    "ad strategist": "ad_strategist",
-    "media designer": "media",
-}
-
-
-def _canon_agent_slug(raw: str | None) -> str | None:
-    """Return the canonical agent slug for any alias form, or `raw` on miss."""
-    if not raw:
-        return raw
-    return _AGENT_SLUG_ALIASES.get(raw.strip().lower(), raw)
-
-
-def _looks_like_confirmation_message(content: str) -> bool:
-    """True if the incoming content is an agent's "saved!" status message.
-
-    These show up as SECOND inbox writes right after the agent's real
-    content — rejecting them prevents duplicate rows with text like
-    "✅ Email draft saved to ARIA Inbox" cluttering the inbox next to
-    the actual email they're confirming.
-    """
-    text = (content or "").strip().lower()
-    if not text:
-        return False
-    return (
-        "saved to aria inbox" in text
-        or "saved to inbox" in text
-        or "successfully saved" in text
-        or "draft created and saved" in text
-        or "draft id:" in text
-        or text.startswith((
-            "✅",
-            ":white_check_mark:",
-            "[saved]",
-            "[done]",
-            "## task complete",
-            "## email draft complete",
-            "email draft created",
-        ))
-    )
+# _AGENT_SLUG_ALIASES, _canon_agent_slug, _looks_like_confirmation_message,
+# and _NON_CANONICAL_AGENT_SLUGS all live near the top of this file (just
+# above _cleanup_noncanonical_inbox_rows). They're referenced at module
+# load time by the lifespan-startup cleanup, so they must be defined
+# BEFORE that block runs.
 
 
 # ─── Gmail Send API ───
