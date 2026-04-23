@@ -348,6 +348,23 @@ export default function InboxPage() {
   const urlItemId = searchParams?.get("id") || "";
   const itemsRef = useRef<InboxItem[]>([]);
   useEffect(() => { itemsRef.current = items; }, [items]);
+
+  // Detail-pane scroll reset. The right-hand detail pane has its own
+  // scrollbar; when the user clicks a different item, the reader would
+  // otherwise stay at the previous item's scroll position and the new
+  // item's header / action buttons would be below the fold. Walk the
+  // pane for the first `overflow-auto` descendant and reset its scroll
+  // top. Smooth behavior keeps it from feeling abrupt.
+  const detailPaneRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!selected?.id || !detailPaneRef.current) return;
+    const scroller = detailPaneRef.current.querySelector<HTMLElement>(
+      "[data-inbox-scroll='true'], .overflow-auto",
+    );
+    if (scroller) {
+      scroller.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, [selected?.id]);
   useEffect(() => {
     if (!urlItemId) return;
     const list = itemsRef.current;
@@ -1193,7 +1210,7 @@ export default function InboxPage() {
           )}
         </div>
         {/* Email content */}
-        <div className="flex-1 overflow-auto p-5">
+        <div className="flex-1 overflow-auto p-5 pb-24" data-inbox-scroll="true">
           <div className="bg-white rounded-lg border border-[#E0DED8] overflow-hidden">
             <iframe
               ref={iframeRef}
@@ -1365,7 +1382,7 @@ export default function InboxPage() {
             )}
           </div>
         </div>
-        <div className="flex-1 overflow-auto p-5 space-y-4">
+        <div className="flex-1 overflow-auto p-5 pb-24 space-y-4" data-inbox-scroll="true">
           {isEditing && (
             <div className="space-y-3">
               {(editDraft?.posts || []).map((p: any, idx: number) => {
@@ -1612,7 +1629,7 @@ export default function InboxPage() {
         <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
       </div>
       {/* Message bubble */}
-      <div className="flex-1 overflow-auto p-5">
+      <div className="flex-1 overflow-auto p-5 pb-24" data-inbox-scroll="true">
         <div className="max-w-md">
           <div className="bg-[#E8F5E8] rounded-xl rounded-tl-sm px-4 py-3 mb-4">
             <p className="text-sm text-[#2C2C2A] whitespace-pre-wrap">{item.content}</p>
@@ -1668,11 +1685,12 @@ export default function InboxPage() {
         ) : (
           <h2 className="text-lg font-semibold text-[#2C2C2A]">{item.title}</h2>
         )}
-        <div className="flex items-center gap-2 mt-3">
-          {/* Edit / Save / Cancel for editable, non-image item types.
-              Images can't be text-edited — they get a separate refine
-              prompt flow below via the Media Agent re-dispatch. */}
-          {item.type !== "image" && !isEditing && (
+        <div className="flex items-center gap-2 mt-3 flex-wrap">
+          {/* Edit / Save / Cancel — available for every item type. For
+              images the textarea edits the prompt/description; the
+              image render itself stays read-only (refining the image
+              is a separate re-dispatch flow). */}
+          {!isEditing && (
             <button
               onClick={() => beginEditContent(item)}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-white text-[#534AB7] border border-[#534AB7] hover:bg-[#EEEDFE] transition-colors"
@@ -1763,14 +1781,34 @@ export default function InboxPage() {
           )}
         </div>
       </div>
-      <div className="flex-1 overflow-auto p-5">
+      <div className="flex-1 overflow-auto p-5 pb-24" data-inbox-scroll="true">
         {isEditing ? (
-          <textarea
-            value={editDraft?.content ?? ""}
-            onChange={(e) => setEditDraft({ ...editDraft, content: e.target.value })}
-            placeholder="Edit content (supports markdown)"
-            className="w-full min-h-[360px] font-mono text-sm p-3 rounded-lg border border-[#E0DED8] bg-white focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7]/60 resize-y"
-          />
+          <div className="space-y-3">
+            {/* Image items keep the rendered asset visible while the user
+                edits the description / prompt text below. The image
+                itself isn't user-editable here — re-generation happens
+                through Media Agent re-dispatch. */}
+            {item.type === "image" && (() => {
+              const thumb = getInboxThumbnail(item);
+              if (!thumb) return null;
+              return (
+                <div className="rounded-xl overflow-hidden border border-[#E0DED8] bg-[#F8F8F6]">
+                  <img
+                    src={thumb}
+                    alt=""
+                    className="w-full h-auto object-cover max-h-[360px]"
+                    loading="lazy"
+                  />
+                </div>
+              );
+            })()}
+            <textarea
+              value={editDraft?.content ?? ""}
+              onChange={(e) => setEditDraft({ ...editDraft, content: e.target.value })}
+              placeholder={item.type === "image" ? "Edit the prompt or description" : "Edit content (supports markdown)"}
+              className="w-full min-h-[360px] font-mono text-sm p-3 rounded-lg border border-[#E0DED8] bg-white focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7]/60 resize-y"
+            />
+          </div>
         ) : (
           <div className="prose prose-sm max-w-none text-[#2C2C2A]">
             {/* Attached-media preview — renders above the text when the
@@ -1864,11 +1902,13 @@ export default function InboxPage() {
           </div>
         </div>
       ) : (
-        <div className="flex gap-4 min-h-[500px]">
+        <div className="flex gap-4 min-h-[500px] h-[calc(100vh-220px)]">
           {/* Item list -- on mobile, hidden once an item is selected so the
               detail pane gets full screen. On desktop (md+) both panes are
-              visible side-by-side as before. */}
-          <div className={`${mobileShowDetail ? "hidden" : "flex"} md:flex w-full md:w-[380px] shrink-0 flex-col gap-2`}>
+              visible side-by-side as before. The list column is now
+              height-constrained so its inner list scrolls independently
+              of the detail pane (master-detail pattern). */}
+          <div className={`${mobileShowDetail ? "hidden" : "flex"} md:flex w-full md:w-[380px] shrink-0 flex-col gap-2 overflow-hidden`}>
             {/* Delete Mode toggle + bulk action toolbar.
                 Default (View Mode): just a single "Delete" button on the
                 right, nothing else. Clicking it flips to Delete Mode,
@@ -1932,6 +1972,7 @@ export default function InboxPage() {
               )}
             </div>
 
+            <div className="flex-1 overflow-y-auto -mr-1 pr-1 space-y-2" data-inbox-list-scroll="true">
             {filteredItems.map((item, idx) => {
               const badge = STATUS_BADGES[item.status];
               const isChecked = checkedIds.has(item.id);
@@ -2083,6 +2124,7 @@ export default function InboxPage() {
                 </div>
               </div>
             )}
+            </div>
           </div>
 
           {/* Detail pane. On mobile, hidden until the user taps an item; on
@@ -2090,8 +2132,13 @@ export default function InboxPage() {
               only renders on mobile (md:hidden) and lets the user pop back
               to the list. Without this, mobile users could tap items but
               never see the content (the previous design was hidden md:flex
-              which made the inbox effectively read-only-of-titles on phones). */}
-          <div className={`${mobileShowDetail ? "flex" : "hidden"} md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}>
+              which made the inbox effectively read-only-of-titles on phones).
+              Height-constrained + overflow-hidden so the inner renderer's
+              scroll container owns the scrolling (sticky master-detail). */}
+          <div
+            ref={detailPaneRef}
+            className={`${mobileShowDetail ? "flex" : "hidden"} md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}
+          >
             {selected ? (
               <>
                 {/* Mobile-only back button -- the desktop layout has both
