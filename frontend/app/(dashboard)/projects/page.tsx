@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import KanbanBoard from "@/components/shared/KanbanBoard";
 import {
   type Task,
@@ -22,6 +23,29 @@ export default function ProjectsPage() {
   const [page, setPage] = useState(1);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+
+  // Deep-link support — a notification click for a project / task
+  // resource lands here with ?id=<uuid>. Scroll it into view,
+  // highlight briefly, and try to expand the target so the user
+  // immediately sees what they were alerted about.
+  const searchParams = useSearchParams();
+  const deepLinkId = searchParams?.get("id") || "";
+
+  useEffect(() => {
+    if (!deepLinkId) return;
+    if (tasks.length === 0) return;
+    if (!tasks.some((t) => t.id === deepLinkId)) return;
+    setHighlightedId(deepLinkId);
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-project-row="${deepLinkId}"]`);
+      if (el && typeof (el as any).scrollIntoView === "function") {
+        (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+    const t = setTimeout(() => setHighlightedId(null), 1800);
+    return () => clearTimeout(t);
+  }, [deepLinkId, tasks]);
 
   useEffect(() => {
     const tid = localStorage.getItem("aria_tenant_id");
@@ -145,6 +169,7 @@ export default function ProjectsPage() {
             onToggleCheck={toggleCheck}
             onToggleAll={toggleAll}
             allChecked={checkedIds.size === paginatedTasks.length && paginatedTasks.length > 0}
+            highlightedId={highlightedId}
           />
 
           {/* Pagination */}
@@ -193,6 +218,7 @@ export default function ProjectsPage() {
 /* ─── Table View ─── */
 function TableView({
   tasks, onStatusChange, onDelete, checkedIds, onToggleCheck, onToggleAll, allChecked,
+  highlightedId,
 }: {
   tasks: Task[];
   onStatusChange: (id: string, s: string) => void;
@@ -201,6 +227,7 @@ function TableView({
   onToggleCheck: (id: string) => void;
   onToggleAll: () => void;
   allChecked: boolean;
+  highlightedId: string | null;
 }) {
   return (
     <div className="bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
@@ -229,7 +256,15 @@ function TableView({
             const priority = PRIORITY_STYLES[task.priority] || PRIORITY_STYLES.medium;
             const checked = checkedIds.has(task.id);
             return (
-              <tr key={task.id} className={`border-b border-[#E0DED8] last:border-0 hover:bg-[#F8F8F6]/50 transition ${checked ? "bg-[#EEEDFE]/30" : ""}`}>
+              <tr
+                key={task.id}
+                data-project-row={task.id}
+                className={`border-b border-[#E0DED8] last:border-0 transition ${
+                  highlightedId === task.id
+                    ? "bg-[#EEEDFE] ring-2 ring-inset ring-[#534AB7]/40 animate-pulse"
+                    : checked ? "bg-[#EEEDFE]/30" : "hover:bg-[#F8F8F6]/50"
+                }`}
+              >
                 <td className="px-4 py-3">
                   <input
                     type="checkbox"

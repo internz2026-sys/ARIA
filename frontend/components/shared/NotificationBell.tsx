@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useNotifications, Notification } from "@/lib/use-notifications";
 import { formatDateAgo, cleanNotificationBody, stripMarkdown } from "@/lib/utils";
+import { getRouteForItem } from "@/lib/notification-routing";
 
 const CATEGORY_COLORS: Record<string, { bg: string; text: string; label: string }> = {
   inbox: { bg: "bg-[#EEEDFE]", text: "text-[#534AB7]", label: "Inbox" },
@@ -37,24 +38,10 @@ export default function NotificationBell() {
     if (!n.is_read) markAsRead([n.id]);
     setOpen(false);
 
-    // Deep-link target resolution. Priority:
-    //   1. Explicit n.href from backend (e.g. /inbox?id=<uuid> for
-    //      newly-landed drafts, /calendar for scheduled tasks,
-    //      /conversations for email replies)
-    //   2. Category fallback for older notifications without an href
-    //      or for ones where the backend only stored a category
-    let target = (n.href || "").trim();
-    if (!target) {
-      switch (n.category) {
-        case "inbox": target = "/inbox"; break;
-        case "conversation": target = "/conversations"; break;
-        case "status": target = "/calendar"; break;
-        case "system": target = "/settings"; break;
-        default: target = "/dashboard";
-      }
-    }
-    // Only navigate to in-app paths. Avoid any absolute URL leaking
-    // in from a prompt-injection-ish payload or an old migration.
+    // Delegate to the shared routing utility so every deep-link
+    // entry point (bell, email, in-app alerts) uses the same
+    // category / resource_type → path table.
+    const target = getRouteForItem(n as any);
     if (!target.startsWith("/")) return;
     router.push(target);
   }

@@ -349,11 +349,15 @@ export default function InboxPage() {
     // Deferred to next tick so we read the latest `selected` without
     // stale-closure surprises and let the state→URL sync settle first.
     const t = setTimeout(() => {
+      let toastedMissing = false;
       // Read fresh state via refs so we don't need to subscribe here
       setSelected((prev) => {
         if (prev?.id === urlItemId) return prev;
         const found = itemsRef.current.find((i) => i.id === urlItemId);
-        if (!found) return prev;
+        if (!found) {
+          toastedMissing = true;
+          return prev;
+        }
         const idx = itemsRef.current.findIndex((i) => i.id === found.id);
         if (idx >= 0) setKeyboardIndex(idx);
         setMobileShowDetail(true);
@@ -363,6 +367,18 @@ export default function InboxPage() {
         setHighlightedId(found.id);
         return found;
       });
+      // Graceful fallback: the user was deep-linked to a row that
+      // doesn't exist (deleted, belongs to a different tenant, or
+      // the id is stale from an old notification). Show a toast so
+      // they know why the expected item isn't open — don't crash
+      // and don't silently ignore.
+      if (toastedMissing) {
+        showToast({
+          title: "This item is no longer available",
+          body: "It may have been deleted, cancelled, or moved out of your current view.",
+          variant: "warning",
+        });
+      }
     }, 0);
     return () => clearTimeout(t);
   }, [urlItemId]);

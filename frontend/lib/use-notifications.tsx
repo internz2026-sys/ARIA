@@ -15,6 +15,13 @@ export interface Notification {
   is_read: boolean;
   is_seen: boolean;
   created_at: string;
+  // Universal deep-link metadata — populated by the backend _notify
+  // helper so every alert can route the user directly to the
+  // specific asset (inbox row, CRM contact, project card, etc.)
+  // without hardcoding per-type paths on the frontend.
+  resource_type?: string | null;
+  resource_id?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface BadgeCounts {

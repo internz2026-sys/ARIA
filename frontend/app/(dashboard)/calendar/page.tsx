@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { API_URL, authFetch } from "@/lib/api";
 import { useConfirm } from "@/lib/use-confirm";
 import { useNotifications } from "@/lib/use-notifications";
@@ -120,6 +121,27 @@ export default function CalendarPage() {
   // For "+N more" expand-day modal
   const [expandedDay, setExpandedDay] = useState<{ date: Date; tasks: ScheduledTask[] } | null>(null);
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
+
+  // Deep-link: notification clicks for a scheduled_task land here
+  // with ?id=<uuid>. Select the row so the detail pane opens; if the
+  // task isn't in the current view, show a toast.
+  const searchParams = useSearchParams();
+  const deepLinkId = searchParams?.get("id") || "";
+
+  useEffect(() => {
+    if (!deepLinkId) return;
+    if (tasks.length === 0) return;
+    const found = tasks.find((t) => t.id === deepLinkId);
+    if (found) {
+      setSelected(found);
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-calendar-event="${deepLinkId}"]`);
+        if (el && typeof (el as any).scrollIntoView === "function") {
+          (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      });
+    }
+  }, [deepLinkId, tasks]);
 
   const fetchTasks = useCallback(async () => {
     if (!tenantId) return;

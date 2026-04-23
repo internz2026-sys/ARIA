@@ -1711,9 +1711,10 @@ async def _emit_scheduled_task_created(tenant_id: str, task: dict | None) -> Non
             tenant_id, "scheduled",
             f"Scheduled: {task.get('title', 'Task')}",
             body=f"Set for {when}",
-            href="/calendar",
             category="status",
             priority="normal",
+            resource_type="scheduled_task",
+            resource_id=str(task.get("id") or ""),
         )
     except Exception:
         pass
@@ -2607,12 +2608,43 @@ async def _notify(
     href: str = "",
     category: str = "inbox",
     priority: str = "normal",
+    resource_type: str = "",
+    resource_id: str = "",
 ) -> dict | None:
-    """Persist a notification and emit it via Socket.IO."""
+    """Persist a notification and emit it via Socket.IO.
+
+    `resource_type` + `resource_id` are the universal deep-link
+    handles the frontend's getRouteForItem() uses to route the user
+    straight to the specific asset referenced by the alert.
+    `href` stays supported as an explicit override for pre-existing
+    call sites — when `resource_type` + `resource_id` are supplied
+    and `href` is empty, we auto-derive a clean /<section>?id=<id>
+    URL so callers don't have to string-build by hand.
+
+    Stored in `metadata` JSONB (graceful when the table doesn't have
+    dedicated columns yet) AND top-level so both old and new shape
+    consumers can read it.
+    """
     try:
         clean_body = _clean_notification_body(body)
         sb = _get_supabase()
-        row = {
+
+        # Auto-derive href from resource_type/id when the caller
+        # didn't pass one explicitly. Mirrors the same mapping the
+        # frontend uses; keeps the two in sync so bell clicks always
+        # match the canonical path.
+        if not href and resource_type and resource_id:
+            section = _RESOURCE_TYPE_TO_PATH.get(resource_type, "")
+            if section:
+                href = f"{section}?id={resource_id}"
+
+        metadata: dict = {}
+        if resource_type:
+            metadata["resource_type"] = resource_type
+        if resource_id:
+            metadata["resource_id"] = resource_id
+
+        row: dict = {
             "tenant_id": tenant_id,
             "type": type,
             "category": category,
@@ -2623,13 +2655,67 @@ async def _notify(
             "is_read": False,
             "is_seen": False,
         }
-        result = sb.table("notifications").insert(row).execute()
+        if metadata:
+            row["metadata"] = metadata
+        try:
+            result = sb.table("notifications").insert(row).execute()
+        except Exception as e_metadata:
+            # If the notifications table doesn't have a `metadata`
+            # column in this tenant's schema, retry without it so the
+            # alert still lands. metadata is additive, not required.
+            logger.debug("notifications insert with metadata failed, retrying bare: %s", e_metadata)
+            row.pop("metadata", None)
+            result = sb.table("notifications").insert(row).execute()
         saved = result.data[0] if result.data else row
+        # Always echo metadata on the Socket.IO payload so the
+        # frontend can deep-link even if the table didn't persist it.
+        if metadata and "metadata" not in saved:
+            saved["metadata"] = metadata
+        if resource_type and "resource_type" not in saved:
+            saved["resource_type"] = resource_type
+        if resource_id and "resource_id" not in saved:
+            saved["resource_id"] = resource_id
         await sio.emit("notification", saved, room=tenant_id)
         return saved
     except Exception as e:
         logger.warning("Failed to save notification: %s", e)
         return None
+
+
+# Backend copy of the frontend's RESOURCE_TYPE_PATH. Keep these two in
+# sync — any new resource_type added here should also be added to
+# frontend/lib/notification-routing.ts so the router knows where to
+# send the user when the notification arrives.
+_RESOURCE_TYPE_TO_PATH: dict[str, str] = {
+    "inbox_item": "/inbox",
+    "email_draft": "/inbox",
+    "email_sequence": "/inbox",
+    "social_post": "/inbox",
+    "blog_post": "/inbox",
+    "article": "/inbox",
+    "landing_page": "/inbox",
+    "ad_campaign": "/inbox",
+    "image": "/inbox",
+    "media": "/inbox",
+    "project": "/projects",
+    "task": "/projects",
+    "crm_contact": "/crm",
+    "contact": "/crm",
+    "crm_company": "/crm",
+    "company": "/crm",
+    "crm_deal": "/crm",
+    "deal": "/crm",
+    "email_thread": "/conversations",
+    "conversation": "/conversations",
+    "whatsapp_thread": "/conversations",
+    "scheduled_task": "/calendar",
+    "schedule": "/calendar",
+    "campaign": "/campaigns",
+    "agent": "/agents",
+    "agent_log": "/agents",
+    "integration": "/settings",
+    "system": "/settings",
+}
 
 
 async def _emit_sync_events(tenant_id: str, sync_result: dict):
@@ -4110,15 +4196,16 @@ async def _run_agent_to_inbox(
                 "priority": priority,
             }, room=tenant_id)
             n_type = "approval_needed" if item_status == "draft_pending_approval" else "inbox_new_item"
-            # Deep-link the notification directly to this inbox row so
-            # clicking the bell takes the user to exactly what the
-            # notification is about, not just the generic inbox list.
+            # Deep-link the notification directly to this inbox row.
+            # resource_type + resource_id is the universal shape; href
+            # is auto-derived in _notify when absent.
             await _notify(
                 tenant_id, n_type, title,
                 body=content[:200] if content else "",
-                href=f"/inbox?id={placeholder_id}",
                 category="inbox",
                 priority=priority,
+                resource_type="inbox_item",
+                resource_id=placeholder_id or "",
             )
 
         # Mark task as done and notify frontend in real-time
@@ -4901,9 +4988,10 @@ async def _dispatch_paperclip_and_watch_to_inbox(
             await _notify(
                 tenant_id, "inbox_new_item", title,
                 body=output[:200],
-                href=f"/inbox?id={placeholder_id}",
                 category="inbox",
                 priority=priority,
+                resource_type="inbox_item",
+                resource_id=placeholder_id or "",
             )
         except Exception:
             pass

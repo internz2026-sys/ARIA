@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { crm } from "@/lib/api";
 import {
   CrmContact, CrmCompany, CrmDeal,
@@ -138,6 +139,36 @@ export default function CRMPage() {
     return { key, dir: "asc" };
   }
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
+
+  // Deep-link support — a notification click that targets a CRM
+  // resource (contact / company / deal) lands here with ?id=<uuid>
+  // and optional &tab=<contacts|companies|deals>. Highlight the row
+  // briefly and auto-switch to the right tab so the user sees the
+  // item without manual searching.
+  const searchParams = useSearchParams();
+  const deepLinkId = searchParams?.get("id") || "";
+  const deepLinkTab = searchParams?.get("tab") as Tab | null;
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (deepLinkTab && deepLinkTab !== tab) setTab(deepLinkTab);
+  }, [deepLinkTab]);
+
+  useEffect(() => {
+    if (!deepLinkId) return;
+    setHighlightedId(deepLinkId);
+    const scrollTimer = requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-crm-row="${deepLinkId}"]`);
+      if (el && typeof (el as any).scrollIntoView === "function") {
+        (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+    const t = setTimeout(() => setHighlightedId(null), 1800);
+    return () => {
+      cancelAnimationFrame(scrollTimer);
+      clearTimeout(t);
+    };
+  }, [deepLinkId]);
 
   // ─── Contacts state ───
   const [contacts, setContacts] = useState<CrmContact[]>([]);
@@ -462,7 +493,15 @@ export default function CRMPage() {
                 <tbody>
                   {sortRows(contacts, contactSort).slice((contactPage - 1) * CRM_PAGE_SIZE, contactPage * CRM_PAGE_SIZE).map(c => {
                     return (
-                      <tr key={c.id} className="border-b border-[#F0EFEC] hover:bg-[#F8F8F6] transition-colors">
+                      <tr
+                        key={c.id}
+                        data-crm-row={c.id}
+                        className={`border-b border-[#F0EFEC] transition-colors ${
+                          highlightedId === c.id
+                            ? "bg-[#EEEDFE] ring-2 ring-inset ring-[#534AB7]/40 animate-pulse"
+                            : "hover:bg-[#F8F8F6]"
+                        }`}
+                      >
                         <td className="px-4 py-3 font-medium text-[#2C2C2A]">{c.name}</td>
                         <td className="px-4 py-3 text-[#5F5E5A]">{c.email || "—"}</td>
                         <td className="px-4 py-3 text-[#5F5E5A]">{c.phone || "—"}</td>
@@ -520,7 +559,15 @@ export default function CRMPage() {
                 </thead>
                 <tbody>
                   {sortRows(companies, companySort).slice((companyPage - 1) * CRM_PAGE_SIZE, companyPage * CRM_PAGE_SIZE).map(c => (
-                    <tr key={c.id} className="border-b border-[#F0EFEC] hover:bg-[#F8F8F6] transition-colors">
+                    <tr
+                      key={c.id}
+                      data-crm-row={c.id}
+                      className={`border-b border-[#F0EFEC] transition-colors ${
+                        highlightedId === c.id
+                          ? "bg-[#EEEDFE] ring-2 ring-inset ring-[#534AB7]/40 animate-pulse"
+                          : "hover:bg-[#F8F8F6]"
+                      }`}
+                    >
                       <td className="px-4 py-3 font-medium text-[#2C2C2A]">{c.name}</td>
                       <td className="px-4 py-3 text-[#534AB7]">{c.domain || "—"}</td>
                       <td className="px-4 py-3 text-[#5F5E5A]">{c.industry || "—"}</td>
