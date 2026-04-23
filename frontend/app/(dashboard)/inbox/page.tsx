@@ -274,6 +274,12 @@ export default function InboxPage() {
   const [copied, setCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  // Delete Mode: checkboxes are hidden by default so general browsing
+  // stays clutter-free. Clicking the header "Delete" button toggles
+  // this on, revealing the checkbox column + Select All row + bulk
+  // action bar. Exits automatically after a successful bulk action,
+  // on Cancel, or on tab change.
+  const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [page, setPage] = useState(initialUrlState.page);
   const [totalPages, setTotalPages] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
@@ -1748,6 +1754,26 @@ export default function InboxPage() {
           />
         ) : (
           <div className="prose prose-sm max-w-none text-[#2C2C2A]">
+            {/* Attached-media preview — renders above the text when the
+                row has a resolvable image URL (metadata.image_url,
+                email_draft.image_urls[0], or an inline URL in the
+                content). Gives the user a visual confirmation that
+                the deliverable includes the image the agent was
+                supposed to attach, without having to parse the text. */}
+            {(() => {
+              const thumb = getInboxThumbnail(item);
+              if (!thumb) return null;
+              return (
+                <div className="mb-4 rounded-xl overflow-hidden border border-[#E0DED8] bg-[#F8F8F6]">
+                  <img
+                    src={thumb}
+                    alt=""
+                    className="w-full h-auto object-cover max-h-[360px]"
+                    loading="lazy"
+                  />
+                </div>
+              );
+            })()}
             {looksLikeHtml(item.content)
               ? <div className="whitespace-pre-wrap">{stripHtml(item.content)}</div>
               : item.content.includes("## ") || item.content.includes("**")
@@ -1773,7 +1799,7 @@ export default function InboxPage() {
         {STATUS_TABS.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => { setActiveTab(tab.key); setSelected(null); setCheckedIds(new Set()); setPage(1); }}
+            onClick={() => { setActiveTab(tab.key); setSelected(null); setCheckedIds(new Set()); setPage(1); setIsDeleteMode(false); }}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
               activeTab === tab.key
                 ? "bg-[#EEEDFE] text-[#534AB7]"
@@ -1824,42 +1850,66 @@ export default function InboxPage() {
               detail pane gets full screen. On desktop (md+) both panes are
               visible side-by-side as before. */}
           <div className={`${mobileShowDetail ? "hidden" : "flex"} md:flex w-full md:w-[380px] shrink-0 flex-col gap-2`}>
-            {/* Bulk action toolbar */}
-            <div className="flex items-center gap-2 px-1">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={filteredItems.length > 0 && checkedIds.size === filteredItems.length}
-                  onChange={toggleAllChecked}
-                  className="w-4 h-4 rounded border-[#C5C3BC] text-[#534AB7] focus:ring-[#534AB7] cursor-pointer"
-                />
-                <span className="text-xs text-[#5F5E5A]">
-                  {checkedIds.size > 0 ? `${checkedIds.size} selected` : "Select all"}
-                </span>
-              </label>
-              {checkedIds.size > 0 && (
-                <div className="flex items-center gap-1.5 ml-auto">
-                  <button
-                    onClick={handleBulkComplete}
-                    disabled={actionLoading === "bulk-complete"}
-                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors disabled:opacity-60"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                    </svg>
-                    {actionLoading === "bulk-complete" ? "Updating..." : "Mark completed"}
-                  </button>
-                  <button
-                    onClick={handleBulkDelete}
-                    disabled={actionLoading === "bulk-delete"}
-                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors disabled:opacity-60"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                    </svg>
-                    {actionLoading === "bulk-delete" ? "Deleting..." : "Delete"}
-                  </button>
-                </div>
+            {/* Delete Mode toggle + bulk action toolbar.
+                Default (View Mode): just a single "Delete" button on the
+                right, nothing else. Clicking it flips to Delete Mode,
+                which reveals the Select All row, per-row checkboxes
+                (via isDeleteMode prop), and the bulk action buttons
+                when something is checked. Cancel / successful bulk
+                action exits the mode cleanly. */}
+            <div className="flex items-center gap-2 px-1 min-h-[34px]">
+              {!isDeleteMode ? (
+                <button
+                  onClick={() => setIsDeleteMode(true)}
+                  className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] bg-white hover:border-[#534AB7]/40 hover:text-[#534AB7] hover:bg-[#FAFAFF] transition-colors"
+                  aria-label="Enter delete mode"
+                  title="Select items to bulk-cancel"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-3-3v6m-7.5 0a7.5 7.5 0 1015 0 7.5 7.5 0 00-15 0z M14.74 9l-.346 9m-4.788 0L9.26 9" />
+                  </svg>
+                  Delete
+                </button>
+              ) : (
+                <>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filteredItems.length > 0 && checkedIds.size === filteredItems.length}
+                      onChange={toggleAllChecked}
+                      className="w-4 h-4 rounded border-[#C5C3BC] text-[#534AB7] focus:ring-[#534AB7] cursor-pointer"
+                    />
+                    <span className="text-xs text-[#5F5E5A]">
+                      {checkedIds.size > 0 ? `${checkedIds.size} selected` : "Select all"}
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-1.5 ml-auto">
+                    {checkedIds.size > 0 && (
+                      <button
+                        onClick={async () => {
+                          await handleBulkDelete();
+                          setIsDeleteMode(false);
+                        }}
+                        disabled={actionLoading === "bulk-delete"}
+                        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors disabled:opacity-60"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                        </svg>
+                        {actionLoading === "bulk-delete" ? "Moving..." : `Move to Cancelled (${checkedIds.size})`}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setIsDeleteMode(false);
+                        setCheckedIds(new Set());
+                      }}
+                      className="px-2.5 py-1.5 text-xs font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
               )}
             </div>
 
@@ -1888,7 +1938,9 @@ export default function InboxPage() {
                     type="checkbox"
                     checked={isChecked}
                     onChange={(e) => { e.stopPropagation(); toggleCheck(item.id); }}
-                    className="w-4 h-4 mt-0.5 rounded border-[#C5C3BC] text-[#534AB7] focus:ring-[#534AB7] cursor-pointer shrink-0"
+                    className={`mt-0.5 rounded border-[#C5C3BC] text-[#534AB7] focus:ring-[#534AB7] cursor-pointer shrink-0 transition-all duration-200 ${
+                      isDeleteMode ? "w-4 h-4 opacity-100" : "w-0 h-0 opacity-0 overflow-hidden pointer-events-none"
+                    }`}
                   />
                   <button
                     onClick={() => { setSelected(item); setMobileShowDetail(true); }}
