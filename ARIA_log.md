@@ -2,6 +2,113 @@
 
 ---
 
+## 2026-04-23/24 — Multi-agent asset recall (A–H) + CEO/UX hardening
+
+Two consecutive sessions. First session (2026-04-17 to 2026-04-22): CEO persona + mobile polish + real-time Calendar sync + create-and-schedule workflow. Second session (2026-04-23/24): full 8-layer multi-agent asset recall stack (A–H) so sub-agents can always find the assets their teammates produced, regardless of time gap, wording, or session boundary.
+
+### Commits landed this window
+
+- `ce3f990` — Notification bell "Mark all read" button persistence
+- `8c34380` / `f4980dc` — CEO chat single + bulk session delete
+- `0cfc6d5` / `483c164` — Mobile polish: `MobileBottomNav`, draggable clamp, sticky chat input, modal shrink
+- `60521d4` — CEO persona + latency hardening (voice rules, 3x retry on empty reads, Recent Activity block)
+- `8a09c0f` / `f587e4e` — Deep-search: `read_inbox` `search` param, `_normalize_agent_slug`, auto-resolve single-candidate
+- `bfc31b5` — `schedule_pending_draft` + `_watch_and_fire_pending_schedule` (create-and-schedule in one turn, all 5 sub-agents)
+- `e38280e` — Calendar real-time sync (`_emit_scheduled_task_created` + frontend socket listeners)
+- `49e2d5b` — `schedule_task` `ConfirmLevel.REQUIRED → NONE` + hard-rule prompt forcing the action block on schedule requests
+- `05bc4f1` — Sign-out confirmation modal on sidebar + settings
+- `ffb70a1` — Virtual Office Recent Activity panel (new `/api/office/agents/{tenant_id}/{agent_id}/activity` endpoint + frontend rendering + Run Agent / View Logs wiring)
+- `e2c26e8` — cap Recent Activity at 5
+- `9a212be` — `paperclip_completed` log writes in poller + `create_inbox_item` so the activity panel shows "done" rows not just "dispatched" ones
+- `01d9d2b` — CEO media→content_writer auto-chain guard: drops `chain[1:]` when user ask is image-only
+- `1054e81` — Pipeline image context propagation: `media → X` chains auto-append image hint to downstream task
+- `b7a2b7c` — Multi-agent asset recall A–H (this session's main ship)
+
+### Multi-agent asset recall — A through H (commit `b7a2b7c`)
+
+The core problem: before this batch, every agent could only see teammate outputs for 30 minutes (images) / 2-3 hours (emails, blogs). "Write a post using the banner from earlier" worked if you came back within 30 minutes, silently fell through to cold generation otherwise. Eight coordinated fixes across 8 files + 1 new service (`backend/services/content_index.py`, ~350 lines). Every layer is independently useful; together they cover the full matrix.
+
+#### A — Widened lookback windows (smallest change, biggest UX win)
+
+| Agent | Asset | Before | After |
+|---|---|---|---|
+| email_marketer | media image | 30 min | 360 min (6h) |
+| email_marketer | blog post | 180 min (3h) | 1440 min (24h) |
+| social_manager | media image | 30 min | 360 min |
+| social_manager | blog post | 180 min | 1440 min |
+| social_manager | email hook | 120 min | 720 min (12h) |
+| content_writer | media image | 30 min | 360 min |
+| ad_strategist | media image | 60 min | 720 min (12h — ads tolerate staler) |
+
+Lookback is no longer the primary strategy — just a fast path before the B/H tier fires.
+
+#### B — `find_referenced_asset` + three helpers in [backend/services/asset_lookup.py](backend/services/asset_lookup.py)
+
+- `task_has_reference(text)` — regex detects "the banner / my latest / that one / earlier / from yesterday" phrases that point at prior work
+- `find_referenced_asset(tenant_id, text_hint, agent, types, limit, within_days=30)` — two-tier: semantic search via Qdrant first, ILIKE fallback on title+content with keyword extraction
+- `extract_image_url_from_row(row)` — walks `metadata.image_url`, `email_draft.image_urls[0]`, markdown/raw URL in `content` (matches frontend `getInboxThumbnail`)
+- `get_inbox_row_by_id(tenant_id, id)` — tenant-scoped single-row fetch for the D resolver
+
+#### C + E — Agent-side autonomous fallback
+
+Each sub-agent (`email_marketer`, `social_manager`, `content_writer`, `ad_strategist`) now has unified 3-tier image acquisition:
+
+1. Explicit inline URL in task text
+2. `get_latest_image_url` with the widened window
+3. If `task_has_reference` AND 1-2 missed → `find_referenced_asset` (agent="media", types=["image"])
+
+OR'd with the existing `_IMAGE_INTENT_RE` so anaphoric phrases ("use it", "from earlier") without literal image nouns still trigger asset search.
+
+#### D — `source_inbox_item_ids` resolver in `_execute_delegation`
+
+CEO hands specific inbox rows to a sub-agent:
+```json
+{"agent": "social_manager", "task": "...", "source_inbox_item_ids": ["abc", "def"]}
+```
+Backend fetches each row, extracts title/type/agent/image URL/email subject/content excerpt, appends `[REFERENCED ASSET]` blocks to `task_desc` before dispatch. Caps at 5 ids. Works for both Paperclip and local dispatch (resolution in task text, survives subprocess boundary).
+
+#### F — CEO prompt teaches the new triggers
+
+New "Referencing prior work (source_inbox_item_ids)" section with two worked examples (single id from Recent Activity; multi-source via two `read_inbox` searches).
+
+#### G + H — [backend/services/content_index.py](backend/services/content_index.py) — new module bundles both
+
+Both layers share a single module because they run at the exact same moment (inbox row finalization) and extract the exact same fields.
+
+**G (mirror)**: every finalized inbox row writes to `content_library_entries` with `metadata = {inbox_item_id, agent, image_urls, keywords}`. Keyword extraction: alphabetic len≥4, stopword-filtered, first-seen order, cap 12. Idempotent via `metadata.inbox_item_id` pre-check — no migration, no unique constraint.
+
+**H (semantic)**: every indexed row also embeds into Qdrant collection `aria_content` (separate from `prompt_cache`). Reuses existing `all-MiniLM-L6-v2` / 384-dim from `semantic_cache.py` — no new model download. Stable point id via `uuid5(NAMESPACE_URL, f"{tenant_id}:{item_id}")`. `semantic_find_assets(tenant_id, query, agent, types, limit, score_threshold=0.35)` returns inbox_items rows sorted by cosine similarity. Conservative 0.35 threshold so "the professional-looking banner" matches but random unrelated rows don't.
+
+#### Wire-in — three lifecycle termination paths
+
+1. `paperclip_office_sync.poll_completed_issues` — safety-net poller
+2. `server.create_inbox_item` — skill-curl path
+3. `server._dispatch_paperclip_and_watch_to_inbox` — watcher finalizing placeholder
+
+Idempotent if two race.
+
+#### Explicitly NOT shipped
+
+- No DB migration (table + columns already exist)
+- No frontend changes (all internal)
+- No breaking changes (every new path is best-effort; ILIKE + widened lookbacks cover Qdrant-down case)
+
+---
+
+## 2026-04-17 — CEO persona hardening + mobile polish + real-time Calendar sync
+
+Full details in the April 2026 memory file. Highlights:
+
+- `60521d4` — CEO chat latency: unconditional 3x retry (0.5s) on empty `read_inbox`/`read_contacts`/`read_deals`/`read_activities`/`read_companies`. Absorbs Supabase read-after-write lag. System prompt gains Voice/Language section banning jargon ("tenant", "lookup", "null", "Supabase", "records", "the database"). Recent Activity block (last 5 inbox items, 30-min window, with IDs) injected each turn so the CEO can reference "the draft we just created" without a round-trip.
+
+- `bfc31b5` — `schedule_pending_draft` action + `_watch_and_fire_pending_schedule` coroutine (3s × 120s poll). Stitches draft → `scheduled_task` the moment a sub-agent's inbox row lands. Applies to all 5 sub-agents via `_task_type_for_agent`. Prompt gains "Create-AND-schedule in ONE turn" section.
+
+- `e38280e` — Calendar real-time sync: `_emit_scheduled_task_created` helper fires Socket.IO event + writes notification, wired into POST `/api/schedule`, CEO `schedule_task` action, and pending-schedule watcher. Calendar page subscribes to `scheduled_task_created` / `scheduled_task_updated` / `scheduled_task_executed` / `scheduled_pending_fired`.
+
+- `0cfc6d5` / `483c164` — mobile polish: new `MobileBottomNav.tsx` (4 tabs, `lg:hidden`, badges, `env(safe-area-inset-bottom)`), `use-draggable.ts` viewport clamp + 96px bottom safe-area on `<768px`, sticky chat input with `h-[calc(100dvh-120px)]`, fixed-width dropdowns → responsive `w-[calc(100vw-2rem)] max-w-[Npx]`.
+
+---
+
 ## 2026-04-11 — Massive Paperclip integration overhaul (CEO chat speed, sub-agent dispatch, inbox plumbing, audit sweep)
 
 A full-day debugging arc that started with "CEO chat is slow" and ended with a hardened end-to-end Paperclip + watcher + inbox pipeline. ~15 commits, the chat reply path is now ~3x faster, sub-agent delegations actually land in the inbox with structured email_draft fields, and ~26 latent failure modes from a code audit are closed.
