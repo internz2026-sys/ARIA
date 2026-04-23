@@ -4652,6 +4652,19 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     if body.agent == "media" and item:
         await _cleanup_media_placeholder(tenant_id, item.get("id"))
 
+    # Completion log — so the Virtual Office Recent Activity panel shows
+    # "task done" after the agent's earlier paperclip_dispatch row. Fire
+    # for skill-curl writes that land here (path 1 in the docstring).
+    if body.agent and item:
+        try:
+            from backend.orchestrator import log_agent_action as _log_agent_action
+            await _log_agent_action(
+                tenant_id, body.agent, "paperclip_completed",
+                {"task": (item.get("title") or "")[:200], "inbox_item_id": item.get("id")},
+            )
+        except Exception:
+            pass
+
     return {"item": item}
 
 

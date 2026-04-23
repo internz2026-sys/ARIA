@@ -27,7 +27,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from backend.orchestrator import _urllib_request, get_company_id
+from backend.orchestrator import _urllib_request, get_company_id, log_agent_action
 from backend.services.paperclip_chat import normalize_comments, pick_agent_output
 from backend.services.supabase import get_db
 
@@ -374,6 +374,17 @@ async def poll_completed_issues() -> int:
                 }
                 try:
                     await asyncio.to_thread(lambda: sb.table("notifications").insert(notif_row).execute())
+                except Exception:
+                    pass
+                # Close the lifecycle with a completion log so the Virtual
+                # Office Recent Activity panel shows "task done" next to
+                # the earlier paperclip_dispatch row. Without this, every
+                # agent looks perpetually "starting work, never finishing".
+                try:
+                    await log_agent_action(
+                        tenant_id, agent_name, "paperclip_completed",
+                        {"task": title[:200], "paperclip_issue_id": issue_id, "chars": len(output)},
+                    )
                 except Exception:
                     pass
             _add_processed(issue_id)
