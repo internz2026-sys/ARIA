@@ -2957,7 +2957,32 @@ async def generate_media_image(tenant_id: str, payload: dict = Body(default={}))
     if not prompt:
         return {"status": "failed", "error": "prompt is required"}
 
-    result = await media_agent.run(tenant_id, {"prompt": prompt})
+    # Recover chat_session_id from the watcher's placeholder (most recent
+    # "processing" media row for this tenant). The Paperclip Media
+    # Designer never learns the session_id — it's ARIA-internal — so we
+    # backfill it here so the canonical row is session-scoped.
+    inherited_session_id: str | None = None
+    try:
+        sb = _get_supabase()
+        ph = (
+            sb.table("inbox_items")
+            .select("chat_session_id")
+            .eq("tenant_id", tenant_id)
+            .eq("agent", "media")
+            .eq("status", "processing")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if ph.data:
+            inherited_session_id = ph.data[0].get("chat_session_id")
+    except Exception:
+        inherited_session_id = None
+
+    result = await media_agent.run(tenant_id, {
+        "prompt": prompt,
+        "chat_session_id": inherited_session_id,
+    })
     inbox_row = (result or {}).get("inbox_item") if isinstance(result, dict) else None
 
     # Kill the watcher's "Media is working on..." placeholder so the user
@@ -3870,16 +3895,41 @@ async def _execute_delegation(
     # asset_lookup call, which it sometimes skipped (drift). Now the
     # URL is in the prompt and the instruction tells the agent exactly
     # what to do with it per platform.
-    if d.get("_pipeline_has_media_image") and agent_id in (
-        "email_marketer", "social_manager", "content_writer", "ad_strategist"
-    ):
+    #
+    # Auto-flag: if the CEO did NOT explicitly tag this delegation as a
+    # pipeline follow-up but the current session has a recent media
+    # image, treat it AS IF the flag were set. Covers multi-turn flows
+    # (user makes an image in turn 1, asks for email/post in turn 2)
+    # where the CEO's chain logic doesn't fire because there's only one
+    # delegation in this turn. Session-scoped so parallel chats don't
+    # leak each other's assets.
+    is_downstream_agent = agent_id in (
+        "email_marketer", "social_manager", "content_writer", "ad_strategist",
+    )
+    has_media_flag = bool(d.get("_pipeline_has_media_image"))
+    if is_downstream_agent and not has_media_flag and tenant_id and session_id:
+        try:
+            from backend.services.asset_lookup import get_latest_image_url as _peek_img
+            if _peek_img(tenant_id, within_minutes=360, session_id=session_id):
+                has_media_flag = True
+                logging.getLogger("aria.ceo_chat.dispatch").info(
+                    "[pipeline-image] auto-flagged %s: session %s has a recent media image",
+                    agent_id, session_id,
+                )
+        except Exception:
+            pass
+
+    if has_media_flag and is_downstream_agent:
         resolved_image_url: str | None = None
         try:
             from backend.services.asset_lookup import get_latest_image_url
-            # Chain delays are typically 90s+ so the media step has
-            # already run by now. 30-min window catches the freshest
-            # generation without reaching back to old assets.
-            resolved_image_url = get_latest_image_url(tenant_id, within_minutes=30)
+            # 360-min window matches the sub-agent self-lookup helpers
+            # (email/content/social all use 6h) so the pipeline-level
+            # fetch doesn't cliff sooner than the agent's own fallback.
+            # Session-scoped first to avoid cross-chat bleed.
+            resolved_image_url = get_latest_image_url(
+                tenant_id, within_minutes=360, session_id=session_id,
+            )
         except Exception as e:
             logging.getLogger("aria.ceo_chat.dispatch").debug(
                 "[pipeline-image] lookup failed for %s: %s", agent_id, e,
@@ -4408,13 +4458,34 @@ async def _media_safety_net(
         return
 
     # Paperclip path stalled. Run the local media_agent as a fallback.
+    # Pull chat_session_id off the placeholder row so the fallback's
+    # inbox row stays session-scoped (same as the Paperclip-path row
+    # would have been). Without this, the safety-net path loses session
+    # identity and downstream sub-agents in the same chat can't scope
+    # their image lookup.
     _log.warning(
         "[media-safety] Paperclip Media Designer did not produce an image after 45s — "
         "falling back to local media_agent.run() for %s", placeholder_id,
     )
+    placeholder_session_id: str | None = None
+    try:
+        ph_row = await asyncio.to_thread(
+            lambda: sb.table("inbox_items")
+            .select("chat_session_id")
+            .eq("id", placeholder_id)
+            .limit(1)
+            .execute()
+        )
+        if ph_row.data:
+            placeholder_session_id = ph_row.data[0].get("chat_session_id")
+    except Exception:
+        placeholder_session_id = None
     try:
         from backend.agents import media_agent
-        result = await media_agent.run(tenant_id, {"prompt": task_desc})
+        result = await media_agent.run(tenant_id, {
+            "prompt": task_desc,
+            "chat_session_id": placeholder_session_id,
+        })
     except Exception as e:
         _log.error("[media-safety] media_agent.run failed: %s", e)
         result = None

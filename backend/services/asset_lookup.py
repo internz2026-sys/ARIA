@@ -63,20 +63,29 @@ def get_recent_assets(
     statuses: Iterable[str] | None = None,
     within_minutes: int = 60,
     limit: int = 5,
+    session_id: str | None = None,
 ) -> list[dict]:
     """Return recent inbox_items rows for the tenant, newest-first.
 
     All filters are optional. A common pattern is to scope by `agent` +
     `type` — e.g. `agents=["media"], types=["image"]` to find the
     latest Media Agent image.
+
+    When `session_id` is provided, the query is first tried scoped to
+    that chat session. If no rows match, falls back to the tenant-wide
+    time-windowed query so cross-session recall still works. This keeps
+    two parallel chats on the same tenant from cross-contaminating
+    ("use yesterday's banner from the other conversation") while still
+    matching the old behavior when session scoping yields nothing.
     """
     if not tenant_id:
         return []
-    try:
+
+    def _base_query():
         q = (
             _db()
             .table("inbox_items")
-            .select("id, agent, type, title, content, metadata, email_draft, status, created_at")
+            .select("id, agent, type, title, content, metadata, email_draft, status, created_at, chat_session_id")
             .eq("tenant_id", tenant_id)
             .gte("created_at", _cutoff_iso(within_minutes))
             .order("created_at", desc=True)
@@ -91,20 +100,37 @@ def get_recent_assets(
         if statuses:
             s = list(statuses)
             q = q.in_("status", s) if len(s) > 1 else q.eq("status", s[0])
-        res = q.execute()
+        return q
+
+    try:
+        if session_id:
+            scoped = _base_query().eq("chat_session_id", session_id).execute()
+            scoped_rows = list(scoped.data or [])
+            if scoped_rows:
+                return scoped_rows
+        res = _base_query().execute()
         return list(res.data or [])
     except Exception as e:
         logger.warning("[asset_lookup] recent_assets failed tenant=%s: %s", tenant_id, e)
         return []
 
 
-def get_latest_image_url(tenant_id: str, *, within_minutes: int = 30) -> str | None:
+def get_latest_image_url(
+    tenant_id: str,
+    *,
+    within_minutes: int = 30,
+    session_id: str | None = None,
+) -> str | None:
     """Latest Media Agent image URL, or None.
 
     Extracts from `metadata.image_url` first (canonical), falling back to
     parsing the `![alt](url)` markdown the media agent writes into the
     inbox body. Lookback default is 30 min — recent enough to still be
     the image the user meant, short enough to avoid cross-campaign leaks.
+
+    When `session_id` is provided, same-session matches win; if none are
+    found in-session, falls back to tenant+time scope so old-school
+    one-shot delegations keep working.
     """
     rows = get_recent_assets(
         tenant_id,
@@ -112,6 +138,7 @@ def get_latest_image_url(tenant_id: str, *, within_minutes: int = 30) -> str | N
         agents=["media"],
         within_minutes=within_minutes,
         limit=1,
+        session_id=session_id,
     )
     if not rows:
         return None

@@ -130,6 +130,11 @@ Do NOT include any explanation — just the image prompt."""
                 "context": ctx,
             },
         )
+        # Forward chat_session_id if the caller passed it in context — this
+        # lets asset_lookup scope to the same chat session instead of the
+        # full tenant history, preventing cross-session asset bleed when
+        # two parallel chats generate different images.
+        chat_sid = ctx.get("chat_session_id") or ctx.get("session_id")
         inbox_row = inbox_service.create_item(
             tenant_id=tenant_id,
             agent=self.AGENT_NAME,
@@ -137,6 +142,8 @@ Do NOT include any explanation — just the image prompt."""
             content=_render_image_inbox_body(refined_prompt, image_url, provider_used),
             type="image",
             status="ready",
+            chat_session_id=chat_sid,
+            metadata={"image_url": image_url, "source": provider_used or "pollinations"},
         )
 
         return {
