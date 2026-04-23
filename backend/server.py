@@ -2884,6 +2884,55 @@ async def virtual_office_agents(tenant_id: str):
     return {"agents": agents}
 
 
+@app.get("/api/office/agents/{tenant_id}/{agent_id}/activity")
+async def virtual_office_agent_activity(tenant_id: str, agent_id: str, limit: int = 10):
+    """Recent activity feed for a specific agent — powers the
+    AgentInfoPanel's Recent Activity list. Pulls from agent_logs
+    (every dispatched action) and recent inbox_items authored by the
+    agent, merges by timestamp, and returns the top N."""
+    sb = _get_supabase()
+    items: list[dict] = []
+    try:
+        logs = sb.table("agent_logs").select(
+            "action,status,timestamp,result"
+        ).eq("tenant_id", tenant_id).eq("agent_name", agent_id).order(
+            "timestamp", desc=True
+        ).limit(limit).execute()
+        for row in (logs.data or []):
+            result = row.get("result") or {}
+            summary = ""
+            if isinstance(result, dict):
+                summary = result.get("task") or result.get("title") or result.get("message") or ""
+            items.append({
+                "kind": "log",
+                "action": row.get("action") or "",
+                "status": row.get("status") or "",
+                "summary": str(summary)[:140],
+                "timestamp": row.get("timestamp"),
+            })
+    except Exception as e:
+        logger.debug("[office-activity] agent_logs fetch failed: %s", e)
+    try:
+        inbox = sb.table("inbox_items").select(
+            "title,status,created_at,type"
+        ).eq("tenant_id", tenant_id).eq("agent", agent_id).order(
+            "created_at", desc=True
+        ).limit(limit).execute()
+        for row in (inbox.data or []):
+            items.append({
+                "kind": "inbox",
+                "action": row.get("type") or "draft",
+                "status": row.get("status") or "",
+                "summary": (row.get("title") or "")[:140],
+                "timestamp": row.get("created_at"),
+            })
+    except Exception as e:
+        logger.debug("[office-activity] inbox_items fetch failed: %s", e)
+
+    items.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
+    return {"agent_id": agent_id, "items": items[:limit]}
+
+
 # ─── Dashboard API ───
 @app.get("/api/dashboard/{tenant_id}/config")
 async def dashboard_config(tenant_id: str):

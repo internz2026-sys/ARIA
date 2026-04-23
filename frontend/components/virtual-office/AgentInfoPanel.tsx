@@ -1,8 +1,34 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { API_URL, authFetch } from "@/lib/api";
 import type { OfficeAgent, AgentStatus } from "@/lib/office-config";
+
+interface ActivityItem {
+  kind: "log" | "inbox";
+  action: string;
+  status: string;
+  summary: string;
+  timestamp: string | null;
+}
+
+function formatRelative(iso: string | undefined | null): string {
+  if (!iso) return "—";
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return "—";
+  const diff = Math.max(0, Date.now() - ts);
+  const s = Math.floor(diff / 1000);
+  if (s < 45) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
 
 interface AgentInfoPanelProps {
   agent: OfficeAgent | null;
@@ -79,6 +105,10 @@ function CloseIcon() {
 
 export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [running, setRunning] = useState(false);
 
   // Close on Escape key
   useEffect(() => {
@@ -90,6 +120,60 @@ export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) 
       return () => document.removeEventListener("keydown", handleKeyDown);
     }
   }, [agent, onClose]);
+
+  // Fetch recent activity for this agent + refresh every 8s while open.
+  // Refresh keeps the panel in sync with whatever the agent is doing
+  // right now (walking sprite + currentTask are already live via
+  // socket; the log/inbox writes are polled).
+  useEffect(() => {
+    if (!agent) return;
+    const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") : null;
+    if (!tenantId) return;
+    let cancelled = false;
+    const fetchActivity = async () => {
+      setActivityLoading(true);
+      try {
+        const res = await authFetch(
+          `${API_URL}/api/office/agents/${tenantId}/${encodeURIComponent(agent.id)}/activity?limit=8`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setActivity(Array.isArray(data.items) ? data.items : []);
+      } catch {
+        // swallow — panel stays on last known state
+      } finally {
+        if (!cancelled) setActivityLoading(false);
+      }
+    };
+    fetchActivity();
+    const id = setInterval(fetchActivity, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [agent?.id]);
+
+  const handleRunAgent = async () => {
+    if (!agent) return;
+    const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") : null;
+    if (!tenantId) return;
+    setRunning(true);
+    try {
+      await authFetch(`${API_URL}/api/agents/${tenantId}/${encodeURIComponent(agent.id)}/run`, {
+        method: "POST",
+      });
+    } catch {
+      // Status updates arrive via socket; nothing more to do here
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleViewLogs = () => {
+    if (!agent) return;
+    router.push(`/agents?focus=${encodeURIComponent(agent.id)}`);
+    onClose();
+  };
 
   const isOpen = agent !== null;
   const modelInfo = agent?.model ? MODEL_DISPLAY[agent.model] : null;
@@ -239,7 +323,7 @@ export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) 
               {/* Last updated */}
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-gray-500">Last Updated</span>
-                <span className="text-sm text-gray-700">{agent.lastUpdated}</span>
+                <span className="text-sm text-gray-700">{formatRelative(agent.lastUpdated)}</span>
               </div>
             </div>
 
@@ -249,9 +333,42 @@ export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) 
             {/* Recent Activity */}
             <div className="flex flex-col gap-3 px-5 py-5">
               <h3 className="text-sm font-semibold text-gray-900">Recent Activity</h3>
-              <div className="flex items-center justify-center py-6 text-sm text-gray-400 bg-gray-50 rounded-lg">
-                No recent activity
-              </div>
+              {activity.length === 0 ? (
+                <div className="flex items-center justify-center py-6 text-sm text-gray-400 bg-gray-50 rounded-lg">
+                  {activityLoading ? "Loading…" : "No recent activity"}
+                </div>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {activity.map((it, idx) => (
+                    <li
+                      key={`${it.kind}-${it.timestamp}-${idx}`}
+                      className="flex items-start gap-2 px-3 py-2 rounded-lg bg-gray-50 border border-gray-100"
+                    >
+                      <span
+                        className={cn(
+                          "mt-1 inline-block w-1.5 h-1.5 rounded-full flex-shrink-0",
+                          it.status === "completed"
+                            ? "bg-[#1D9E75]"
+                            : it.status === "failed" || it.status === "error"
+                            ? "bg-red-500"
+                            : it.status === "in_progress" || it.status === "working"
+                            ? "bg-[#3B82F6]"
+                            : "bg-gray-400"
+                        )}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium text-gray-800 truncate">
+                          {it.summary || it.action || (it.kind === "inbox" ? "Draft" : "Task")}
+                        </p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">
+                          <span className="uppercase tracking-wide mr-1.5">{it.action || it.kind}</span>
+                          · {formatRelative(it.timestamp)}
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             {/* Spacer to push buttons to bottom */}
@@ -260,20 +377,22 @@ export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) 
             {/* Action buttons */}
             <div className="flex gap-3 px-5 py-5 border-t border-gray-100">
               <button
+                disabled={running || agent.isNpc}
                 className={cn(
                   "flex-1 h-10 rounded-lg text-sm font-medium transition-colors",
-                  "bg-[#534AB7] text-white hover:bg-[#534AB7]/90"
+                  "bg-[#534AB7] text-white hover:bg-[#534AB7]/90",
+                  "disabled:opacity-50 disabled:cursor-not-allowed"
                 )}
-                onClick={() => {}}
+                onClick={handleRunAgent}
               >
-                Run Agent
+                {running ? "Running…" : "Run Agent"}
               </button>
               <button
                 className={cn(
                   "flex-1 h-10 rounded-lg text-sm font-medium transition-colors",
                   "border border-gray-200 bg-white text-gray-700 hover:bg-gray-50"
                 )}
-                onClick={() => {}}
+                onClick={handleViewLogs}
               >
                 View Logs
               </button>
