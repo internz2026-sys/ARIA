@@ -79,9 +79,9 @@ _KNOWN_AGENT_IDS = {
     "ceo": "1b64e9b0-4bb3-4aca-b8ad-d1eb9a7ffa7f",
     "content_writer": "f9e9abcc-e51f-4a41-8e67-7bc8111230c5",
     "email_marketer": "da5109c3-2ab5-4a50-988e-896f078a712c",
-    "social_manager": "37f25bf9-8dfa-4943-9cf8-f6eb1e5157f7",
+    "social_manager": "1656d217-d39b-42ee-a326-4cace7ec49c5",
     "ad_strategist": "8f827b80-b441-4065-bc50-fe3b470790af",
-    "media": "25c7a6f4-34ff-4846-b149-502be12b836d",
+    "media": "70977341-25bd-4c3a-9b41-54d5ee0d36a9",
 }
 
 
