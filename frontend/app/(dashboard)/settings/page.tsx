@@ -7,11 +7,15 @@ import { useConfirm } from "@/lib/use-confirm";
 
 const settingsTabs = ["Profile", "Integrations", "Notifications", "Billing"];
 
+// "Coming soon" list — only shows integrations that are NOT already
+// live in the Active Integrations panel above. X / Twitter and
+// LinkedIn previously appeared in both (listed as Active with a
+// Connect button AND duplicated as "Coming in v2") — confusing, so
+// they were removed from this list once the OAuth connect flows
+// shipped. Add anything still genuinely not live here.
 const futureIntegrations = [
   { name: "Mailchimp", description: "Email marketing automation", phase: "v1.5" },
   { name: "ConvertKit", description: "Creator email marketing", phase: "v1.5" },
-  { name: "X / Twitter", description: "Social media publishing", phase: "v2" },
-  { name: "LinkedIn", description: "Professional social publishing", phase: "v2" },
   { name: "Meta Ads", description: "Automated ad campaign management", phase: "v2.5" },
   { name: "Google Analytics", description: "Traffic and conversion analytics", phase: "v3" },
 ];
@@ -334,17 +338,15 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
-            <h2 className="text-base font-semibold text-[#2C2C2A] mb-4">Brand Voice</h2>
-            <p className="text-sm text-[#5F5E5A] mb-4">Select the tone ARIA uses when creating content for your brand.</p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {["Professional", "Friendly", "Direct", "Technical"].map((voice) => (
-                <button key={voice} className="py-3 px-4 rounded-lg border border-[#E0DED8] text-sm font-medium text-[#2C2C2A] hover:border-[#534AB7] hover:bg-[#EEEDFE] transition-colors">
-                  {voice}
-                </button>
-              ))}
-            </div>
-          </div>
+          {/* Brand Voice tone picker removed — it was non-functional
+              placeholder UI (no onClick, no persistence). Brand voice
+              is captured during onboarding as free-text in
+              gtm_playbook.brand_voice.tone and consumed by every
+              sub-agent via BaseAgent.business_context(). To change
+              it, use the Business Profile → Edit answers /
+              Restart onboarding buttons above. A 4-preset tone
+              picker would overwrite the user's nuanced onboarding
+              answer with a single word, which is a regression. */}
 
           <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
             <h2 className="text-base font-semibold text-[#2C2C2A] mb-2">Account</h2>
