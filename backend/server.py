@@ -4262,6 +4262,22 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                 )
             except Exception as e:
                 _logger.error("[paperclip-watch] failed to update placeholder on failure: %s", e)
+        # Close the Kanban task as failed so it doesn't sit forever in
+        # "in_progress" after a timeout or agent crash.
+        if task_id:
+            try:
+                sb = _get_supabase()
+                await asyncio.to_thread(lambda: sb.table("tasks").update({
+                    "status": "failed",
+                    "updated_at": now_iso,
+                }).eq("id", task_id).execute())
+                if tenant_id:
+                    await sio.emit("task_updated", {
+                        "id": task_id, "agent": agent_id,
+                        "status": "failed", "task": task_desc,
+                    }, room=tenant_id)
+            except Exception:
+                pass
         return
 
     # Before updating the placeholder, check whether the agent already
@@ -4348,6 +4364,73 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                 bool(social and social.get("twitter")),
                 bool(social and social.get("linkedin")),
             )
+            # Normalize the agent's markdown reply into the canonical
+            # `{"action": "adapt_content", "posts": [...]}` JSON the
+            # frontend's parseSocialPosts expects. Without this, the
+            # agent's raw reply ("## Social posts created / **Twitter:**
+            # ... / **LinkedIn:** ...") lands in the content column
+            # verbatim and the frontend falls back to rendering raw
+            # markdown instead of the platform-card UI. Uses the same
+            # _parse_posts the local social_manager_agent path uses,
+            # including its markdown fallback.
+            try:
+                from backend.agents.social_manager_agent import (
+                    _parse_posts as _sm_parse_posts,
+                )
+                normalized_posts = _sm_parse_posts(output)
+                if normalized_posts:
+                    # Attach a recent media image if one exists and the
+                    # task hinted at needing one — same logic the local
+                    # path applies after the JSON is ready.
+                    attached_img = None
+                    try:
+                        from backend.services.asset_lookup import (
+                            get_latest_image_url as _get_img,
+                            find_referenced_asset as _find_ref,
+                            extract_image_url_from_row as _extract_img,
+                            task_has_reference as _has_ref,
+                        )
+                        _task_l = (task_desc or "").lower()
+                        wants_image = (
+                            any(k in _task_l for k in (
+                                "image", "photo", "picture", "banner", "visual",
+                                "graphic", "illustration", "thumbnail",
+                                "with an image", "with a picture",
+                            ))
+                            or _has_ref(task_desc or "")
+                        )
+                        if wants_image:
+                            attached_img = _get_img(tenant_id, within_minutes=360)
+                            if not attached_img and _has_ref(task_desc or ""):
+                                for row in _find_ref(
+                                    tenant_id, text_hint=task_desc or "",
+                                    agent="media", types=["image"], limit=3,
+                                ):
+                                    u = _extract_img(row)
+                                    if u:
+                                        attached_img = u
+                                        break
+                    except Exception as _img_err:
+                        _logger.debug("[paperclip-watch] image attach skipped: %s", _img_err)
+                    if attached_img:
+                        for p in normalized_posts:
+                            p["image_url"] = attached_img
+                    # Replace the raw-markdown output with canonical JSON
+                    # so every frontend path (detail view + thumbnail
+                    # extract + content_index embed) sees the same shape.
+                    import json as _json_inner
+                    output = _json_inner.dumps({
+                        "action": "adapt_content",
+                        "posts": normalized_posts,
+                    })
+                    _logger.info(
+                        "[paperclip-watch] normalized %d social posts for issue %s (image=%s)",
+                        len(normalized_posts), paperclip_issue_id, bool(attached_img),
+                    )
+            except Exception as _norm_err:
+                _logger.debug(
+                    "[paperclip-watch] social-post normalization skipped: %s", _norm_err,
+                )
 
     inbox_status = "draft_pending_approval" if content_type == "email_sequence" else "needs_review"
 

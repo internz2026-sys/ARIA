@@ -54,6 +54,116 @@ function getInboxThumbnail(item: InboxItem): string | null {
   return raw ? raw[0] : null;
 }
 
+/** Minimal inline markdown renderer for inbox content fallbacks.
+ *  Handles: **bold**, *italic*, `code`, headings (## / ###),
+ *  [text](url) links, ![alt](url) and [alt](image-url.png) inline
+ *  images, bullet lists, paragraphs. Intentionally tiny — we don't
+ *  want a full markdown dep just for this fallback. Returns React
+ *  nodes, not an HTML string, so there's no XSS concern (React
+ *  escapes text content automatically). */
+function renderInlineMarkdown(text: string): React.ReactNode {
+  if (!text) return null;
+  const _IMG_EXT = /\.(png|jpg|jpeg|gif|webp|svg)(?:\?[^\s)]*)?$/i;
+  const lines = text.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let para: string[] = [];
+  let listItems: string[] = [];
+
+  const flushPara = () => {
+    if (!para.length) return;
+    blocks.push(
+      <p key={`p-${blocks.length}`} className="my-2 text-[#2C2C2A] leading-relaxed">
+        {renderInline(para.join(" "))}
+      </p>,
+    );
+    para = [];
+  };
+  const flushList = () => {
+    if (!listItems.length) return;
+    blocks.push(
+      <ul key={`ul-${blocks.length}`} className="list-disc pl-5 my-2 space-y-1 text-[#2C2C2A]">
+        {listItems.map((li, i) => <li key={i}>{renderInline(li)}</li>)}
+      </ul>,
+    );
+    listItems = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    // Headings
+    const h = line.match(/^(#{1,3})\s+(.*)$/);
+    if (h) {
+      flushPara(); flushList();
+      const level = h[1].length;
+      const cls = level === 1 ? "text-xl font-bold mt-4 mb-2"
+        : level === 2 ? "text-lg font-semibold mt-3 mb-2"
+        : "text-base font-semibold mt-2 mb-1";
+      blocks.push(
+        React.createElement(
+          `h${level}`,
+          { key: `h-${blocks.length}`, className: `${cls} text-[#2C2C2A]` },
+          renderInline(h[2]),
+        ),
+      );
+      continue;
+    }
+    // Bullet
+    const b = line.match(/^\s*[-*]\s+(.*)$/);
+    if (b) { flushPara(); listItems.push(b[1]); continue; }
+    flushList();
+    para.push(line);
+  }
+  flushPara();
+  flushList();
+  return <>{blocks}</>;
+
+  function renderInline(src: string): React.ReactNode {
+    // Split by all inline patterns and recursively render
+    const parts: React.ReactNode[] = [];
+    const regex = /(!\[([^\]]*)\]\(([^)]+)\))|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(`([^`]+)`)|(\*([^*]+)\*)/g;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    let key = 0;
+    while ((m = regex.exec(src)) !== null) {
+      if (m.index > last) parts.push(src.substring(last, m.index));
+      if (m[1]) {
+        // ![alt](url) — image
+        parts.push(
+          <img key={key++} src={m[3]} alt={m[2] || ""}
+            className="my-2 rounded-lg max-w-full max-h-[400px] border border-[#E0DED8]"
+            loading="lazy" />,
+        );
+      } else if (m[4]) {
+        // [text](url) — if url looks like an image, render as image; else link
+        if (_IMG_EXT.test(m[6])) {
+          parts.push(
+            <img key={key++} src={m[6]} alt={m[5] || ""}
+              className="my-2 rounded-lg max-w-full max-h-[400px] border border-[#E0DED8]"
+              loading="lazy" />,
+          );
+        } else {
+          parts.push(
+            <a key={key++} href={m[6]} target="_blank" rel="noopener noreferrer"
+              className="text-[#534AB7] hover:underline">{m[5]}</a>,
+          );
+        }
+      } else if (m[7]) {
+        parts.push(<strong key={key++} className="font-semibold">{m[8]}</strong>);
+      } else if (m[9]) {
+        parts.push(
+          <code key={key++} className="px-1.5 py-0.5 rounded bg-[#F8F8F6] border border-[#E0DED8] text-xs">{m[10]}</code>,
+        );
+      } else if (m[11]) {
+        parts.push(<em key={key++} className="italic">{m[12]}</em>);
+      }
+      last = m.index + m[0].length;
+    }
+    if (last < src.length) parts.push(src.substring(last));
+    return parts;
+  }
+}
+
 const STATUS_TABS = [
   { key: "", label: "All" },
   { key: "processing", label: "In progress" },
@@ -1232,8 +1342,8 @@ export default function InboxPage() {
               </div>
             );
           }) : !isEditing ? (
-            <div className="prose prose-sm max-w-none text-[#2C2C2A] whitespace-pre-wrap">
-              {item.content}
+            <div className="prose prose-sm max-w-none text-[#2C2C2A]">
+              {renderInlineMarkdown(item.content)}
             </div>
           ) : null}
         </div>
