@@ -264,6 +264,18 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
     touchSessionTimestamp();
     setSessionId(sid);
     setMessages([]);
+    // Optimistically insert a placeholder session so it shows up in
+    // the history list immediately, before the user sends anything.
+    // When the first message fires, the backend writes the real DB
+    // row under the SAME id, and the next refresh merges in place.
+    const nowIso = new Date().toISOString();
+    setSessions((prev) => {
+      if (prev.some((s) => s.id === sid)) return prev;
+      return [
+        { id: sid, title: "New chat", created_at: nowIso, updated_at: nowIso },
+        ...prev,
+      ];
+    });
   }, []);
 
   const deleteSession = useCallback(async (sid: string) => {

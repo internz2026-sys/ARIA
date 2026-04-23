@@ -49,6 +49,10 @@ export default function CEOChatPage() {
   // bulk delete), when we unmount, and whenever the sidebar closes.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  // Selection mode is OFF by default so the sidebar stays clean —
+  // checkboxes only appear after the user clicks "Delete" to enter
+  // multi-select mode. Cancel exits without deleting.
+  const [selectMode, setSelectMode] = useState(false);
 
   // Clear selection when the user navigates away (unmount) — prevents
   // accidental deletions on return to the page with stale selections.
@@ -103,6 +107,10 @@ export default function CEOChatPage() {
     try {
       await deleteSessions(ids);
       setSelectedIds(new Set());
+      // Exit selection mode on success — the expected mental model
+      // is "I deleted what I wanted, now get me back to the normal
+      // sidebar."
+      setSelectMode(false);
     } finally {
       setBulkDeleting(false);
     }
@@ -164,24 +172,57 @@ export default function CEOChatPage() {
       {/* ─── Chat History Sidebar ─── */}
       <div className={`${sidebarOpen ? "w-[260px]" : "w-0"} shrink-0 transition-all duration-200 overflow-hidden border-r border-[#E0DED8]`}>
         <div className="w-[260px] h-full flex flex-col bg-[#F8F8F6]">
-          <div className="px-3 py-3 border-b border-[#E0DED8] flex items-center justify-between">
+          <div className="px-3 py-3 border-b border-[#E0DED8] flex items-center justify-between gap-2">
             <span className="text-xs font-semibold text-[#5F5E5A] uppercase tracking-wide">Chat History</span>
-            <button
-              onClick={startNewChat}
-              className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium bg-[#534AB7] text-white rounded-md hover:bg-[#433AA0] transition"
-            >
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-              </svg>
-              New
-            </button>
+            <div className="flex items-center gap-1.5">
+              {sessions.length > 0 && (
+                <button
+                  onClick={() => {
+                    // Toggle selection mode. Exiting always clears
+                    // pending selections so re-entering is a clean
+                    // slate — matches "Cancel" semantics.
+                    setSelectMode((m) => !m);
+                    setSelectedIds(new Set());
+                  }}
+                  className={`flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md transition ${
+                    selectMode
+                      ? "bg-[#EEEDFE] text-[#534AB7] border border-[#534AB7]/30"
+                      : "border border-[#E0DED8] text-[#5F5E5A] hover:bg-white"
+                  }`}
+                  aria-label={selectMode ? "Exit selection mode" : "Enter selection mode to delete conversations"}
+                >
+                  {selectMode ? (
+                    <>
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                      Cancel
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                      </svg>
+                      Delete
+                    </>
+                  )}
+                </button>
+              )}
+              <button
+                onClick={startNewChat}
+                className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium bg-[#534AB7] text-white rounded-md hover:bg-[#433AA0] transition"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                </svg>
+                New
+              </button>
+            </div>
           </div>
 
-          {/* Master checkbox + bulk action bar. Always-visible row so
-              users discover the bulk flow; the Delete button only
-              enables when at least one session is checked so the
-              affordance is present without being trigger-happy. */}
-          {sessions.length > 0 && (
+          {/* Master checkbox + bulk action bar. Only rendered in
+              selection mode so the default sidebar stays clean. */}
+          {sessions.length > 0 && selectMode && (
             <div className="flex items-center gap-2 px-3 py-2 border-b border-[#E0DED8] bg-white/50">
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -244,18 +285,20 @@ export default function CEOChatPage() {
                           : "hover:bg-white/60"
                     }`}
                   >
-                    <label
-                      className="flex items-center pl-3 pr-1 cursor-pointer"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleSelect(s.id)}
-                        aria-label={`Select conversation ${s.title || "New chat"}`}
-                        className="w-4 h-4 accent-[#534AB7] cursor-pointer"
-                      />
-                    </label>
+                    {selectMode && (
+                      <label
+                        className="flex items-center pl-3 pr-1 cursor-pointer"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleSelect(s.id)}
+                          aria-label={`Select conversation ${s.title || "New chat"}`}
+                          className="w-4 h-4 accent-[#534AB7] cursor-pointer"
+                        />
+                      </label>
+                    )}
                     <button
                       onClick={() => switchSession(s.id)}
                       className="flex-1 text-left px-2 py-2.5 min-w-0"

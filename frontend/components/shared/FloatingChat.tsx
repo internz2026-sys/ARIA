@@ -29,8 +29,15 @@ export default function FloatingChat() {
   // dropdown closes so stale selections can't survive between opens.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  // Selection mode is OFF by default so the dropdown stays clean —
+  // checkboxes appear only after clicking "Delete" to enter multi-
+  // select mode. Exits on dropdown close and after a successful delete.
+  const [selectMode, setSelectMode] = useState(false);
   useEffect(() => {
-    if (!showHistory) setSelectedIds(new Set());
+    if (!showHistory) {
+      setSelectedIds(new Set());
+      setSelectMode(false);
+    }
   }, [showHistory]);
 
   const toggleSelect = useCallback((id: string) => {
@@ -77,6 +84,7 @@ export default function FloatingChat() {
     try {
       await deleteSessions(ids);
       setSelectedIds(new Set());
+      setSelectMode(false);
     } finally {
       setBulkDeleting(false);
     }
@@ -361,45 +369,71 @@ export default function FloatingChat() {
                 <p className="text-[10px] text-[#B0AFA8] text-center py-8">No previous chats</p>
               ) : (
                 <>
-                  {/* Master checkbox + bulk action bar. Always rendered
-                      above the list when there's at least one session
-                      so users discover the bulk flow. Delete button
-                      only appears once something's checked. */}
-                  <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#E0DED8]/40 bg-[#FAFAF8]">
-                    <label className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        aria-label="Select all conversations"
-                        checked={allSelected}
-                        ref={(el) => {
-                          if (el) el.indeterminate = someSelected;
-                        }}
-                        onChange={toggleSelectAll}
-                        className="w-3.5 h-3.5 accent-[#534AB7] cursor-pointer"
-                      />
-                      <span className="text-[10px] font-medium text-[#5F5E5A]">
-                        {selectedIds.size > 0 ? `${selectedIds.size} selected` : "Select all"}
-                      </span>
-                    </label>
-                    {selectedIds.size > 0 && (
+                  {/* Toolbar — shows "Delete" toggle by default.
+                      Clicking it enters selectMode which swaps the
+                      toolbar for the master checkbox + bulk-delete
+                      controls. Cancel exits without deleting. */}
+                  {!selectMode ? (
+                    <div className="flex items-center justify-end gap-1 px-3 py-1.5 border-b border-[#E0DED8]/40 bg-[#FAFAF8]">
                       <button
-                        onClick={handleBulkDelete}
-                        disabled={bulkDeleting}
-                        className="ml-auto flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-red-500 hover:bg-red-50 rounded transition disabled:opacity-60"
+                        onClick={() => setSelectMode(true)}
+                        className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-[#5F5E5A] hover:bg-white rounded border border-[#E0DED8]/70 transition"
+                        aria-label="Enter selection mode to delete conversations"
                       >
-                        {bulkDeleting ? (
-                          <>
-                            <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
-                              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
-                            </svg>
-                            Deleting...
-                          </>
-                        ) : (
-                          <>Delete ({selectedIds.size})</>
-                        )}
+                        <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                        </svg>
+                        Delete
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[#E0DED8]/40 bg-[#FAFAF8]">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          aria-label="Select all conversations"
+                          checked={allSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = someSelected;
+                          }}
+                          onChange={toggleSelectAll}
+                          className="w-3.5 h-3.5 accent-[#534AB7] cursor-pointer"
+                        />
+                        <span className="text-[10px] font-medium text-[#5F5E5A]">
+                          {selectedIds.size > 0 ? `${selectedIds.size} selected` : "Select all"}
+                        </span>
+                      </label>
+                      <div className="ml-auto flex items-center gap-1">
+                        {selectedIds.size > 0 && (
+                          <button
+                            onClick={handleBulkDelete}
+                            disabled={bulkDeleting}
+                            className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-red-500 hover:bg-red-50 rounded transition disabled:opacity-60"
+                          >
+                            {bulkDeleting ? (
+                              <>
+                                <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40 20" />
+                                </svg>
+                                Deleting...
+                              </>
+                            ) : (
+                              <>Delete ({selectedIds.size})</>
+                            )}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            setSelectMode(false);
+                            setSelectedIds(new Set());
+                          }}
+                          className="px-1.5 py-0.5 text-[10px] font-medium text-[#5F5E5A] hover:bg-white rounded border border-[#E0DED8]/70 transition"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 {sessions.map(s => {
                   const checked = selectedIds.has(s.id);
                   return (
@@ -416,18 +450,20 @@ export default function FloatingChat() {
                             : "hover:bg-[#F8F8F6]"
                       }`}
                     >
-                      <label
-                        className="flex items-center pl-3 pr-1 cursor-pointer"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleSelect(s.id)}
-                          aria-label={`Select conversation ${s.title || "New chat"}`}
-                          className="w-3.5 h-3.5 accent-[#534AB7] cursor-pointer"
-                        />
-                      </label>
+                      {selectMode && (
+                        <label
+                          className="flex items-center pl-3 pr-1 cursor-pointer"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSelect(s.id)}
+                            aria-label={`Select conversation ${s.title || "New chat"}`}
+                            className="w-3.5 h-3.5 accent-[#534AB7] cursor-pointer"
+                          />
+                        </label>
+                      )}
                       <button
                         onClick={() => handleSwitchSession(s.id)}
                         className="flex-1 text-left px-2 py-2.5 min-w-0"
