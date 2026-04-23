@@ -173,6 +173,7 @@ const STATUS_TABS = [
   { key: "needs_review", label: "Needs review" },
   { key: "sent", label: "Sent" },
   { key: "completed", label: "Completed" },
+  { key: "cancelled", label: "Cancelled" },
 ];
 
 const TYPE_LABELS: Record<string, string> = {
@@ -439,11 +440,14 @@ export default function InboxPage() {
   };
 
   const handleDelete = async (item: InboxItem) => {
+    // Soft-delete by default: the backend flips status to "cancelled"
+    // and keeps the row so the user can restore it from the Cancelled
+    // tab. "Delete forever" is a separate explicit action.
     const ok = await confirm({
-      title: "Delete this item?",
-      message: `"${item.title.slice(0, 80)}" will be permanently removed.`,
-      confirmLabel: "Delete",
-      cancelLabel: "Cancel",
+      title: "Cancel this item?",
+      message: `"${item.title.slice(0, 80)}" will move to the Cancelled tab. You can restore it later.`,
+      confirmLabel: "Cancel item",
+      cancelLabel: "Keep",
       destructive: true,
     });
     if (!ok) return;
@@ -454,10 +458,64 @@ export default function InboxPage() {
         setSelected(null);
         setMobileShowDetail(false);
       }
-      showToast({ title: "Item deleted", variant: "success" });
+      showToast({ title: "Moved to Cancelled", body: "Find it in the Cancelled tab.", variant: "success" });
+      fetchCounts();
     } catch (err: any) {
       showToast({
-        title: "Couldn't delete item",
+        title: "Couldn't cancel item",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
+  };
+
+  const handleRestore = async (item: InboxItem) => {
+    try {
+      const res = await authFetch(`${API_URL}/api/inbox/${item.id}/restore`, { method: "POST" });
+      if (!res.ok) throw new Error(`restore failed (${res.status})`);
+      const data = await res.json();
+      setItems((prev) => prev.filter((i) => i.id !== item.id));
+      if (selected?.id === item.id) {
+        setSelected(null);
+        setMobileShowDetail(false);
+      }
+      showToast({
+        title: "Restored",
+        body: `Moved back to "${(data?.status || "needs review").replace(/_/g, " ")}".`,
+        variant: "success",
+      });
+      fetchCounts();
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't restore item",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
+  };
+
+  const handleDeletePermanently = async (item: InboxItem) => {
+    const ok = await confirm({
+      title: "Delete forever?",
+      message: `"${item.title.slice(0, 80)}" will be permanently removed from the database. This can't be undone.`,
+      confirmLabel: "Delete forever",
+      cancelLabel: "Keep",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      const res = await authFetch(`${API_URL}/api/inbox/${item.id}?permanent=true`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`delete failed (${res.status})`);
+      setItems((prev) => prev.filter((i) => i.id !== item.id));
+      if (selected?.id === item.id) {
+        setSelected(null);
+        setMobileShowDetail(false);
+      }
+      showToast({ title: "Deleted forever", variant: "success" });
+      fetchCounts();
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't delete",
         body: err?.message || "Network error -- please try again.",
         variant: "error",
       });
@@ -1053,12 +1111,23 @@ export default function InboxPage() {
               </button>
             </>
           )}
-          <button
-            onClick={() => handleDelete(item)}
-            className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
-          >
-            Delete
-          </button>
+          {item.status === "cancelled" ? (
+            <>
+              <button onClick={() => handleRestore(item)} className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors">
+                Restore
+              </button>
+              <button onClick={() => handleDeletePermanently(item)} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-500 hover:bg-red-50 transition-colors">
+                Delete forever
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => handleDelete(item)}
+              className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
+            >
+              Delete
+            </button>
+          )}
         </div>
         {/* Email content */}
         <div className="flex-1 overflow-auto p-5">
@@ -1217,9 +1286,20 @@ export default function InboxPage() {
                 Mark complete
               </button>
             )}
-            <button onClick={() => handleDelete(item)} className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors">
-              Delete
-            </button>
+            {item.status === "cancelled" ? (
+              <>
+                <button onClick={() => handleRestore(item)} className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors">
+                  Restore
+                </button>
+                <button onClick={() => handleDeletePermanently(item)} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-500 hover:bg-red-50 transition-colors">
+                  Delete forever
+                </button>
+              </>
+            ) : (
+              <button onClick={() => handleDelete(item)} className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors">
+                Delete
+              </button>
+            )}
           </div>
         </div>
         <div className="flex-1 overflow-auto p-5 space-y-4">
@@ -1585,9 +1665,20 @@ export default function InboxPage() {
               Reopen
             </button>
           )}
-          <button onClick={() => handleDelete(item)} className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors">
-            Delete
-          </button>
+          {item.status === "cancelled" ? (
+            <>
+              <button onClick={() => handleRestore(item)} className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors">
+                Restore
+              </button>
+              <button onClick={() => handleDeletePermanently(item)} className="px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-500 hover:bg-red-50 transition-colors">
+                Delete forever
+              </button>
+            </>
+          ) : (
+            <button onClick={() => handleDelete(item)} className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors">
+              Delete
+            </button>
+          )}
         </div>
       </div>
       <div className="flex-1 overflow-auto p-5">

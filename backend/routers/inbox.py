@@ -133,34 +133,50 @@ async def update_inbox_item(item_id: str, request: Request):
 
 
 @router.delete("/api/inbox/{item_id}")
-async def delete_inbox_item(item_id: str):
-    """Delete an inbox item + cancel the matching Paperclip issue.
+async def delete_inbox_item(item_id: str, permanent: bool = False, reason: str = ""):
+    """Soft-delete (default) or hard-delete an inbox item.
 
-    When the user deletes (or cancels) an inbox row, we also tell
-    Paperclip to cancel the underlying issue and block the safety-net
-    poller from re-importing the agent's late reply. Without this,
-    deletion was ARIA-only: the agent kept grinding on its assigned
-    issue, wasted tokens, and the poller would eventually re-create
-    an inbox row from the agent's reply comment.
+    DEFAULT (`permanent=false`): update status to `cancelled` and
+    stash the previous status in metadata.previous_status + the
+    optional cancel reason in metadata.cancel_reason. The row stays
+    in the database — the frontend's Cancelled tab shows these rows
+    with Restore / Delete Forever affordances. This is the path the
+    "Delete" button in the inbox hits.
+
+    PERMANENT (`permanent=true`): hard DELETE the row. Used by the
+    "Delete Forever" button in the Cancelled tab, and by any flow
+    that needs a clean removal (bulk purges, GDPR, test cleanup).
+
+    Both paths also PATCH the linked Paperclip issue to cancelled
+    and add it to _processed_issues so the safety-net poller doesn't
+    re-import the agent's late reply.
     """
+    from datetime import datetime, timezone
     sb = get_db()
-    # Look up the paperclip_issue_id before deleting so we can cancel
-    # the upstream issue. Silently skip if not found or not linked to
-    # Paperclip — not every inbox row has an upstream issue.
+    # Look up the row first so we can capture the previous status
+    # (for restore) and the paperclip_issue_id (to cancel upstream).
+    previous_status = None
     paperclip_issue_id = None
+    existing_metadata: dict = {}
     try:
         row = (
             sb.table("inbox_items")
-            .select("paperclip_issue_id")
+            .select("status, paperclip_issue_id, metadata")
             .eq("id", item_id)
             .limit(1)
             .execute()
         )
         if row.data:
+            previous_status = row.data[0].get("status")
             paperclip_issue_id = row.data[0].get("paperclip_issue_id")
+            md = row.data[0].get("metadata")
+            if isinstance(md, dict):
+                existing_metadata = md
     except Exception:
         pass
 
+    # Always cancel upstream — user's intent is "stop this work"
+    # whether they soft-delete or hard-delete.
     if paperclip_issue_id:
         try:
             from backend.orchestrator import _urllib_request
@@ -168,11 +184,82 @@ async def delete_inbox_item(item_id: str):
             _urllib_request("PATCH", f"/api/issues/{paperclip_issue_id}", data={
                 "status": "cancelled",
             })
-            # Block the global poller from re-importing this issue if
-            # the agent finishes a late reply after cancellation.
             _add_processed(paperclip_issue_id)
         except Exception:
             pass
 
-    sb.table("inbox_items").delete().eq("id", item_id).execute()
-    return {"deleted": item_id, "paperclip_cancelled": bool(paperclip_issue_id)}
+    if permanent:
+        sb.table("inbox_items").delete().eq("id", item_id).execute()
+        return {"deleted": item_id, "permanent": True, "paperclip_cancelled": bool(paperclip_issue_id)}
+
+    # Soft-delete: flip to cancelled, stash previous_status + reason
+    # in metadata so Restore can put the row back where it was.
+    new_metadata = dict(existing_metadata)
+    if previous_status and previous_status != "cancelled":
+        new_metadata["previous_status"] = previous_status
+    if reason:
+        new_metadata["cancel_reason"] = reason
+    new_metadata["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        sb.table("inbox_items").update({
+            "status": "cancelled",
+            "metadata": new_metadata,
+        }).eq("id", item_id).execute()
+    except Exception:
+        # Worst case fall back to hard delete if the update fails
+        # (shouldn't happen, but better than leaving the row stuck)
+        sb.table("inbox_items").delete().eq("id", item_id).execute()
+        return {"deleted": item_id, "permanent": True, "fallback_hard_delete": True}
+    return {
+        "deleted": item_id,
+        "permanent": False,
+        "soft": True,
+        "previous_status": previous_status,
+        "paperclip_cancelled": bool(paperclip_issue_id),
+    }
+
+
+@router.post("/api/inbox/{item_id}/restore")
+async def restore_inbox_item(item_id: str):
+    """Move a cancelled inbox row back to its previous status (or
+    needs_review if none was recorded). Clears cancel_reason from
+    metadata but keeps the cancelled_at timestamp so we have a
+    history trail.
+    """
+    sb = get_db()
+    restored_to = "needs_review"
+    try:
+        row = (
+            sb.table("inbox_items")
+            .select("metadata, status")
+            .eq("id", item_id)
+            .limit(1)
+            .execute()
+        )
+        if row.data:
+            md = row.data[0].get("metadata") or {}
+            if isinstance(md, dict) and md.get("previous_status"):
+                restored_to = md["previous_status"]
+    except Exception:
+        pass
+
+    # Clean up the cancel fields but keep cancelled_at as history
+    new_md: dict = {}
+    try:
+        row = (
+            sb.table("inbox_items")
+            .select("metadata")
+            .eq("id", item_id)
+            .limit(1)
+            .execute()
+        )
+        if row.data and isinstance(row.data[0].get("metadata"), dict):
+            new_md = {k: v for k, v in row.data[0]["metadata"].items() if k not in ("previous_status", "cancel_reason")}
+    except Exception:
+        pass
+
+    sb.table("inbox_items").update({
+        "status": restored_to,
+        "metadata": new_md,
+    }).eq("id", item_id).execute()
+    return {"restored": item_id, "status": restored_to}

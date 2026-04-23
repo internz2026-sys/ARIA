@@ -70,10 +70,19 @@ def create_item(
 
 
 def list_items(tenant_id: str, status: str = "", page: int = 1, page_size: int = 20) -> dict:
+    """List inbox items, filtered by status if given.
+
+    When `status` is empty (the "All" tab), cancelled rows are
+    excluded so the main inbox view isn't cluttered with items the
+    user soft-deleted. Cancelled items only appear when the user
+    explicitly selects the Cancelled tab (status="cancelled").
+    """
     sb = get_db()
     count_query = sb.table("inbox_items").select("id", count="exact").eq("tenant_id", tenant_id)
     if status:
         count_query = count_query.eq("status", status)
+    else:
+        count_query = count_query.neq("status", "cancelled")
     count_result = count_query.execute()
     total = count_result.count if count_result.count is not None else len(count_result.data)
 
@@ -81,6 +90,8 @@ def list_items(tenant_id: str, status: str = "", page: int = 1, page_size: int =
     query = sb.table("inbox_items").select("*").eq("tenant_id", tenant_id)
     if status:
         query = query.eq("status", status)
+    else:
+        query = query.neq("status", "cancelled")
     result = query.order("created_at", desc=True).range(offset, offset + page_size - 1).execute()
 
     return {
@@ -93,6 +104,12 @@ def list_items(tenant_id: str, status: str = "", page: int = 1, page_size: int =
 
 
 def status_counts(tenant_id: str) -> dict:
+    """Per-status counts for the inbox tab badges.
+
+    `all` is the total across every status EXCEPT cancelled, so the
+    "All" tab count matches what that tab actually displays. Cancelled
+    items get their own bucket + tab and are not rolled into all.
+    """
     sb = get_db()
     result = sb.table("inbox_items").select("status").eq("tenant_id", tenant_id).execute()
     counts: dict[str, int] = {}
@@ -100,7 +117,8 @@ def status_counts(tenant_id: str) -> dict:
     for row in (result.data or []):
         s = row.get("status", "unknown")
         counts[s] = counts.get(s, 0) + 1
-        total += 1
+        if s != "cancelled":
+            total += 1
     counts["all"] = total
     return counts
 
