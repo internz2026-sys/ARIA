@@ -5709,6 +5709,13 @@ This is the ONLY way to emit more than one agent in a single turn — two separa
 ### One Delegate Per Message — HARD RULE
 Each user message gets EXACTLY ONE delegate block, never two. Do NOT chain delegations like "media for the image AND content_writer for a caption". If the user asked for ONLY an image, delegate ONLY to media. Bonus content the user did not ask for (captions, blog copy, social posts about the image) is forbidden — never auto-add a content_writer/social_manager delegate alongside a media one.
 
+Concrete example of the violation — DO NOT DO THIS:
+User: "create an image of a cat"
+❌ WRONG: `{{"agent": "media", "task": "cat image", "then": {{"agent": "content_writer", "task": "blog post about cats"}}}}`  (user did not ask for a blog post)
+✅ CORRECT: `{{"agent": "media", "task": "cat image"}}`
+
+The `then` field is ONLY valid when the user's message contains an explicit compound request with a text companion word: "blog", "post", "email", "caption", "write", "social", "launch", "campaign". Absent those, NO `then` field.
+
 If the user explicitly asks for both ("make an image AND write a caption"), still emit ONE delegate to the agent that produces the primary deliverable they named first; mention the secondary in your prose so the user can ask in a follow-up message if they want it.
 
 If you promise agent action ("delegating", "I'll have X create", "let me get X to"), you MUST include the block in the same response.
@@ -5970,6 +5977,33 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
                 if not isinstance(nxt, dict) or nxt.get("agent") not in _VALID_AGENTS:
                     break
                 current = nxt
+            # Guard: trim auto-chained follow-ups when the user asked for
+            # a single deliverable. The CEO prompt forbids chaining
+            # content_writer/social_manager onto a media delegation when
+            # the user only asked for an image, but the model violates
+            # that rule fairly often — adding a caption, blog post, or
+            # social variant the user never requested. Detect image-only
+            # intent in the user message and drop chain[1:] in that case.
+            if len(chain) > 1 and chain[0].get("agent") == "media":
+                msg_lower = (body.message or "").lower()
+                _IMAGE_WORDS = ("image", "picture", "photo", "banner", "logo",
+                                "illustration", "graphic", "mockup", "thumbnail",
+                                "header", "visual", "drawing", "artwork", "png",
+                                "jpg", "jpeg")
+                _TEXT_COMPANIONS = ("blog", "post", "email", "caption", "tweet",
+                                    "social", "write ", "draft ", "newsletter",
+                                    " ad ", "launch", "campaign", "bundle",
+                                    " also", " plus ", " then ", "description",
+                                    " copy ", "content", "article")
+                has_image = any(w in msg_lower for w in _IMAGE_WORDS)
+                has_companion = any(w in msg_lower for w in _TEXT_COMPANIONS)
+                if has_image and not has_companion:
+                    dropped = [s.get("agent") for s in chain[1:]]
+                    logging.getLogger("aria.ceo_chat").warning(
+                        "[delegate-guard] trimming media->%s chain for image-only ask: %r",
+                        "+".join(dropped), body.message[:120],
+                    )
+                    chain = chain[:1]
             cumulative = 0
             for i, step in enumerate(chain):
                 if i > 0:
