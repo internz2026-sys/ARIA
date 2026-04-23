@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useNotifications } from "@/lib/use-notifications";
+import { useConfirm } from "@/lib/use-confirm";
 
 // Sidebar grouped into 4 sections to reduce the cognitive load of the
 // previous flat 14-item list. "Chat with CEO" is a full-page chat route
@@ -149,6 +150,7 @@ export default function Sidebar() {
   const router = useRouter();
   const [user, setUser] = useState<{ name: string; email: string; initials: string } | null>(null);
   const { badges } = useNotifications();
+  const { confirm } = useConfirm();
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -168,6 +170,13 @@ export default function Sidebar() {
   }, []);
 
   async function handleSignOut() {
+    const ok = await confirm({
+      title: "Sign out of ARIA?",
+      message: "You'll need to log in again to access your workspace.",
+      confirmLabel: "Sign out",
+      cancelLabel: "Stay signed in",
+    });
+    if (!ok) return;
     await supabase.auth.signOut();
     router.replace("/login");
   }

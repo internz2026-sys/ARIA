@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { API_URL, authFetch } from "@/lib/api";
+import { useConfirm } from "@/lib/use-confirm";
 
 const settingsTabs = ["Profile", "Integrations", "Notifications", "Billing"];
 
@@ -34,8 +35,21 @@ export default function SettingsPage() {
     };
   }, []);
 
+  const confirmModal = useConfirm();
   const [activeTab, setActiveTab] = useState("Profile");
   const [user, setUser] = useState({ name: "", email: "", company: "" });
+
+  const handleSignOut = async () => {
+    const ok = await confirmModal.confirm({
+      title: "Sign out of ARIA?",
+      message: "You'll need to log in again to access your workspace.",
+      confirmLabel: "Sign out",
+      cancelLabel: "Stay signed in",
+    });
+    if (!ok) return;
+    await supabase.auth.signOut();
+    window.location.href = "/login";
+  };
   const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
   const [gmailReconnecting, setGmailReconnecting] = useState(false);
   const [twitterConnected, setTwitterConnected] = useState<boolean | null>(null);
@@ -346,7 +360,7 @@ export default function SettingsPage() {
                 <p className="text-sm font-medium text-[#D85A30]">Sign out</p>
                 <p className="text-xs text-[#5F5E5A]">Sign out of your ARIA account</p>
               </div>
-              <button onClick={() => supabase.auth.signOut().then(() => window.location.href = "/login")} className="text-xs font-medium px-4 py-2 border border-[#D85A30] rounded-lg text-[#D85A30] hover:bg-[#FDEEE8]">Sign out</button>
+              <button onClick={handleSignOut} className="text-xs font-medium px-4 py-2 border border-[#D85A30] rounded-lg text-[#D85A30] hover:bg-[#FDEEE8]">Sign out</button>
             </div>
           </div>
         </div>
