@@ -786,7 +786,15 @@ export default function InboxPage() {
   };
 
   const isEmailDraft = (item: InboxItem) => !!item.email_draft;
-  const isSocialPost = (item: InboxItem) => item.type === "social_post";
+  // Only route to the social-post view for ACTUAL social_manager
+  // rows. Other agents (Media Designer, etc.) sometimes land with
+  // type="social_post" when they've been mis-labelled or when the
+  // merge-window dedup ran too liberally — routing those to the
+  // platform-card UI would trigger the "needs regenerating" panel
+  // on rows that never had posts to begin with. Let the standard
+  // detail view render them instead.
+  const isSocialPost = (item: InboxItem) =>
+    item.type === "social_post" && item.agent === "social_manager";
   const isPendingApproval = (item: InboxItem) => item.status === "draft_pending_approval";
 
   const filteredItems = items;
@@ -1779,68 +1787,65 @@ export default function InboxPage() {
               );
             })}
 
-            {/* Pagination — prominent bar so the user can always see
-                where they are and jump around. Uses ARIA's primary
-                purple (#534AB7) for CTA emphasis and an explicit
-                numeric page indicator instead of the previous muted
-                mini row. */}
+            {/* Pagination — compact horizontal bar. Previous version
+                wrapped "Page 1 of 6" vertically and overflowed "Last"
+                off the right edge in the narrow inbox-list column.
+                Now: single horizontal row, page indicator inline with
+                "1/6 · 117", First/Last icon-only (saves space, still
+                hit-target sized), Prev/Next keep their label AND
+                icon, everything wraps sanely on sub-320px widths. */}
             {totalPages > 1 && (
-              <div className="mt-4 flex flex-col sm:flex-row items-center gap-3 sm:gap-4 justify-between bg-gradient-to-r from-[#EEEDFE] to-[#F8F8F6] border border-[#534AB7]/20 rounded-xl px-4 py-3 shadow-sm">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[#534AB7] text-white text-sm font-bold shadow-sm">
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 bg-gradient-to-r from-[#EEEDFE] to-[#F8F8F6] border border-[#534AB7]/20 rounded-xl px-3 py-2 shadow-sm">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center justify-center px-2 h-8 min-w-[32px] rounded-md bg-[#534AB7] text-white text-sm font-bold shadow-sm">
                     {page}
                   </div>
-                  <div className="flex flex-col">
-                    <span className="text-sm font-semibold text-[#2C2C2A]">
-                      Page {page} of {totalPages}
-                    </span>
-                    <span className="text-xs text-[#5F5E5A]">
-                      {totalItems} items total
-                    </span>
-                  </div>
+                  <span className="text-xs font-medium text-[#2C2C2A] whitespace-nowrap">
+                    of {totalPages} · <span className="text-[#5F5E5A]">{totalItems} items</span>
+                  </span>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1">
                   <button
                     onClick={() => { setPage(1); setCheckedIds(new Set()); setSelected(null); setKeyboardIndex(0); }}
                     disabled={page <= 1}
-                    className="flex items-center gap-1 px-3 py-2 text-sm font-medium rounded-lg border-2 border-[#534AB7]/30 bg-white text-[#534AB7] hover:bg-[#534AB7] hover:text-white hover:border-[#534AB7] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#534AB7] transition-all"
+                    className="p-2 rounded-md border border-[#534AB7]/30 bg-white text-[#534AB7] hover:bg-[#534AB7] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#534AB7] transition-all"
                     aria-label="First page"
+                    title="First page"
                   >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M18.75 19.5l-7.5-7.5 7.5-7.5m-6 15L5.25 12l7.5-7.5" />
                     </svg>
-                    <span className="hidden sm:inline">First</span>
                   </button>
                   <button
                     onClick={() => { setPage((p) => Math.max(1, p - 1)); setCheckedIds(new Set()); setSelected(null); setKeyboardIndex(0); }}
                     disabled={page <= 1}
-                    className="flex items-center gap-1 px-3 py-2 text-sm font-medium rounded-lg border-2 border-[#534AB7]/30 bg-white text-[#534AB7] hover:bg-[#534AB7] hover:text-white hover:border-[#534AB7] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#534AB7] transition-all"
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#534AB7]/30 bg-white text-[#534AB7] hover:bg-[#534AB7] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#534AB7] transition-all"
                     aria-label="Previous page"
                   >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
                     </svg>
-                    <span className="hidden sm:inline">Prev</span>
+                    Prev
                   </button>
                   <button
                     onClick={() => { setPage((p) => Math.min(totalPages, p + 1)); setCheckedIds(new Set()); setSelected(null); setKeyboardIndex(0); }}
                     disabled={page >= totalPages}
-                    className="flex items-center gap-1 px-3 py-2 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-[#534AB7] transition-all shadow-sm"
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md bg-[#534AB7] text-white hover:bg-[#433AA0] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-[#534AB7] transition-all shadow-sm"
                     aria-label="Next page"
                   >
-                    <span className="hidden sm:inline">Next</span>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                    Next
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
                     </svg>
                   </button>
                   <button
                     onClick={() => { setPage(totalPages); setCheckedIds(new Set()); setSelected(null); setKeyboardIndex(0); }}
                     disabled={page >= totalPages}
-                    className="flex items-center gap-1 px-3 py-2 text-sm font-medium rounded-lg border-2 border-[#534AB7]/30 bg-white text-[#534AB7] hover:bg-[#534AB7] hover:text-white hover:border-[#534AB7] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#534AB7] transition-all"
+                    className="p-2 rounded-md border border-[#534AB7]/30 bg-white text-[#534AB7] hover:bg-[#534AB7] hover:text-white disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-[#534AB7] transition-all"
                     aria-label="Last page"
+                    title="Last page"
                   >
-                    <span className="hidden sm:inline">Last</span>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 4.5l7.5 7.5-7.5 7.5m6-15l7.5 7.5-7.5 7.5" />
                     </svg>
                   </button>
