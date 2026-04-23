@@ -152,16 +152,17 @@ Rules:
                 for p in posts:
                     p["image_url"] = attached_image_url
             result["social_posts"] = posts
-            # Re-serialize the raw result so the `image_url` survives
-            # persistence. The inbox watcher saves result["result"] to
-            # the `content` column verbatim, and the frontend's
-            # parseSocialPosts reads posts back out of that string. If
-            # we only mutated the Python dict, the URL would be lost.
-            if attached_image_url:
-                result["result"] = json.dumps({
-                    "action": "adapt_content",
-                    "posts": posts,
-                })
+            # ALWAYS re-serialize to canonical JSON so frontend parsing
+            # works regardless of whether the agent returned JSON or
+            # markdown. The inbox watcher saves result["result"] to the
+            # `content` column verbatim, and the frontend's
+            # parseSocialPosts reads posts back out of that string; if
+            # we left the raw markdown in place the publish cards never
+            # render and the image_url doesn't survive persistence.
+            result["result"] = json.dumps({
+                "action": "adapt_content",
+                "posts": posts,
+            })
         if attached_image_url:
             result["image_url"] = attached_image_url
 
@@ -209,14 +210,27 @@ def _email_hook_source_chunk(tenant_id: str) -> str:
 
 
 def _parse_posts(raw: str) -> list[dict]:
-    """Extract posts array from agent output."""
+    """Extract posts array from agent output.
+
+    Tries, in order:
+      1. Direct JSON parse (the system prompt's preferred format)
+      2. JSON array parse
+      3. Markdown fallback — handles the ``**X (Twitter)** — 256 chars:``
+         / ``**LinkedIn** — ...`` format the Paperclip-skilled agent
+         sometimes emits instead of JSON. Without this fallback, the
+         frontend's publish buttons never render, the pipeline-image
+         hook never fires, and the user sees raw markdown in the
+         inbox instead of platform cards.
+    """
     try:
         # Try direct JSON parse
         start = raw.find("{")
         end = raw.rfind("}") + 1
         if start >= 0 and end > start:
             data = json.loads(raw[start:end])
-            return data.get("posts", [])
+            posts = data.get("posts", [])
+            if posts:
+                return posts
     except (json.JSONDecodeError, KeyError):
         pass
 
@@ -225,11 +239,126 @@ def _parse_posts(raw: str) -> list[dict]:
         start = raw.find("[")
         end = raw.rfind("]") + 1
         if start >= 0 and end > start:
-            return json.loads(raw[start:end])
+            parsed = json.loads(raw[start:end])
+            if isinstance(parsed, list) and parsed:
+                return parsed
     except (json.JSONDecodeError, KeyError):
         pass
 
-    return []
+    # Markdown fallback
+    md = _parse_posts_from_markdown(raw)
+    return md or []
+
+
+# Platform-header detector for the markdown fallback.
+# Matches things like:
+#   **X (Twitter)** — 256 chars:
+#   **Twitter**: ...
+#   **LinkedIn** — Full post covering pain points...
+#   **X:**
+# Captures the platform label and everything until the next platform
+# header or end of string.
+_PLATFORM_HEADER_RE = re.compile(
+    r"\*\*\s*(x(?:\s*\(twitter\))?|twitter|linkedin|facebook)\s*\*\*"
+    r"\s*(?:[—\-:]\s*)?(.*?)"
+    r"(?=(?:\n\s*\*\*\s*(?:x(?:\s*\(twitter\))?|twitter|linkedin|facebook)\s*\*\*)|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_HASHTAG_RE = re.compile(r"#([A-Za-z0-9_]+)")
+
+
+def _normalize_platform(label: str) -> str:
+    lab = label.lower().strip()
+    if "linkedin" in lab:
+        return "linkedin"
+    if "facebook" in lab:
+        return "facebook"
+    return "twitter"  # x, x (twitter), twitter all collapse to twitter
+
+
+def _parse_posts_from_markdown(raw: str) -> list[dict]:
+    """Pull twitter/linkedin/facebook posts out of a markdown reply.
+
+    Strategy: find each **Platform** header, take the body until the
+    next header, strip the leading "— 256 chars:" metadata line,
+    extract the post text (prefer a ``> blockquote`` when present,
+    fall back to the whole section), collect hashtags into a list.
+    """
+    if not raw:
+        return []
+    posts: list[dict] = []
+    seen_platforms: set[str] = set()
+    for m in _PLATFORM_HEADER_RE.finditer(raw):
+        platform = _normalize_platform(m.group(1))
+        if platform in seen_platforms:
+            continue
+        seen_platforms.add(platform)
+        body = (m.group(2) or "").strip()
+        if not body:
+            continue
+
+        # Drop leading char-count / descriptor line like "256 chars:" or
+        # "Full thought-leadership post covering pain points..." when a
+        # blockquote follows. We want the ACTUAL post text.
+        lines = body.splitlines()
+        quoted_lines: list[str] = []
+        non_quoted_lines: list[str] = []
+        for line in lines:
+            s = line.strip()
+            if s.startswith(">"):
+                quoted_lines.append(s.lstrip(">").strip())
+            elif s:
+                non_quoted_lines.append(s)
+
+        if quoted_lines:
+            text = "\n".join(quoted_lines).strip()
+        else:
+            # No blockquote. Drop a metadata-style FIRST line (e.g.
+            # "256 chars:", "Full thought-leadership post — ...") only
+            # when there's actual post content after it. If the
+            # descriptor IS the entire body, keep it — the agent wrote
+            # a summary instead of a real post and the user should at
+            # least see what landed so they can regenerate.
+            looks_like_descriptor = non_quoted_lines and (
+                non_quoted_lines[0].endswith(":")
+                or " chars" in non_quoted_lines[0].lower()
+                or non_quoted_lines[0].lower().startswith(("full ", "long ", "short "))
+            )
+            if looks_like_descriptor and len(non_quoted_lines) > 1:
+                non_quoted_lines = non_quoted_lines[1:]
+            text = "\n".join(non_quoted_lines).strip()
+
+        if not text:
+            continue
+
+        # Collect hashtags and strip them from the text when they appear
+        # as a trailing "Hashtags:" line. Inline hashtags stay inside
+        # the post text (Twitter norm).
+        hashtags: list[str] = []
+        hashtag_line_match = re.search(
+            r"^\s*hashtags?\s*:\s*(.+)$", text, re.IGNORECASE | re.MULTILINE,
+        )
+        if hashtag_line_match:
+            hashtags = _HASHTAG_RE.findall(hashtag_line_match.group(1))
+            text = re.sub(
+                r"^\s*hashtags?\s*:.*$", "", text, flags=re.IGNORECASE | re.MULTILINE,
+            ).strip()
+        else:
+            hashtags = _HASHTAG_RE.findall(text)
+
+        # De-dupe hashtags preserving first-seen order
+        seen_tags: set[str] = set()
+        dedup_tags: list[str] = []
+        for tag in hashtags:
+            low = tag.lower()
+            if low not in seen_tags:
+                seen_tags.add(low)
+                dedup_tags.append(tag)
+
+        if text:
+            posts.append({"platform": platform, "text": text, "hashtags": dedup_tags})
+
+    return posts
 
 
 async def _auto_publish(tenant_id: str, posts: list[dict]) -> list[dict]:
