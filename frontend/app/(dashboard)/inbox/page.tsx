@@ -288,6 +288,11 @@ export default function InboxPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<any>(null);
   const [editSaving, setEditSaving] = useState(false);
+  // Short-lived "highlight" id — when an inbox row is landed on via a
+  // notification (URL ?id=...), we pulse its background briefly so the
+  // user can see exactly which item the notification was about.
+  // Cleared automatically after ~1.8s.
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const PAGE_SIZE = 20;
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
@@ -352,11 +357,30 @@ export default function InboxPage() {
         const idx = itemsRef.current.findIndex((i) => i.id === found.id);
         if (idx >= 0) setKeyboardIndex(idx);
         setMobileShowDetail(true);
+        // Brief highlight so the user sees which row the notification
+        // referenced. Cleared after 1.8s so it doesn't stay visually
+        // "hot" once the user starts interacting.
+        setHighlightedId(found.id);
         return found;
       });
     }, 0);
     return () => clearTimeout(t);
   }, [urlItemId]);
+
+  // Clear the highlight after 1.8s so it pulses briefly then fades.
+  // Also scroll the highlighted row into view so users landing on a
+  // long inbox via a notification see it without manual scrolling.
+  useEffect(() => {
+    if (!highlightedId) return;
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-inbox-item="${highlightedId}"]`);
+      if (el && typeof (el as any).scrollIntoView === "function") {
+        (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+    const t = setTimeout(() => setHighlightedId(null), 1800);
+    return () => clearTimeout(t);
+  }, [highlightedId]);
 
   // Sync URL query params whenever tab / page / selected id change.
   // Uses replaceState (not pushState) so back-button doesn't get
@@ -1827,11 +1851,15 @@ export default function InboxPage() {
               const badge = STATUS_BADGES[item.status];
               const isChecked = checkedIds.has(item.id);
               const isKeyboardFocused = idx === keyboardIndex;
+              const isHighlighted = highlightedId === item.id;
               return (
                 <div
                   key={item.id}
+                  data-inbox-item={item.id}
                   className={`flex items-start gap-2 p-4 rounded-xl border transition-all cursor-pointer ${
-                    selected?.id === item.id
+                    isHighlighted
+                      ? "border-[#534AB7] bg-[#EEEDFE] shadow-md ring-2 ring-[#534AB7]/40 animate-pulse"
+                      : selected?.id === item.id
                       ? "border-[#534AB7] bg-[#FAFAFF] shadow-sm"
                       : isChecked
                       ? "border-[#534AB7]/40 bg-[#FAFAFF]/50"

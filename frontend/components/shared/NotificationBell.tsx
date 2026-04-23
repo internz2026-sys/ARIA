@@ -120,22 +120,39 @@ export default function NotificationBell() {
               notifications.slice(0, 30).map((n) => {
                 const cat = CATEGORY_COLORS[n.category] || CATEGORY_COLORS.status;
                 return (
-                  <button
+                  // Row is a flex container, NOT a <button>. The unread
+                  // dot is its own button (mark-as-read only, no nav)
+                  // and the text area is a separate button (navigate +
+                  // mark-as-read). Clicking the dot doesn't hide the
+                  // notification — it just turns off the dot so the
+                  // user can keep browsing without routing away.
+                  <div
                     key={n.id}
-                    onClick={() => handleNotificationClick(n)}
-                    className={`w-full text-left px-4 py-3 border-b border-[#F0EFEC] hover:bg-[#F8F8F6] transition-colors flex items-start gap-3 ${
+                    className={`px-2 py-3 border-b border-[#F0EFEC] flex items-start gap-2 ${
                       !n.is_read ? "bg-[#FAFAFF]" : ""
                     }`}
                   >
-                    {/* Unread dot */}
-                    <div className="pt-1.5 shrink-0">
+                    {/* Unread-dot button: mark-as-read, do NOT navigate */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!n.is_read) markAsRead([n.id]);
+                      }}
+                      title={n.is_read ? "Already read" : "Mark as read"}
+                      className="pt-1.5 px-1 shrink-0 group"
+                      aria-label={n.is_read ? "Already read" : "Mark as read"}
+                    >
                       {!n.is_read ? (
-                        <div className="w-2 h-2 rounded-full bg-[#534AB7]" />
+                        <div className="w-2 h-2 rounded-full bg-[#534AB7] group-hover:bg-[#3B3386] transition-colors" />
                       ) : (
-                        <div className="w-2 h-2" />
+                        <div className="w-2 h-2 rounded-full border border-[#E0DED8] group-hover:border-[#C5C3BC] transition-colors" />
                       )}
-                    </div>
-                    <div className="flex-1 min-w-0">
+                    </button>
+                    {/* Content button: navigate + mark-as-read */}
+                    <button
+                      onClick={() => handleNotificationClick(n)}
+                      className="flex-1 min-w-0 text-left px-2 -mx-1 py-0 rounded hover:bg-[#F8F8F6] transition-colors"
+                    >
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-[#2C2C2A] truncate flex-1">
                           {stripMarkdown(n.title)}
@@ -150,8 +167,8 @@ export default function NotificationBell() {
                       <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded-full mt-1 ${cat.bg} ${cat.text}`}>
                         {cat.label}
                       </span>
-                    </div>
-                  </button>
+                    </button>
+                  </div>
                 );
               })
             )}
