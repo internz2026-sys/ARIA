@@ -32,9 +32,31 @@ export default function NotificationBell() {
   }, [open]);
 
   function handleNotificationClick(n: Notification) {
+    // Always mark-as-read + close the dropdown, even when we can't
+    // route anywhere. The user clicked it, they've seen it.
     if (!n.is_read) markAsRead([n.id]);
     setOpen(false);
-    if (n.href) router.push(n.href);
+
+    // Deep-link target resolution. Priority:
+    //   1. Explicit n.href from backend (e.g. /inbox?id=<uuid> for
+    //      newly-landed drafts, /calendar for scheduled tasks,
+    //      /conversations for email replies)
+    //   2. Category fallback for older notifications without an href
+    //      or for ones where the backend only stored a category
+    let target = (n.href || "").trim();
+    if (!target) {
+      switch (n.category) {
+        case "inbox": target = "/inbox"; break;
+        case "conversation": target = "/conversations"; break;
+        case "status": target = "/calendar"; break;
+        case "system": target = "/settings"; break;
+        default: target = "/dashboard";
+      }
+    }
+    // Only navigate to in-app paths. Avoid any absolute URL leaking
+    // in from a prompt-injection-ish payload or an old migration.
+    if (!target.startsWith("/")) return;
+    router.push(target);
   }
 
   // Count is derived from the local notifications array (the same

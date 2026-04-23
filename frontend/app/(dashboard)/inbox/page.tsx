@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { API_URL, authFetch, inbox } from "@/lib/api";
 import { AGENT_NAMES, AGENT_COLORS } from "@/lib/agent-config";
 import EmailEditor from "@/components/shared/EmailEditor";
@@ -318,19 +319,26 @@ export default function InboxPage() {
     fetchItems();
   }, [fetchItems]);
 
-  // After items load, restore the selected item from the URL ?id=...
-  // param so refresh + shareable links land the user on the same row.
+  // Reactive URL → selected-item sync. Uses useSearchParams so the
+  // effect fires not only on mount (initial load) but also when
+  // another component navigates here via router.push("/inbox?id=X")
+  // — the notification bell click-handler does exactly that. Without
+  // this, a user already on /inbox who clicks a notification would
+  // see the URL change but the selection wouldn't update.
+  const searchParams = useSearchParams();
+  const urlItemId = searchParams?.get("id") || "";
   useEffect(() => {
-    if (initialUrlState.id && items.length > 0 && !selected) {
-      const found = items.find((i) => i.id === initialUrlState.id);
-      if (found) {
-        setSelected(found);
-        const idx = items.findIndex((i) => i.id === found.id);
-        if (idx >= 0) setKeyboardIndex(idx);
-      }
+    if (!urlItemId) return;
+    if (selected?.id === urlItemId) return;
+    if (items.length === 0) return;
+    const found = items.find((i) => i.id === urlItemId);
+    if (found) {
+      setSelected(found);
+      const idx = items.findIndex((i) => i.id === found.id);
+      if (idx >= 0) setKeyboardIndex(idx);
+      setMobileShowDetail(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items]);
+  }, [urlItemId, items, selected?.id]);
 
   // Sync URL query params whenever tab / page / selected id change.
   // Uses replaceState (not pushState) so back-button doesn't get

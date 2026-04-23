@@ -4110,10 +4110,13 @@ async def _run_agent_to_inbox(
                 "priority": priority,
             }, room=tenant_id)
             n_type = "approval_needed" if item_status == "draft_pending_approval" else "inbox_new_item"
+            # Deep-link the notification directly to this inbox row so
+            # clicking the bell takes the user to exactly what the
+            # notification is about, not just the generic inbox list.
             await _notify(
                 tenant_id, n_type, title,
                 body=content[:200] if content else "",
-                href="/inbox",
+                href=f"/inbox?id={placeholder_id}",
                 category="inbox",
                 priority=priority,
             )
@@ -4898,7 +4901,7 @@ async def _dispatch_paperclip_and_watch_to_inbox(
             await _notify(
                 tenant_id, "inbox_new_item", title,
                 body=output[:200],
-                href="/inbox",
+                href=f"/inbox?id={placeholder_id}",
                 category="inbox",
                 priority=priority,
             )
