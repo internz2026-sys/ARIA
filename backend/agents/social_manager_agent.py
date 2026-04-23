@@ -130,6 +130,16 @@ Rules:
                 for p in posts:
                     p["image_url"] = attached_image_url
             result["social_posts"] = posts
+            # Re-serialize the raw result so the `image_url` survives
+            # persistence. The inbox watcher saves result["result"] to
+            # the `content` column verbatim, and the frontend's
+            # parseSocialPosts reads posts back out of that string. If
+            # we only mutated the Python dict, the URL would be lost.
+            if attached_image_url:
+                result["result"] = json.dumps({
+                    "action": "adapt_content",
+                    "posts": posts,
+                })
         if attached_image_url:
             result["image_url"] = attached_image_url
 

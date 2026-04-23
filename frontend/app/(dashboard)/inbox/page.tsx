@@ -27,7 +27,31 @@ interface InboxItem {
   status: string;
   priority: string;
   created_at: string;
-  email_draft?: EmailDraft | null;
+  email_draft?: (EmailDraft & { image_urls?: string[] }) | null;
+}
+
+/** Extract the first attached image URL for the list row thumbnail.
+ *  Sources (in priority order):
+ *    1. email_draft.image_urls[0] — Email Marketer attaches media here
+ *    2. parsed social_posts[0].image_url — Social Manager attaches here
+ *    3. Markdown ![](url) / raw image URL in `content` — Media Designer
+ *       rows and any ad-hoc image links the agent embedded inline.
+ */
+function getInboxThumbnail(item: InboxItem): string | null {
+  if (item.email_draft?.image_urls?.[0]) return item.email_draft.image_urls[0]!;
+  try {
+    const s = item.content.indexOf("{");
+    const e = item.content.lastIndexOf("}") + 1;
+    if (s >= 0 && e > s) {
+      const data = JSON.parse(item.content.substring(s, e));
+      const firstWithImg = data?.posts?.find((p: any) => p?.image_url);
+      if (firstWithImg?.image_url) return firstWithImg.image_url;
+    }
+  } catch {}
+  const md = item.content.match(/!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/);
+  if (md) return md[1];
+  const raw = item.content.match(/https?:\/\/\S+?\.(?:png|jpg|jpeg|gif|webp)(?:\?\S*)?/i);
+  return raw ? raw[0] : null;
 }
 
 const STATUS_TABS = [
@@ -1179,6 +1203,16 @@ export default function InboxPage() {
                       ))}
                     </div>
                   )}
+                  {(post as any).image_url && (
+                    <div className="mt-3 rounded-xl overflow-hidden border border-gray-200 bg-gray-50">
+                      <img
+                        src={(post as any).image_url}
+                        alt="Attached media"
+                        className="w-full h-auto object-cover max-h-[360px]"
+                        loading="lazy"
+                      />
+                    </div>
+                  )}
                 </div>
                 {/* Footer with engagement placeholders */}
                 <div className="flex items-center gap-8 px-4 py-2.5 border-t border-gray-100 text-[#536471]">
@@ -1522,10 +1556,26 @@ export default function InboxPage() {
                       </span>
                       <span className="text-xs text-[#9E9C95] ml-auto">{timeAgo(item.created_at)}</span>
                     </div>
-                    <h4 className="text-sm font-semibold text-[#2C2C2A] truncate">{item.title}</h4>
-                    {item.email_draft?.preview_snippet && (
-                      <p className="text-xs text-[#9E9C95] mt-1 line-clamp-2">{item.email_draft.preview_snippet}</p>
-                    )}
+                    <div className="flex items-start gap-3">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="text-sm font-semibold text-[#2C2C2A] truncate">{item.title}</h4>
+                        {item.email_draft?.preview_snippet && (
+                          <p className="text-xs text-[#9E9C95] mt-1 line-clamp-2">{item.email_draft.preview_snippet}</p>
+                        )}
+                      </div>
+                      {(() => {
+                        const thumb = getInboxThumbnail(item);
+                        if (!thumb) return null;
+                        return (
+                          <img
+                            src={thumb}
+                            alt=""
+                            className="w-12 h-12 rounded-md object-cover border border-[#E0DED8] shrink-0"
+                            loading="lazy"
+                          />
+                        );
+                      })()}
+                    </div>
                     <div className="flex items-center gap-2 mt-2">
                       <span className="text-[11px] px-2 py-0.5 rounded-full bg-[#F8F8F6] text-[#5F5E5A] border border-[#E0DED8]">
                         {typeLabel(item.type)}
