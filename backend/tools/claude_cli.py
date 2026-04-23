@@ -39,6 +39,19 @@ def _get_supabase():
 
 # Configurable limits (per tenant, per hour)
 HOURLY_REQUEST_LIMIT = int(os.getenv("ARIA_HOURLY_REQUEST_LIMIT", "60"))
+HOURLY_TOKEN_LIMIT = int(os.getenv("ARIA_HOURLY_TOKEN_LIMIT", "200000"))
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate — 4 chars per token is the standard heuristic
+    for English Claude prompts. Not exact, but reliable enough for
+    rate-limit tracking and dashboard display since the real Claude CLI
+    doesn't emit usage metadata in --output-format=text mode (switching
+    to JSON would risk breaking every caller that treats the return
+    value as plain text)."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
 
 # Per-agent hourly limits (requests) — keeps any single agent from hogging the budget
 AGENT_HOURLY_LIMITS: dict[str, dict] = {
@@ -418,19 +431,36 @@ async def call_claude(
 
     result = _safe_decode(stdout).strip()
 
-    # Update usage tracking
+    # Token tracking — estimate from input/output text length since the
+    # --output-format=text CLI doesn't emit usage metadata. 4 chars per
+    # token is the standard English heuristic. Good enough for rate
+    # limits and dashboard display; exact accounting would require
+    # switching the CLI to --output-format=json which breaks every
+    # caller that treats the return value as plain text.
+    input_text = (system_prompt or "") + (prompt or "")
+    input_tokens = _estimate_tokens(input_text)
+    output_tokens = _estimate_tokens(result)
+
+    # Update usage tracking — tenant-scoped counters
     usage = _load_usage(tenant_id)
     usage["requests"] += 1
+    usage["input_tokens"] = (usage.get("input_tokens") or 0) + input_tokens
+    usage["output_tokens"] = (usage.get("output_tokens") or 0) + output_tokens
     _usage_cache_set(tenant_id, usage)
     _save_usage(tenant_id, usage)
 
     if agent_id:
         agent_usage = _get_agent_usage(tenant_id, agent_id)
         agent_usage["requests"] += 1
+        agent_usage["input_tokens"] = (agent_usage.get("input_tokens") or 0) + input_tokens
+        agent_usage["output_tokens"] = (agent_usage.get("output_tokens") or 0) + output_tokens
+        agent_usage["total_tokens"] = agent_usage["input_tokens"] + agent_usage["output_tokens"]
 
     if tenant_id != "global":
         global_usage = _load_usage("global")
         global_usage["requests"] += 1
+        global_usage["input_tokens"] = (global_usage.get("input_tokens") or 0) + input_tokens
+        global_usage["output_tokens"] = (global_usage.get("output_tokens") or 0) + output_tokens
         _usage_cache_set("global", global_usage)
         _save_usage("global", global_usage)
 

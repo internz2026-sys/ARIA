@@ -3238,9 +3238,149 @@ async def dashboard_inbox(tenant_id: str):
 
 @app.get("/api/analytics/{tenant_id}")
 async def analytics_data(tenant_id: str, date_range: str = "7d"):
+    """Aggregated analytics for the Analytics page.
+
+    Pulls data from inbox_items, tasks, agent_logs, and scheduled_tasks
+    to produce the KPI cards + activity chart + breakdowns + recent
+    feed the frontend renders. Every aggregation is best-effort: a
+    missing table or bad row never crashes the endpoint, the affected
+    bucket just returns empty.
+    """
+    days = 7 if date_range == "7d" else 30 if date_range == "30d" else 90
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    sb = _get_supabase()
+
+    # ── Inbox items: source of most analytics ─────────────────────
+    inbox_rows: list[dict] = []
+    try:
+        res = (
+            sb.table("inbox_items")
+            .select("id, agent, type, status, title, created_at")
+            .eq("tenant_id", tenant_id)
+            .gte("created_at", cutoff_iso)
+            .order("created_at", desc=True)
+            .limit(2000)
+            .execute()
+        )
+        inbox_rows = list(res.data or [])
+    except Exception as e:
+        logger.debug("[analytics] inbox_items fetch failed: %s", e)
+
+    # ── Aggregations ──────────────────────────────────────────────
+    activity_by_day: dict[str, dict[str, int]] = {}
+    by_agent: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    by_status: dict[str, int] = {}
+
+    # Seed all days so the chart x-axis is continuous even on quiet days
+    for i in range(days):
+        day = (datetime.now(timezone.utc) - timedelta(days=days - 1 - i)).strftime("%Y-%m-%d")
+        activity_by_day[day] = {"total": 0}
+
+    _TYPE_BUCKET = {
+        "email_sequence": "email", "email": "email",
+        "social_post": "social", "social": "social",
+        "image": "image", "image_request": "image",
+        "blog_post": "content", "article": "content", "landing_page": "content",
+        "ad_campaign": "ad",
+    }
+
+    for row in inbox_rows:
+        created = (row.get("created_at") or "")[:10]
+        if created and created in activity_by_day:
+            bucket = _TYPE_BUCKET.get(row.get("type") or "", "other")
+            activity_by_day[created]["total"] = activity_by_day[created].get("total", 0) + 1
+            activity_by_day[created][bucket] = activity_by_day[created].get(bucket, 0) + 1
+        agent = row.get("agent") or "unknown"
+        by_agent[agent] = by_agent.get(agent, 0) + 1
+        rtype = row.get("type") or "unknown"
+        by_type[rtype] = by_type.get(rtype, 0) + 1
+        rstatus = row.get("status") or "unknown"
+        by_status[rstatus] = by_status.get(rstatus, 0) + 1
+
+    activity_series = [
+        {"date": day, **counts} for day, counts in sorted(activity_by_day.items())
+    ]
+
+    # ── Recent activity feed (last 10 across all types) ───────────
+    recent_activity = [
+        {
+            "id": r.get("id"),
+            "agent": r.get("agent"),
+            "type": r.get("type"),
+            "status": r.get("status"),
+            "title": (r.get("title") or "")[:120],
+            "created_at": r.get("created_at"),
+        }
+        for r in inbox_rows[:10]
+    ]
+
+    # ── Task completion / scheduled task stats ────────────────────
+    task_totals = {"total": 0, "completed": 0, "in_progress": 0, "failed": 0}
+    try:
+        tasks_res = (
+            sb.table("tasks")
+            .select("status")
+            .eq("tenant_id", tenant_id)
+            .gte("created_at", cutoff_iso)
+            .limit(2000)
+            .execute()
+        )
+        for t in tasks_res.data or []:
+            s = (t.get("status") or "").lower()
+            task_totals["total"] += 1
+            if s in ("done", "completed"):
+                task_totals["completed"] += 1
+            elif s in ("in_progress", "working", "running"):
+                task_totals["in_progress"] += 1
+            elif s in ("failed", "cancelled", "canceled", "error"):
+                task_totals["failed"] += 1
+    except Exception as e:
+        logger.debug("[analytics] tasks fetch failed: %s", e)
+
+    scheduled_totals = {"upcoming": 0, "executed": 0, "failed": 0}
+    try:
+        sched_res = (
+            sb.table("scheduled_tasks")
+            .select("status, scheduled_at")
+            .eq("tenant_id", tenant_id)
+            .gte("created_at", cutoff_iso)
+            .limit(2000)
+            .execute()
+        )
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for t in sched_res.data or []:
+            s = (t.get("status") or "").lower()
+            if s in ("sent", "executed", "completed", "done"):
+                scheduled_totals["executed"] += 1
+            elif s in ("failed", "cancelled", "canceled", "error"):
+                scheduled_totals["failed"] += 1
+            elif (t.get("scheduled_at") or "") > now_iso:
+                scheduled_totals["upcoming"] += 1
+    except Exception as e:
+        logger.debug("[analytics] scheduled_tasks fetch failed: %s", e)
+
+    # ── Totals / KPIs derived from above ──────────────────────────
+    totals = {
+        "items": len(inbox_rows),
+        "agents_active": len(by_agent),
+        "types_active": len(by_type),
+        "days_in_range": days,
+    }
+
     return {
         "tenant_id": tenant_id,
         "date_range": date_range,
+        "totals": totals,
+        "activity_series": activity_series,
+        "by_agent": [{"agent": k, "count": v} for k, v in sorted(by_agent.items(), key=lambda x: -x[1])],
+        "by_type": [{"type": k, "count": v} for k, v in sorted(by_type.items(), key=lambda x: -x[1])],
+        "by_status": [{"status": k, "count": v} for k, v in sorted(by_status.items(), key=lambda x: -x[1])],
+        "recent_activity": recent_activity,
+        "tasks": task_totals,
+        "scheduled_tasks": scheduled_totals,
+        # Keep the old funnel shape so the demo endpoint callers don't break.
         "funnel": {
             "impressions": 0, "clicks": 0, "signups": 0,
             "activated": 0, "converted": 0, "retained": 0,
