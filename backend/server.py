@@ -4221,6 +4221,136 @@ async def _run_agent_to_inbox(
                 pass
 
 
+async def _media_safety_net(
+    tenant_id: str,
+    placeholder_id: str | None,
+    task_desc: str,
+    task_id: str | None,
+) -> None:
+    """Safety net for Media delegations.
+
+    The primary path goes through Paperclip: the Media Designer agent
+    refines the prompt and curls POST /api/media/<tenant>/generate,
+    which triggers Pollinations → Supabase → inbox update. When that
+    works, this helper exits silently without doing anything.
+
+    When the Paperclip agent fails to curl (writes a prompt and stops,
+    or hangs, or drifts off the MD), the placeholder stays in
+    `processing` state indefinitely. This helper waits 45s, then
+    checks the placeholder status. If it's still processing, we call
+    media_agent.run() locally with the task description as the prompt
+    — preserving the Pollinations pipeline but bypassing the
+    unreliable Paperclip step. The user never sees a stuck row.
+    """
+    if not placeholder_id:
+        return
+    _log = logging.getLogger("aria.media_safety")
+    # Wait for the Paperclip Media Designer to do its job. 45s covers
+    # typical prompt refine (~3-8s) + Pollinations generation (~10-20s)
+    # + Supabase upload (~2-3s) with plenty of headroom.
+    await asyncio.sleep(45)
+
+    sb = _get_supabase()
+    # Is the placeholder already resolved? If so, Paperclip path won.
+    try:
+        row = await asyncio.to_thread(
+            lambda: sb.table("inbox_items")
+            .select("id, status, content")
+            .eq("id", placeholder_id)
+            .limit(1)
+            .execute()
+        )
+        if not row.data:
+            _log.info("[media-safety] placeholder %s gone — assume Paperclip path succeeded", placeholder_id)
+            return
+        data = row.data[0]
+        status = (data.get("status") or "").lower()
+        content = data.get("content") or ""
+        # "processing" + no image URL embedded in content = stuck.
+        # If the row was already updated (status != processing) OR the
+        # content contains an image URL, the Paperclip path won.
+        has_image = bool(re.search(r"https?://\S+\.(?:png|jpg|jpeg|webp|gif)", content, re.IGNORECASE))
+        if status != "processing" or has_image:
+            _log.info(
+                "[media-safety] placeholder %s resolved via Paperclip (status=%s, has_image=%s) — skip fallback",
+                placeholder_id, status, has_image,
+            )
+            return
+    except Exception as e:
+        _log.debug("[media-safety] placeholder lookup failed: %s", e)
+        return
+
+    # Paperclip path stalled. Run the local media_agent as a fallback.
+    _log.warning(
+        "[media-safety] Paperclip Media Designer did not produce an image after 45s — "
+        "falling back to local media_agent.run() for %s", placeholder_id,
+    )
+    try:
+        from backend.agents import media_agent
+        result = await media_agent.run(tenant_id, {"prompt": task_desc})
+    except Exception as e:
+        _log.error("[media-safety] media_agent.run failed: %s", e)
+        result = None
+
+    image_url = None
+    if isinstance(result, dict):
+        r = result.get("result") or {}
+        if isinstance(r, dict):
+            image_url = r.get("image_url")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if image_url:
+        # media_agent.run() already created its own inbox row. Delete
+        # the placeholder so the canonical agent row is the one the
+        # user sees.
+        try:
+            await asyncio.to_thread(
+                lambda: sb.table("inbox_items").delete().eq("id", placeholder_id).execute()
+            )
+            if tenant_id:
+                try:
+                    await sio.emit("inbox_updated", {"action": "deleted", "id": placeholder_id}, room=tenant_id)
+                except Exception:
+                    pass
+        except Exception as e:
+            _log.warning("[media-safety] placeholder delete failed: %s", e)
+        if task_id:
+            try:
+                await asyncio.to_thread(lambda: sb.table("tasks").update({
+                    "status": "done",
+                    "updated_at": now_iso,
+                }).eq("id", task_id).execute())
+                if tenant_id:
+                    try:
+                        await sio.emit("task_updated", {
+                            "id": task_id, "agent": "media",
+                            "status": "done", "task": task_desc,
+                        }, room=tenant_id)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    else:
+        # Both paths failed. Surface the error so the user isn't stuck.
+        try:
+            await asyncio.to_thread(lambda: sb.table("inbox_items").update({
+                "title": f"Failed to generate image: {task_desc[:80]}",
+                "content": "Image generation failed via both Paperclip and the local fallback. Check backend logs for the Pollinations / Gemini / Supabase error.",
+                "status": "needs_review",
+                "updated_at": now_iso,
+            }).eq("id", placeholder_id).execute())
+        except Exception as e:
+            _log.warning("[media-safety] failure update errored: %s", e)
+        if task_id:
+            try:
+                await asyncio.to_thread(lambda: sb.table("tasks").update({
+                    "status": "failed",
+                    "updated_at": now_iso,
+                }).eq("id", task_id).execute())
+            except Exception:
+                pass
+
+
 async def _dispatch_paperclip_and_watch_to_inbox(
     tenant_id: str,
     agent_id: str,
@@ -4271,12 +4401,15 @@ async def _dispatch_paperclip_and_watch_to_inbox(
 
     paperclip_issue_id = result.get("paperclip_issue_id") if isinstance(result, dict) else None
 
-    # Media special-case: we still create the placeholder so the user sees
-    # "Media is working on..." instantly, but we skip the Paperclip-comment
-    # polling/update phase. The Media Designer's instruction MD tells it to
-    # curl /api/media/<tenant>/generate, which UPDATES this placeholder in
-    # place with the real Pollinations PNG. Polling Paperclip comments was
-    # the source of stale-URL pollution and duplicate rows.
+    # Media special-case: placeholder goes up instantly for UX, then
+    # the Paperclip Media Designer runs (refines the prompt + curls
+    # /api/media/<tenant>/generate → Pollinations → Supabase → inbox
+    # update). A 45s safety-net runs in the background: if the
+    # placeholder is still "processing" after the deadline, we
+    # assume the Paperclip agent skipped the curl step and call
+    # media_agent.run() locally with the task description as the
+    # prompt. That way the primary Paperclip path is unchanged, but
+    # the user never sees a stuck "Media is working on..." row.
     if agent_id == "media":
         placeholder_content_type = _infer_content_type(agent_id, "")
         placeholder = _save_inbox_item(
@@ -4309,6 +4442,16 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                 _add_processed(paperclip_issue_id)  # block global poller too
             except Exception:
                 pass
+
+        _safe_background(
+            _media_safety_net(
+                tenant_id=tenant_id,
+                placeholder_id=placeholder["id"] if placeholder else None,
+                task_desc=task_desc,
+                task_id=task_id,
+            ),
+            label="media-safety-net",
+        )
         return
 
     # Phase 2: create the placeholder inbox row. If we got an issue id,
