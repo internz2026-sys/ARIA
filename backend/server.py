@@ -1225,6 +1225,19 @@ _SOCIAL_META_PATTERNS = (
         r"(to|into)\s+(aria\s+)?inbox(\s+item)?\s*:?\s*[a-f0-9-]{6,}\s*\.?",
         re.IGNORECASE,
     ),
+    # Bare trailing leak: "Delivered to ARIA inbox: Item ID <uuid>
+    # with status ready for user review and publishing." Starts with
+    # a VERB not a noun, so the pattern above misses it.
+    re.compile(
+        r"(?:^|\s)(delivered|submitted|saved|returned|sent|pushed)\s+"
+        r"(to|into)\s+(aria\s+)?inbox[^.\n]*?(item\s+id\s*:?\s*)?[a-f0-9-]{6,}[^.\n]*\.?",
+        re.IGNORECASE,
+    ),
+    # "Item ID: <uuid>" on its own or with trailing status text
+    re.compile(
+        r"\bitem\s+id\s*:?\s*[a-f0-9-]{6,}[^\n]*",
+        re.IGNORECASE,
+    ),
     # "(inbox item <uuid>)" / "(item <uuid>)" parentheticals
     re.compile(r"\(\s*(inbox\s+)?item\s+[a-f0-9-]{6,}\s*\)", re.IGNORECASE),
     # Trailing "— ready for approval and publishing" / "ready for review"

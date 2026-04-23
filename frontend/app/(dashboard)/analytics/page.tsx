@@ -4,13 +4,74 @@ import React, { useState, useEffect } from "react";
 import { API_URL, authFetch } from "@/lib/api";
 const dateRanges = ["Last 7 days", "Last 30 days", "Last 90 days"];
 
+type KpiBucket = {
+  content_published: { value: number; delta: number; delta_pct: number };
+  emails_sent: { value: number; open_rate: number; click_rate: number };
+  social_engagement: { value: number; delta_pct: number };
+  ad_spend: { value: number; roas: number };
+};
+
 export default function AnalyticsPage() {
   const [activeRange, setActiveRange] = useState("Last 7 days");
   const [funnel, setFunnel] = useState({ impressions: 0, clicks: 0, signups: 0, activated: 0, converted: 0, retained: 0 });
+  const [kpis, setKpis] = useState<KpiBucket>({
+    content_published: { value: 0, delta: 0, delta_pct: 0 },
+    emails_sent: { value: 0, open_rate: 0, click_rate: 0 },
+    social_engagement: { value: 0, delta_pct: 0 },
+    ad_spend: { value: 0, roas: 0 },
+  });
+  const [enabledAgents, setEnabledAgents] = useState<string[]>([]);
 
   useEffect(() => {
     authFetch(`${API_URL}/api/analytics/demo?date_range=7d`).then(r => r.json()).then(d => d.funnel && setFunnel(d.funnel)).catch(() => {});
+
+    // Moved from the Dashboard page so Analytics is the single home
+    // for quantitative performance KPIs (Dashboard stays focused on
+    // today's activity, status, and delegation).
+    const tid = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") : null;
+    if (tid) {
+      authFetch(`${API_URL}/api/dashboard/${tid}/stats`)
+        .then(r => r.json())
+        .then(d => d.kpis && setKpis(d.kpis))
+        .catch(() => {});
+      authFetch(`${API_URL}/api/dashboard/${tid}/config`)
+        .then(r => r.json())
+        .then(d => Array.isArray(d.active_agents) && setEnabledAgents(d.active_agents))
+        .catch(() => {});
+    }
   }, []);
+
+  const allKpiCards = [
+    {
+      label: "Content Published",
+      value: kpis.content_published.value,
+      display: String(kpis.content_published.value),
+      sub: kpis.content_published.delta ? `+${kpis.content_published.delta} this week` : "Drafts will appear in your inbox",
+      requiresAgent: "content_writer",
+    },
+    {
+      label: "Emails Sent",
+      value: kpis.emails_sent.value,
+      display: kpis.emails_sent.value.toLocaleString(),
+      sub: kpis.emails_sent.value ? `${kpis.emails_sent.open_rate}% open rate` : "Not sending yet",
+      requiresAgent: "email_marketer",
+    },
+    {
+      label: "Social Engagement",
+      value: kpis.social_engagement.value,
+      display: String(kpis.social_engagement.value),
+      sub: kpis.social_engagement.value ? `+${kpis.social_engagement.delta_pct}% vs last week` : "No posts yet",
+      requiresAgent: "social_manager",
+    },
+    {
+      label: "Ad Spend",
+      value: kpis.ad_spend.value,
+      display: kpis.ad_spend.value ? `$${kpis.ad_spend.value}` : "$0",
+      sub: kpis.ad_spend.value ? `${kpis.ad_spend.roas}x ROAS` : "No campaigns running",
+      requiresAgent: "ad_strategist",
+    },
+  ];
+  const kpiCards = allKpiCards.filter(k => k.value > 0 || enabledAgents.includes(k.requiresAgent));
 
   const hasData = Object.values(funnel).some(v => v > 0);
 
@@ -36,6 +97,21 @@ export default function AnalyticsPage() {
           ))}
         </div>
       </div>
+
+      {/* KPI cards — moved from the Dashboard page so Analytics is the
+          authoritative home for quantitative performance metrics.
+          Layout + filtering behavior preserved from the original. */}
+      {kpiCards.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {kpiCards.map((kpi) => (
+            <div key={kpi.label} className="bg-white rounded-xl border border-[#E0DED8] p-5 hover:shadow-sm transition-shadow">
+              <p className="text-sm text-[#5F5E5A] font-medium">{kpi.label}</p>
+              <p className={`text-3xl font-semibold mt-1 ${kpi.value ? "text-[#2C2C2A]" : "text-[#E0DED8]"}`}>{kpi.display}</p>
+              <p className={`text-xs mt-2 ${kpi.value ? "text-[#1D9E75] font-medium" : "text-[#6B6A65]"}`}>{kpi.sub}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {!hasData ? (
         <div className="bg-white rounded-xl border border-[#E0DED8] min-h-[400px] flex items-center justify-center">

@@ -195,49 +195,6 @@ export default function DashboardPage() {
     }
   }
 
-  // KPI cards: hide cards whose value is 0 AND whose corresponding agent
-  // isn't enabled. A first-time user with only 3 agents enabled (e.g.
-  // CEO + content_writer + email_marketer) shouldn't see two grey
-  // "Social Engagement: 0" / "Ad Spend: $0" cards making them feel like
-  // the product isn't doing anything. Show only relevant + active KPIs.
-  const enabledAgents = biz?.active_agents || [];
-  const allKpiCards = [
-    {
-      label: "Content Published",
-      value: kpis.content_published.value,
-      display: String(kpis.content_published.value),
-      sub: kpis.content_published.delta ? `+${kpis.content_published.delta} this week` : "Drafts will appear in your inbox",
-      requiresAgent: "content_writer",
-    },
-    {
-      label: "Emails Sent",
-      value: kpis.emails_sent.value,
-      display: kpis.emails_sent.value.toLocaleString(),
-      sub: kpis.emails_sent.value ? `${kpis.emails_sent.open_rate}% open rate` : "Not sending yet",
-      requiresAgent: "email_marketer",
-    },
-    {
-      label: "Social Engagement",
-      value: kpis.social_engagement.value,
-      display: String(kpis.social_engagement.value),
-      sub: kpis.social_engagement.value ? `+${kpis.social_engagement.delta_pct}% vs last week` : "No posts yet",
-      requiresAgent: "social_manager",
-    },
-    {
-      label: "Ad Spend",
-      value: kpis.ad_spend.value,
-      display: kpis.ad_spend.value ? `$${kpis.ad_spend.value}` : "$0",
-      sub: kpis.ad_spend.value ? `${kpis.ad_spend.roas}x ROAS` : "No campaigns running",
-      requiresAgent: "ad_strategist",
-    },
-  ];
-  const kpiCards = allKpiCards.filter((kpi) => {
-    // Show the card if value > 0 (real activity) OR the agent is enabled
-    if (kpi.value > 0) return true;
-    // No activity yet -- only show if the user actually has the agent on
-    return enabledAgents.includes(kpi.requiresAgent);
-  });
-
   return (
     <div className="space-y-6 max-w-[1400px]">
       {/* Greeting */}
@@ -328,16 +285,10 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {kpiCards.map((kpi) => (
-          <div key={kpi.label} className="bg-white rounded-xl border border-[#E0DED8] p-5 hover:shadow-sm transition-shadow">
-            <p className="text-sm text-[#5F5E5A] font-medium">{kpi.label}</p>
-            <p className={`text-3xl font-semibold mt-1 ${kpi.value ? "text-[#2C2C2A]" : "text-[#E0DED8]"}`}>{kpi.display}</p>
-            <p className={`text-xs mt-2 ${kpi.value ? "text-[#1D9E75] font-medium" : "text-[#6B6A65]"}`}>{kpi.sub}</p>
-          </div>
-        ))}
-      </div>
+      {/* KPI Cards moved to /analytics (Content Published, Emails
+          Sent, Social Engagement, Ad Spend). Dashboard keeps the
+          activity / status / delegation surface; Analytics owns the
+          quantitative performance view. */}
 
       {/* ─── Project Management Board ─── */}
       <div className="bg-white rounded-xl border border-[#E0DED8]">

@@ -1364,8 +1364,53 @@ export default function InboxPage() {
               </div>
             );
           }) : !isEditing ? (
-            <div className="prose prose-sm max-w-none text-[#2C2C2A]">
-              {renderInlineMarkdown(item.content)}
+            <div className="space-y-3">
+              {/* Needs-regeneration panel — this row is typed as
+                  social_post but the agent returned a description
+                  instead of parseable JSON posts. Show a clear CTA
+                  to regenerate instead of dumping the raw summary. */}
+              <div className="rounded-xl border-2 border-[#D85A30]/30 bg-gradient-to-r from-[#FDEEE8] to-[#FFFCFA] p-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-full bg-[#D85A30]/15 flex items-center justify-center flex-shrink-0">
+                    <svg className="w-5 h-5 text-[#D85A30]" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m0 3.75h.008v-.008H12v.008zm0-12a9 9 0 100 18 9 9 0 000-18z" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h4 className="text-sm font-semibold text-[#2C2C2A]">This social post needs regenerating</h4>
+                    <p className="text-sm text-[#5F5E5A] mt-1 leading-relaxed">
+                      The Social Manager returned a summary instead of actual post text. No platform cards to render. Ask the CEO to regenerate the post — the agent should produce a tweet and a LinkedIn post you can publish directly.
+                    </p>
+                    <button
+                      onClick={() => {
+                        const message = `Regenerate the social posts for this task: "${item.title}". Make sure to write the actual tweet text and LinkedIn post text — not a description of what they would be.`;
+                        try {
+                          navigator.clipboard.writeText(message);
+                          showToast({ title: "Regenerate prompt copied", body: "Paste it into the CEO chat.", variant: "success" });
+                        } catch {
+                          showToast({ title: "Couldn't copy", body: message, variant: "info" });
+                        }
+                      }}
+                      className="mt-3 flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#D85A30] text-white hover:bg-[#B8491F] transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                      </svg>
+                      Copy regenerate prompt
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {/* Still show the raw agent output below, collapsed, so
+                  the user can see what the agent actually wrote. */}
+              <details className="rounded-lg border border-[#E0DED8] bg-[#F8F8F6]">
+                <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-[#5F5E5A] hover:bg-white transition-colors">
+                  Show what the agent wrote instead
+                </summary>
+                <div className="px-3 pb-3 pt-1 prose prose-sm max-w-none text-[#2C2C2A]">
+                  {renderInlineMarkdown(item.content)}
+                </div>
+              </details>
             </div>
           ) : null}
         </div>
