@@ -1214,9 +1214,16 @@ _SOCIAL_META_PATTERNS = (
     # with or without the parenthetical id, with or without the status
     # and ready-clause tails.
     re.compile(
-        r"\b(posts?|tweets?|emails?|drafts?|content)\s+(saved|stored|added|pushed)\s+"
+        r"\b(posts?|tweets?|emails?|drafts?|content)\s+(saved|stored|added|pushed|delivered|submitted|returned|sent)\s+"
         r"(to|into)\s+(aria\s+)?inbox[^\n]*$",
         re.IGNORECASE | re.MULTILINE,
+    ),
+    # Inline variant: "Posts delivered to ARIA inbox item: <uuid>"
+    # where the UUID is on the same line (not trailing the paragraph).
+    re.compile(
+        r"\b(posts?|tweets?|emails?|drafts?|content)\s+(saved|stored|added|pushed|delivered|submitted|returned|sent)\s+"
+        r"(to|into)\s+(aria\s+)?inbox(\s+item)?\s*:?\s*[a-f0-9-]{6,}\s*\.?",
+        re.IGNORECASE,
     ),
     # "(inbox item <uuid>)" / "(item <uuid>)" parentheticals
     re.compile(r"\(\s*(inbox\s+)?item\s+[a-f0-9-]{6,}\s*\)", re.IGNORECASE),
@@ -4651,6 +4658,135 @@ class CreateInboxItem(BaseModel):
     paperclip_issue_id: str | None = None
 
 
+def _merge_into_recent_social_row(tenant_id: str, body: "CreateInboxItem") -> dict | None:
+    """Merge a new social_post into a recent social_post row for the
+    same tenant+agent, if one exists within the last 90 seconds.
+
+    Agents sometimes split platforms into multiple POSTs (one for X,
+    one for LinkedIn, one for Facebook). The frontend's platform-card
+    UI only renders when all platforms live in one row's `content`
+    JSON posts array. This helper finds the existing row and appends
+    the incoming platforms to its posts array — no duplicate rows,
+    all platforms render as cards inside a single inbox entry.
+
+    Returns the updated row dict on successful merge, or None when
+    no recent row exists and the caller should proceed with a normal
+    insert.
+    """
+    try:
+        sb = _get_supabase()
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+        recent = (
+            sb.table("inbox_items")
+            .select("id, content, title, status")
+            .eq("tenant_id", tenant_id)
+            .eq("agent", "social_manager")
+            .eq("type", "social_post")
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not recent.data:
+            return None
+        existing = recent.data[0]
+    except Exception as e:
+        logging.getLogger("aria.inbox").debug(
+            "[social-merge] recent-row lookup failed: %s", e,
+        )
+        return None
+
+    # Parse posts out of BOTH rows, merge by platform (new wins when
+    # both have the same platform — the newer payload is fresher).
+    import json as _json_inner
+
+    def _extract_posts(text: str) -> list[dict]:
+        if not text:
+            return []
+        try:
+            s = text.find("{")
+            e = text.rfind("}") + 1
+            if s >= 0 and e > s:
+                data = _json_inner.loads(text[s:e])
+                posts = data.get("posts") or []
+                if isinstance(posts, list):
+                    return [p for p in posts if isinstance(p, dict)]
+        except Exception:
+            pass
+        try:
+            s = text.find("[")
+            e = text.rfind("]") + 1
+            if s >= 0 and e > s:
+                parsed = _json_inner.loads(text[s:e])
+                if isinstance(parsed, list):
+                    return [p for p in parsed if isinstance(p, dict)]
+        except Exception:
+            pass
+        return []
+
+    existing_posts = _extract_posts(existing.get("content") or "")
+    new_posts = _extract_posts(body.content or "")
+    if not new_posts:
+        # The new POST isn't parseable as structured posts — bail, let
+        # the normal path handle it (it'll end up as plain content).
+        return None
+
+    # Merge by platform (case-insensitive). New platform text wins
+    # when both rows have the same platform (latest data is freshest).
+    by_platform: dict[str, dict] = {}
+    for p in existing_posts:
+        plat = (p.get("platform") or "").lower() or "unknown"
+        by_platform[plat] = p
+    for p in new_posts:
+        plat = (p.get("platform") or "").lower() or "unknown"
+        by_platform[plat] = p
+    merged_posts = list(by_platform.values())
+
+    merged_content = _json_inner.dumps({
+        "action": "adapt_content",
+        "posts": merged_posts,
+    })
+
+    # Use a neutral title that covers all platforms if the existing
+    # title was platform-specific (e.g. "LinkedIn Post: X" — the exact
+    # symptom of a split delegation).
+    title = existing.get("title") or body.title
+    if title and any(t in title.lower() for t in (
+        "linkedin post:", "twitter post:", "x post:", "facebook post:",
+    )):
+        # Strip the platform prefix so the row title represents ALL
+        # the platforms it now contains.
+        for prefix in ("LinkedIn Post:", "Twitter Post:", "X Post:", "Facebook Post:"):
+            if title.lower().startswith(prefix.lower()):
+                title = "Social posts:" + title[len(prefix):]
+                break
+
+    try:
+        sb = _get_supabase()
+        updated = (
+            sb.table("inbox_items")
+            .update({
+                "content": merged_content,
+                "title": title,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            .eq("id", existing["id"])
+            .execute()
+        )
+        logging.getLogger("aria.inbox").info(
+            "[social-merge] merged %d new platforms into row %s (total platforms: %d)",
+            len(new_posts), existing["id"], len(merged_posts),
+        )
+        if updated.data:
+            return updated.data[0]
+        return existing
+    except Exception as e:
+        logging.getLogger("aria.inbox").warning(
+            "[social-merge] merge update failed: %s", e,
+        )
+        return None
+
+
 @app.post("/api/inbox/{tenant_id}/items")
 async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     """Create an inbox item — used by Paperclip agents to store their output.
@@ -4696,6 +4832,27 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     # form regardless of whether the skill curl sent "email-marketer",
     # "Email Marketer", or "email_marketer".
     body.agent = _canon_agent_slug(body.agent) or body.agent
+
+    # Strip agent meta-commentary from content before anything else so
+    # leaks like "Posts delivered to ARIA inbox item: <uuid>" never
+    # land in the row. Sanitizer patterns cover "saved to ARIA inbox",
+    # "(inbox item <uuid>)", "Status: needs_review", **Post summary:**
+    # headers, and the other known meta phrases.
+    sanitized = _sanitize_social_post_text(body.content or "")
+    if sanitized and sanitized != body.content:
+        body.content = sanitized
+
+    # ── Social-post merge-window dedup ────────────────────────────────
+    # If the same tenant+agent posted a social_post row in the last 90
+    # seconds, merge the new platforms into the existing row's posts
+    # array instead of creating a new row. This is the safety net for
+    # agents that split platforms into multiple POSTs (LinkedIn row,
+    # X row, Facebook row) — the frontend can only render the
+    # platform-card UI when all platforms live in a single row.
+    if body.agent == "social_manager" and body.type == "social_post":
+        merged = _merge_into_recent_social_row(tenant_id, body)
+        if merged:
+            return {"item": merged, "merged": True}
 
     # Apply the same parser the watcher uses, so the rich fields
     # populate even when the agent skipped them in its POST body.

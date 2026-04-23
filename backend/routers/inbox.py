@@ -134,7 +134,45 @@ async def update_inbox_item(item_id: str, request: Request):
 
 @router.delete("/api/inbox/{item_id}")
 async def delete_inbox_item(item_id: str):
-    """Delete an inbox item."""
+    """Delete an inbox item + cancel the matching Paperclip issue.
+
+    When the user deletes (or cancels) an inbox row, we also tell
+    Paperclip to cancel the underlying issue and block the safety-net
+    poller from re-importing the agent's late reply. Without this,
+    deletion was ARIA-only: the agent kept grinding on its assigned
+    issue, wasted tokens, and the poller would eventually re-create
+    an inbox row from the agent's reply comment.
+    """
     sb = get_db()
+    # Look up the paperclip_issue_id before deleting so we can cancel
+    # the upstream issue. Silently skip if not found or not linked to
+    # Paperclip — not every inbox row has an upstream issue.
+    paperclip_issue_id = None
+    try:
+        row = (
+            sb.table("inbox_items")
+            .select("paperclip_issue_id")
+            .eq("id", item_id)
+            .limit(1)
+            .execute()
+        )
+        if row.data:
+            paperclip_issue_id = row.data[0].get("paperclip_issue_id")
+    except Exception:
+        pass
+
+    if paperclip_issue_id:
+        try:
+            from backend.orchestrator import _urllib_request
+            from backend.paperclip_office_sync import _add_processed
+            _urllib_request("PATCH", f"/api/issues/{paperclip_issue_id}", data={
+                "status": "cancelled",
+            })
+            # Block the global poller from re-importing this issue if
+            # the agent finishes a late reply after cancellation.
+            _add_processed(paperclip_issue_id)
+        except Exception:
+            pass
+
     sb.table("inbox_items").delete().eq("id", item_id).execute()
-    return {"deleted": item_id}
+    return {"deleted": item_id, "paperclip_cancelled": bool(paperclip_issue_id)}
