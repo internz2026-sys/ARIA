@@ -1083,6 +1083,19 @@ async def publish_linkedin_post(tenant_id: str, body: dict):
     text = body.get("text", "")
     if not text:
         raise HTTPException(status_code=400, detail="Post text is required")
+    # Sanitize agent meta-commentary so lines like "LinkedIn post for X
+    # created and saved to ARIA inbox (item <uuid>). Status: needs_review"
+    # never get published to the actual feed. Refuse if nothing
+    # substantive remains.
+    text = _sanitize_social_post_text(text)
+    if not text or len(text) < 20:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Post text looks like metadata or agent confirmation, not a "
+                "real post. Ask the CEO to regenerate the post, then publish."
+            ),
+        )
 
     result = await linkedin_tool.create_post(access_token, author_urn, text)
 
@@ -1187,6 +1200,70 @@ class SocialApproveRequest(BaseModel):
     inbox_item_id: str
 
 
+_SOCIAL_META_PATTERNS = (
+    # Opening "X post for Y created and saved to ARIA inbox (item uuid)."
+    re.compile(
+        r"^\s*(linkedin post|twitter post|tweet|x post|social post|post)s?\s+"
+        r"for\s+[^.\n]*\s+(created|saved|ready|generated)[^.\n]*"
+        r"(\(item[^)]*\))?\s*\.?\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    # Trailing "Posts saved to ARIA inbox (inbox item uuid) with status X
+    # — ready for approval and publishing." Matches plural or singular,
+    # with or without the parenthetical id, with or without the status
+    # and ready-clause tails.
+    re.compile(
+        r"\b(posts?|tweets?|emails?|drafts?|content)\s+(saved|stored|added|pushed)\s+"
+        r"(to|into)\s+(aria\s+)?inbox[^\n]*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    # "(inbox item <uuid>)" / "(item <uuid>)" parentheticals
+    re.compile(r"\(\s*(inbox\s+)?item\s+[a-f0-9-]{6,}\s*\)", re.IGNORECASE),
+    # Trailing "— ready for approval and publishing" / "ready for review"
+    re.compile(
+        r"[—\-]\s*ready\s+for\s+(approval|review|publishing|sending)[^\n]*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    # "Status: needs_review" / "Status: ready" / "with status needs_review"
+    re.compile(r"(^|\s)with\s+status\s+[a-z_]+\s*\.?", re.IGNORECASE),
+    re.compile(r"^\s*status\s*:\s*[a-z_]+\s*\.?\s*$", re.IGNORECASE | re.MULTILINE),
+    # "**Post summary:**" block header
+    re.compile(r"\*\*\s*post\s+summary\s*:?\s*\*\*", re.IGNORECASE),
+    # "Saved to ARIA inbox" / "Successfully saved"
+    re.compile(
+        r"^\s*(saved to aria inbox|successfully saved|draft saved|draft id:)[^\n]*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    # "## Done" / "## Task Complete" style confirmation headings
+    re.compile(r"^\s*#{1,3}\s+(done|task complete|result|summary)[^\n]*$", re.IGNORECASE | re.MULTILINE),
+)
+
+
+def _sanitize_social_post_text(raw: str) -> str:
+    """Strip agent meta-commentary from a would-be social post so the
+    published text isn't the agent's status message.
+
+    Matches opening "X post for Y created and saved to ARIA inbox (item
+    uuid).", parenthetical (item uuid), Status: lines, **Post summary:**
+    headers, confirmation headings like ## Done, and markdown fences.
+    Returns the cleaned string — callers should still guard on
+    len < ~20 to refuse publishing when nothing substantive remains.
+    """
+    if not raw:
+        return ""
+    clean = raw.strip()
+    # Strip markdown fences first so they don't anchor other patterns
+    if clean.startswith("```"):
+        clean = "\n".join(clean.split("\n")[1:])
+    if clean.endswith("```"):
+        clean = "\n".join(clean.split("\n")[:-1])
+    for pat in _SOCIAL_META_PATTERNS:
+        clean = pat.sub("", clean)
+    # Collapse multiple blank lines left by stripped patterns
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean
+
+
 @app.post("/api/social/{tenant_id}/approve-publish")
 async def approve_and_publish_social(tenant_id: str, body: SocialApproveRequest):
     """Approve a social post from inbox and publish to connected platforms (Twitter/X)."""
@@ -1227,15 +1304,21 @@ async def approve_and_publish_social(tenant_id: str, body: SocialApproveRequest)
         except Exception:
             pass
 
-    # Fallback: treat entire content as a single tweet
+    # Fallback: treat entire content as a single tweet. Sanitize
+    # agent meta-commentary first so things like "Tweet for SMAPS-SIS
+    # created and saved to ARIA inbox (item <uuid>). **Post summary:**
+    # ..." never get published as the actual post.
     if not posts:
-        # Strip JSON wrapper artifacts, use plain text
-        clean = content.strip()
-        # Remove markdown fences
-        if clean.startswith("```"):
-            clean = "\n".join(clean.split("\n")[1:])
-        if clean.endswith("```"):
-            clean = "\n".join(clean.split("\n")[:-1])
+        clean = _sanitize_social_post_text(content)
+        if not clean or len(clean) < 20:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No publishable post text found in this inbox row — only "
+                    "an agent summary / confirmation message. Ask the CEO to "
+                    "regenerate the post so the actual tweet lands here."
+                ),
+            )
         posts = [{"platform": "twitter", "text": clean[:280]}]
 
     # Get Twitter credentials
@@ -6318,7 +6401,15 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
         if formatted:
             clean_response = clean_response.rstrip() + "\n\n" + formatted
 
-    session.append({"role": "assistant", "content": clean_response})
+    # Persist delegations on the in-memory turn too, not just in the DB.
+    # The /history endpoint prefers the in-memory cache for speed, so if
+    # we only wrote delegations to Postgres the user would see the
+    # delegation chips on the initial reply but lose them on refresh.
+    session.append({
+        "role": "assistant",
+        "content": clean_response,
+        "delegations": delegations or [],
+    })
 
     # Persist assistant message to DB
     _save_chat_message(body.session_id, tenant_id, "assistant", clean_response, delegations)

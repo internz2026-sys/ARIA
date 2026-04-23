@@ -616,7 +616,29 @@ export default function InboxPage() {
           if (!text.includes(tagStr)) text = `${text}\n\n${tagStr}`;
         }
       } else {
-        text = item.content;
+        // Fallback path — strip agent meta-commentary (inbox item id,
+        // "Status: ...", "**Post summary:**", "X post for Y saved to
+        // ARIA inbox...") before handing to the backend. Backend also
+        // sanitizes as a belt-and-suspenders check, but doing it here
+        // means we can bail cleanly with a clear toast instead of a
+        // 400.
+        text = (item.content || "")
+          .replace(/\(\s*item\s+[a-f0-9-]{6,}\s*\)/gi, "")
+          .replace(/^\s*(linkedin post|twitter post|tweet|x post|social post|post)s?\s+for\s+[^.\n]*\s+(created|saved|ready|generated)[^.\n]*\.?$/gim, "")
+          .replace(/^\s*status\s*:\s*[a-z_]+\s*\.?$/gim, "")
+          .replace(/\*\*\s*post\s+summary\s*:?\s*\*\*/gi, "")
+          .replace(/^\s*(saved to aria inbox|successfully saved|draft saved|draft id:).*$/gim, "")
+          .replace(/^\s*#{1,3}\s+(done|task complete|result|summary).*$/gim, "")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+        if (!text || text.length < 20) {
+          showToast({
+            title: "Nothing to publish",
+            body: "This row looks like an agent summary, not a real post. Ask the CEO to regenerate the post.",
+            variant: "error",
+          });
+          return;
+        }
       }
 
       const res = await authFetch(`${API_URL}/api/linkedin/${tenantId}/post`, {
