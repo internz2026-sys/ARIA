@@ -752,10 +752,12 @@ export default function InboxPage() {
       // Extract LinkedIn-specific text from social post content
       const posts = parseSocialPosts(item.content);
       let text = "";
+      let imageUrl = "";
       if (posts.length > 0) {
         // Prefer the LinkedIn post; fall back to first post
         const post = posts.find(p => p.platform?.toLowerCase() === "linkedin") || posts[0];
         text = post.text || "";
+        imageUrl = (post as any).image_url || "";
         const hashtags = post.hashtags || [];
         if (hashtags.length > 0) {
           const tagStr = hashtags.map((t: string) => `#${t.replace(/^#/, "")}`).join(" ");
@@ -787,10 +789,17 @@ export default function InboxPage() {
         }
       }
 
+      // Fall back to the row-level thumbnail (metadata.image_url /
+      // markdown / raw URL) if no per-post image_url was set — covers
+      // older rows and the degraded-parse path.
+      if (!imageUrl) {
+        const thumb = getInboxThumbnail(item);
+        if (thumb) imageUrl = thumb;
+      }
       const res = await authFetch(`${API_URL}/api/linkedin/${tenantId}/post`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, confirmed: true }),
+        body: JSON.stringify({ text, image_url: imageUrl || undefined, confirmed: true }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));

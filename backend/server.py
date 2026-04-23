@@ -1098,7 +1098,15 @@ async def publish_linkedin_post(tenant_id: str, body: dict):
             ),
         )
 
-    result = await linkedin_tool.create_post(access_token, author_urn, text)
+    # Optional image attachment — when the post row has a resolved
+    # image_url (from Media Designer pipeline), upload it through
+    # LinkedIn's 3-step asset flow so the post renders as an image card
+    # instead of text-only. linkedin_tool.create_post falls back to
+    # text-only if any step of the upload fails.
+    image_url = (body.get("image_url") or "").strip() or None
+    result = await linkedin_tool.create_post(
+        access_token, author_urn, text, image_url=image_url,
+    )
 
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])

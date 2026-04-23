@@ -121,28 +121,179 @@ async def get_admin_organizations(access_token: str) -> list[dict]:
         return orgs
 
 
-async def create_post(access_token: str, author_urn: str, text: str) -> dict:
-    """Create a LinkedIn post.
+async def _register_image_upload(
+    client: httpx.AsyncClient, access_token: str, owner_urn: str,
+) -> tuple[str, str] | None:
+    """Register a feedshare-image upload and return (upload_url, asset_urn).
+
+    LinkedIn's ugcPosts API doesn't accept external image URLs directly —
+    you have to register an asset against the owner, receive a pre-signed
+    upload URL, PUT the bytes there, then reference the returned asset
+    URN in the post's `media` array. Returns None on any failure so
+    callers can fall back to a text-only post instead of 500'ing.
+    """
+    try:
+        resp = await client.post(
+            f"{API_BASE}/assets?action=registerUpload",
+            json={
+                "registerUploadRequest": {
+                    "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+                    "owner": owner_urn,
+                    "serviceRelationships": [
+                        {
+                            "relationshipType": "OWNER",
+                            "identifier": "urn:li:userGeneratedContent",
+                        }
+                    ],
+                }
+            },
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "X-Restli-Protocol-Version": "2.0.0",
+            },
+        )
+        if resp.status_code not in (200, 201):
+            logger.warning(
+                "LinkedIn registerUpload failed: %s %s",
+                resp.status_code, resp.text[:300],
+            )
+            return None
+        data = resp.json()
+        value = data.get("value") or {}
+        asset_urn = value.get("asset") or ""
+        mech = (
+            value.get("uploadMechanism", {})
+            .get("com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest", {})
+        )
+        upload_url = mech.get("uploadUrl") or ""
+        if not asset_urn or not upload_url:
+            logger.warning("LinkedIn registerUpload missing fields: %s", data)
+            return None
+        return upload_url, asset_urn
+    except Exception as e:
+        logger.warning("LinkedIn registerUpload errored: %s", e)
+        return None
+
+
+async def _fetch_image_bytes(
+    client: httpx.AsyncClient, image_url: str,
+) -> tuple[bytes, str] | None:
+    """Download an image URL and return (bytes, mime_type), or None."""
+    try:
+        resp = await client.get(image_url, timeout=30.0)
+        if resp.status_code != 200:
+            logger.warning(
+                "Image download failed for LinkedIn publish: %s (%d)",
+                image_url[:120], resp.status_code,
+            )
+            return None
+        ctype = resp.headers.get("content-type", "image/png")
+        return resp.content, ctype
+    except Exception as e:
+        logger.warning("Image download errored for LinkedIn publish: %s", e)
+        return None
+
+
+async def _upload_image_bytes(
+    client: httpx.AsyncClient,
+    access_token: str,
+    upload_url: str,
+    image_bytes: bytes,
+    mime_type: str,
+) -> bool:
+    """PUT raw image bytes to the pre-signed LinkedIn upload URL."""
+    try:
+        resp = await client.put(
+            upload_url,
+            content=image_bytes,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": mime_type or "image/png",
+            },
+            timeout=60.0,
+        )
+        if resp.status_code not in (200, 201):
+            logger.warning(
+                "LinkedIn asset upload PUT failed: %s %s",
+                resp.status_code, resp.text[:300],
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.warning("LinkedIn asset upload errored: %s", e)
+        return False
+
+
+async def create_post(
+    access_token: str,
+    author_urn: str,
+    text: str,
+    image_url: str | None = None,
+) -> dict:
+    """Create a LinkedIn post, optionally with an attached image.
 
     Args:
         access_token: OAuth access token
-        author_urn: LinkedIn member URN (e.g. "urn:li:person:abc123")
+        author_urn: LinkedIn member or organization URN
         text: Post text content (up to 3000 chars)
+        image_url: Optional fully-qualified URL of an image to embed.
+            If provided, triggers the 3-step upload flow (register ->
+            PUT bytes -> reference asset URN). On any failure step we
+            log the warning and fall through to a text-only post so
+            the user still sees their copy go live.
     """
     async with httpx.AsyncClient() as client:
-        # Use the v2 UGC Post API which is more reliable
+        # Optional image handoff. None of these steps raise — they each
+        # return a sentinel on failure so we can degrade gracefully.
+        asset_urn: str | None = None
+        if image_url:
+            registered = await _register_image_upload(client, access_token, author_urn)
+            if registered:
+                upload_url, asset_urn_candidate = registered
+                fetched = await _fetch_image_bytes(client, image_url)
+                if fetched:
+                    image_bytes, mime = fetched
+                    ok = await _upload_image_bytes(
+                        client, access_token, upload_url, image_bytes, mime,
+                    )
+                    if ok:
+                        asset_urn = asset_urn_candidate
+                        logger.info(
+                            "LinkedIn image uploaded, asset=%s (src=%s)",
+                            asset_urn, image_url[:120],
+                        )
+                    else:
+                        logger.info("LinkedIn image upload failed — posting text-only")
+                else:
+                    logger.info(
+                        "Couldn't fetch image bytes — posting text-only (src=%s)",
+                        image_url[:120],
+                    )
+            else:
+                logger.info("Couldn't register LinkedIn upload — posting text-only")
+
+        share_content: dict = {
+            "shareCommentary": {"text": text[:3000]},
+            "shareMediaCategory": "IMAGE" if asset_urn else "NONE",
+        }
+        if asset_urn:
+            share_content["media"] = [
+                {
+                    "status": "READY",
+                    "description": {"text": ""},
+                    "media": asset_urn,
+                    "title": {"text": ""},
+                }
+            ]
+
         resp = await client.post(
             "https://api.linkedin.com/v2/ugcPosts",
             json={
                 "author": author_urn,
                 "lifecycleState": "PUBLISHED",
                 "specificContent": {
-                    "com.linkedin.ugc.ShareContent": {
-                        "shareCommentary": {
-                            "text": text[:3000],
-                        },
-                        "shareMediaCategory": "NONE",
-                    }
+                    "com.linkedin.ugc.ShareContent": share_content,
                 },
                 "visibility": {
                     "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC",
@@ -168,5 +319,5 @@ async def create_post(access_token: str, author_urn: str, text: str) -> dict:
 
         data = resp.json()
         post_id = data.get("id", resp.headers.get("x-restli-id", ""))
-        logger.info("LinkedIn post created: %s", post_id)
-        return {"post_id": post_id, "status": "published"}
+        logger.info("LinkedIn post created: %s (image=%s)", post_id, bool(asset_urn))
+        return {"post_id": post_id, "status": "published", "image_attached": bool(asset_urn)}
