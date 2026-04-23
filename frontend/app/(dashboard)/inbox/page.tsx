@@ -326,20 +326,37 @@ export default function InboxPage() {
   // — the notification bell click-handler does exactly that. Without
   // this, a user already on /inbox who clicks a notification would
   // see the URL change but the selection wouldn't update.
+  //
+  // IMPORTANT: only depends on `urlItemId`. Adding `items` to deps
+  // caused a flicker — every socket refetch invalidated `items` which
+  // re-fired this effect, which (even with the bail guard) can
+  // cascade into the state→URL sync below and re-trigger renders.
+  // Using a ref for items lets the effect read the latest list
+  // without subscribing to changes.
   const searchParams = useSearchParams();
   const urlItemId = searchParams?.get("id") || "";
+  const itemsRef = useRef<InboxItem[]>([]);
+  useEffect(() => { itemsRef.current = items; }, [items]);
   useEffect(() => {
     if (!urlItemId) return;
-    if (selected?.id === urlItemId) return;
-    if (items.length === 0) return;
-    const found = items.find((i) => i.id === urlItemId);
-    if (found) {
-      setSelected(found);
-      const idx = items.findIndex((i) => i.id === found.id);
-      if (idx >= 0) setKeyboardIndex(idx);
-      setMobileShowDetail(true);
-    }
-  }, [urlItemId, items, selected?.id]);
+    const list = itemsRef.current;
+    if (list.length === 0) return;
+    // Deferred to next tick so we read the latest `selected` without
+    // stale-closure surprises and let the state→URL sync settle first.
+    const t = setTimeout(() => {
+      // Read fresh state via refs so we don't need to subscribe here
+      setSelected((prev) => {
+        if (prev?.id === urlItemId) return prev;
+        const found = itemsRef.current.find((i) => i.id === urlItemId);
+        if (!found) return prev;
+        const idx = itemsRef.current.findIndex((i) => i.id === found.id);
+        if (idx >= 0) setKeyboardIndex(idx);
+        setMobileShowDetail(true);
+        return found;
+      });
+    }, 0);
+    return () => clearTimeout(t);
+  }, [urlItemId]);
 
   // Sync URL query params whenever tab / page / selected id change.
   // Uses replaceState (not pushState) so back-button doesn't get
