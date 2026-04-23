@@ -3551,6 +3551,68 @@ async def _execute_delegation(
                 f"reference it at the top / hero slot of the deliverable.)"
             )
 
+    # Explicit source-asset handoff: the CEO can reference specific prior
+    # inbox rows by id via `source_inbox_item_ids: ["abc","def"]`. Resolve
+    # each row, extract the useful bits (image URL / blog body / email
+    # subject), and append a `[REFERENCED ASSET]` block to the task so
+    # the downstream agent sees concrete content alongside its own task
+    # instructions. Unlike the time-windowed lookups, this bypasses the
+    # cliff problem entirely — "use the banner from two weeks ago" works
+    # as long as the CEO found the id (via Recent Activity or read_inbox).
+    source_ids = d.get("source_inbox_item_ids") or []
+    if isinstance(source_ids, str):
+        source_ids = [source_ids]
+    if source_ids and tenant_id:
+        try:
+            from backend.services.asset_lookup import (
+                get_inbox_row_by_id as _get_row,
+                extract_image_url_from_row as _extract_img,
+            )
+            blocks: list[str] = []
+            for sid in source_ids[:5]:  # cap at 5 to bound token cost
+                row = _get_row(tenant_id, sid)
+                if not row:
+                    continue
+                lines = [f"[REFERENCED ASSET — id={sid}]"]
+                if row.get("title"):
+                    lines.append(f"Title: {row['title']}")
+                if row.get("type"):
+                    lines.append(f"Type: {row['type']}")
+                if row.get("agent"):
+                    lines.append(f"Produced by: {row['agent']}")
+                img = _extract_img(row)
+                if img:
+                    lines.append(f"Image URL: {img}")
+                draft = row.get("email_draft")
+                if isinstance(draft, dict):
+                    if draft.get("subject"):
+                        lines.append(f"Subject: {draft['subject']}")
+                    snippet = draft.get("preview_snippet") or draft.get("text_body") or ""
+                    if snippet:
+                        lines.append(f"Preview: {snippet[:240]}")
+                body = (row.get("content") or "").strip()
+                if body and not img:
+                    # Don't duplicate when the content is just a markdown image
+                    lines.append(f"Content excerpt:\n{body[:900]}")
+                blocks.append("\n".join(lines))
+            if blocks:
+                task_desc = (
+                    f"{task_desc.rstrip()}\n\n"
+                    + "\n\n".join(blocks)
+                    + "\n\n(The referenced asset(s) above were produced earlier in "
+                    "this workspace. Use them as source material / embed where "
+                    "appropriate for this task.)"
+                )
+                _log = logging.getLogger("aria.ceo_chat.dispatch")
+                _log.info(
+                    "[ceo-dispatch] resolved %d source_inbox_item_ids for %s: %s",
+                    len(blocks), agent_id, ",".join(source_ids[:5]),
+                )
+        except Exception as e:
+            logging.getLogger("aria.ceo_chat.dispatch").warning(
+                "[ceo-dispatch] source_inbox_item_ids resolver failed: %s", e,
+            )
+
     saved_task_id: str | None = None
     if tenant_id:
         try:
@@ -4329,6 +4391,29 @@ async def _dispatch_paperclip_and_watch_to_inbox(
         )
         placeholder_id = saved["id"] if saved else None
 
+    # Index the finalized row for long-term recall (content_library
+    # mirror + Qdrant embedding). Covers the watcher path — the skill-
+    # curl path is indexed from create_inbox_item, and the safety-net
+    # poller from poll_completed_issues. One of the three fires per
+    # delegation; index_inbox_row is idempotent via its
+    # contains(metadata, inbox_item_id) pre-check.
+    if placeholder_id and tenant_id:
+        try:
+            from backend.services.content_index import index_inbox_row
+            finalized = {
+                "id": placeholder_id,
+                "tenant_id": tenant_id,
+                "agent": agent_id,
+                "type": content_type,
+                "title": title,
+                "content": output,
+                "status": inbox_status,
+                "email_draft": email_draft,
+            }
+            await asyncio.to_thread(index_inbox_row, finalized)
+        except Exception as ix_err:
+            _logger.debug("[paperclip-watch] content_index skipped: %s", ix_err)
+
     # Notify frontend so the inbox auto-refreshes the row
     if placeholder_id and tenant_id:
         try:
@@ -4682,6 +4767,15 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
                 tenant_id, body.agent, "paperclip_completed",
                 {"task": (item.get("title") or "")[:200], "inbox_item_id": item.get("id")},
             )
+        except Exception:
+            pass
+
+    # Index the finalized row for long-term cross-session recall
+    # (content_library mirror + Qdrant embedding). Best-effort.
+    if item:
+        try:
+            from backend.services.content_index import index_inbox_row
+            await asyncio.to_thread(index_inbox_row, {**item, "tenant_id": tenant_id})
         except Exception:
             pass
 
@@ -5725,6 +5819,27 @@ Valid pipeline patterns:
 - Campaign bundles (up to 6 chained steps): `media` → `content_writer` → `email_marketer` → `social_manager`, etc. When the user asks for a "launch", "campaign", or "full bundle", emit a multi-step pipeline with `delay_seconds: 60-120` between steps so each agent's output is indexed before the next runs.
 
 This is the ONLY way to emit more than one agent in a single turn — two separate `delegate` blocks in the same reply is still a bug (it triggers the "accidentally fired two agents" alert). Use `then` for intentional chains; otherwise stick to one block.
+
+### Referencing prior work (source_inbox_item_ids)
+When the user refers to something already in the Inbox — "the banner from earlier", "my last email to Hanz", "combine the banner and the blog post we wrote yesterday" — attach the specific id(s) to the delegation via `source_inbox_item_ids`. The backend will fetch each row, extract the image URL / email subject / blog body, and append it to the task description so the sub-agent has the concrete asset alongside its own task.
+
+How to find the id:
+1. Check the "Recent Inbox Activity" block FIRST (it lists the last 5 items with ids).
+2. If the referenced asset isn't in Recent Activity, call `read_inbox` with `params.search="<keyword>"` to fuzzy-match the title/content.
+
+Example — user: "Write a LinkedIn post using the SMAPS banner from this morning"
+Recent Activity shows: `id: 7af3... | type: image | title: SMAPS banner`
+```delegate
+{{"agent": "social_manager", "task": "LinkedIn post about SMAPS launch", "source_inbox_item_ids": ["7af3..."]}}
+```
+
+Example — user: "Turn the blog we wrote last week and the SMAPS banner into a Facebook ad"
+Call `read_inbox` with `params.search="SMAPS"` to get the banner id, and `params.search="blog"` (or scan Recent Activity) for the blog id. Then:
+```delegate
+{{"agent": "ad_strategist", "task": "Facebook ad combining the blog talking points with the banner as hero image", "source_inbox_item_ids": ["7af3...", "blog-9c2..."]}}
+```
+
+Pass up to 5 ids per delegation. Omit the field entirely when the user is asking for fresh generation with no back-reference — the agent's own short-window lookups cover the "just made it, use it now" case.
 
 ### One Delegate Per Message — HARD RULE
 Each user message gets EXACTLY ONE delegate block, never two. Do NOT chain delegations like "media for the image AND content_writer for a caption". If the user asked for ONLY an image, delegate ONLY to media. Bonus content the user did not ask for (captions, blog copy, social posts about the image) is forbidden — never auto-add a content_writer/social_manager delegate alongside a media one.

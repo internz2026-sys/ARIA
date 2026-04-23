@@ -29,9 +29,9 @@ _EMAIL_HOOK_KEYWORDS = (
 # Lookback windows per source — kept tight enough that stale assets
 # don't leak into a fresh campaign, loose enough to cover typical
 # "generate image, then post it" cadences.
-_MEDIA_LOOKBACK_MIN = 30
-_BLOG_LOOKBACK_MIN = 180
-_EMAIL_LOOKBACK_MIN = 120
+_MEDIA_LOOKBACK_MIN = 360   # 6h (was 30m — cliff was too tight for cross-session composition)
+_BLOG_LOOKBACK_MIN = 1440   # 24h
+_EMAIL_LOOKBACK_MIN = 720   # 12h
 
 
 class SocialManagerAgent(BaseAgent):
@@ -107,12 +107,34 @@ Rules:
 
         # Image attach — pulled separately so the agent's TEXT prompt
         # stays clean and the image rides alongside the post metadata.
+        # Tier 1: explicit inline URL in the task text.
+        # Tier 2: get_latest_image_url (time-windowed).
+        # Tier 3: find_referenced_asset when the task has anaphora
+        #   ("the banner", "my latest image", "from earlier") — catches
+        #   cross-session references the tight window misses.
         attached_image_url: str | None = None
-        if any(kw in action_lower for kw in _IMAGE_KEYWORDS) or _has_explicit_url(action):
-            from backend.services.asset_lookup import get_latest_image_url
+        from backend.services.asset_lookup import (
+            get_latest_image_url, find_referenced_asset,
+            extract_image_url_from_row, task_has_reference,
+        )
+        wants_image = (
+            any(kw in action_lower for kw in _IMAGE_KEYWORDS)
+            or _has_explicit_url(action)
+            or task_has_reference(action)
+        )
+        if wants_image:
             attached_image_url = _extract_inline_url(action) or get_latest_image_url(
                 tenant_id, within_minutes=_MEDIA_LOOKBACK_MIN,
             )
+            if not attached_image_url and task_has_reference(action):
+                for row in find_referenced_asset(
+                    tenant_id, text_hint=action, agent="media",
+                    types=["image"], limit=3,
+                ):
+                    u = extract_image_url_from_row(row)
+                    if u:
+                        attached_image_url = u
+                        break
             if attached_image_url:
                 logger.info(
                     "[social_manager] attaching Media image to posts for %s: %s",

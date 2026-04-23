@@ -387,6 +387,16 @@ async def poll_completed_issues() -> int:
                     )
                 except Exception:
                     pass
+                # Mirror this row to content_library + embed into Qdrant
+                # for long-term cross-session recall. Runs off the event
+                # loop since both writes are synchronous.
+                try:
+                    from backend.services.content_index import index_inbox_row
+                    inserted_row = (result.data or [{}])[0]
+                    merged = {**row, **inserted_row}  # carry id + timestamps
+                    await asyncio.to_thread(index_inbox_row, merged)
+                except Exception as ix_err:
+                    logger.debug("[poller] content_index skipped: %s", ix_err)
             _add_processed(issue_id)
         except Exception as e:
             logger.error("[poller] failed to import %s: %s", issue_id, e)

@@ -171,6 +171,189 @@ def get_recent_email_hook(tenant_id: str, *, within_minutes: int = 120) -> dict 
     }
 
 
+# ─── Reference resolution (agent-to-agent & cross-turn recall) ─────────────
+
+
+# Anaphora + reference phrases the CEO or user typically uses to point at
+# prior agent output. Keep them tight: matching too loosely makes every
+# "the email" in a task pull a random inbox row.
+_REFERENCE_PATTERNS = [
+    r"\bthe\s+(banner|image|picture|photo|graphic|visual|logo|"
+    r"thumbnail|illustration|post|tweet|thread|email|newsletter|"
+    r"blog(?:\s+post)?|article|ad|campaign|draft)\b",
+    r"\bmy\s+(latest|last|recent|newest|previous)\b",
+    r"\b(that|this)\s+(one|banner|image|post|email|blog|ad)\b",
+    r"\b(the\s+one\s+(i|we|you)\s+(made|created|generated|wrote|drafted))\b",
+    r"\b(earlier|from\s+(this\s+morning|yesterday|last\s+week|last\s+night|before))\b",
+]
+_REFERENCE_RE = re.compile("|".join(_REFERENCE_PATTERNS), re.IGNORECASE)
+
+
+def task_has_reference(text: str) -> bool:
+    """True if the task text contains phrases indicating the user is
+    pointing at a prior agent asset (rather than asking for cold
+    generation). Used by agents to decide when to invoke the fuzzy
+    referenced-asset search as a fallback to time-windowed lookups."""
+    if not text:
+        return False
+    return bool(_REFERENCE_RE.search(text))
+
+
+def find_referenced_asset(
+    tenant_id: str,
+    *,
+    text_hint: str = "",
+    agent: str | None = None,
+    types: Iterable[str] | None = None,
+    limit: int = 5,
+    within_days: int = 30,
+) -> list[dict]:
+    """Search the inbox for assets matching a natural-language reference.
+
+    This is the "agents talk to each other" primitive: when a downstream
+    agent sees "use the banner from earlier" but the tight 30-min / 6-h
+    time-windowed helpers turn up nothing, it calls this with the task
+    text as `text_hint` and gets back the most plausible rows.
+
+    Strategy:
+      1. If H (semantic search) is available, try Qdrant first for a
+         concept match ("the professional-looking one", "that red
+         banner"). Falls through to ILIKE on failure.
+      2. ILIKE fallback on title + content against up to 4 keywords
+         extracted from `text_hint` (stopwords filtered, len>=4).
+      3. Newest-first within the lookback window (default 30 days to
+         cover cross-session recall).
+      4. Optional `agent` / `types` filters when the caller knows the
+         shape of what they're looking for.
+
+    Returns list of rows sorted by recency. Callers typically take [0]
+    for "the most plausible match" or the full list when showing
+    candidates to the user.
+    """
+    if not tenant_id:
+        return []
+
+    # Try semantic search first — handles concept-match queries that
+    # ILIKE can't answer ("the professional one", "that red banner").
+    # Silent no-op if Qdrant/embedder isn't ready.
+    if text_hint:
+        try:
+            from backend.services.content_index import semantic_find_assets  # lazy
+            semantic_hits = semantic_find_assets(
+                tenant_id, query=text_hint, agent=agent, types=types, limit=limit,
+            )
+            if semantic_hits:
+                return semantic_hits
+        except Exception as e:
+            logger.debug("[asset_lookup] semantic search skipped: %s", e)
+
+    # ILIKE fallback
+    stopwords = {
+        "the", "and", "for", "with", "from", "into", "this", "that", "your",
+        "our", "use", "make", "create", "draft", "send", "post", "tweet",
+        "about", "using", "include", "earlier", "latest", "last", "recent",
+        "previous", "those", "these", "them", "been", "made", "wrote",
+        "generated", "new", "one", "just", "some", "what", "which", "when",
+    }
+    words = [w.strip(".,!?:;\"'").lower() for w in (text_hint or "").split()]
+    keywords = [w for w in words if len(w) >= 4 and w not in stopwords][:4]
+
+    try:
+        cutoff = _cutoff_iso(within_days * 24 * 60)
+        q = (
+            _db()
+            .table("inbox_items")
+            .select("id, agent, type, title, content, metadata, email_draft, status, created_at")
+            .eq("tenant_id", tenant_id)
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
+            .limit(limit * 3)  # over-fetch so ILIKE scoring has headroom
+        )
+        if agent:
+            q = q.eq("agent", agent)
+        if types:
+            t = list(types)
+            q = q.in_("type", t) if len(t) > 1 else q.eq("type", t[0])
+        # Supabase/postgrest: chain .or_() for multi-column ILIKE match on
+        # ANY keyword. Building the string by hand since the client doesn't
+        # have a nicer helper.
+        if keywords:
+            or_parts = []
+            for kw in keywords:
+                esc = kw.replace(",", " ").replace("(", "").replace(")", "")
+                or_parts.append(f"title.ilike.%{esc}%")
+                or_parts.append(f"content.ilike.%{esc}%")
+            q = q.or_(",".join(or_parts))
+        rows = list((q.execute()).data or [])
+        return rows[:limit]
+    except Exception as e:
+        logger.warning(
+            "[asset_lookup] find_referenced_asset failed tenant=%s hint=%r: %s",
+            tenant_id, (text_hint or "")[:80], e,
+        )
+        return []
+
+
+def extract_image_url_from_row(row: dict | None) -> str | None:
+    """Pull the best image URL out of an arbitrary inbox row.
+
+    Checks metadata.image_url, email_draft.image_urls[0], and the
+    markdown / raw URL in content — same three sources the frontend's
+    getInboxThumbnail walks. Used by the delegation resolver when
+    turning a `source_inbox_item_id` into a concrete URL the
+    downstream agent can embed.
+    """
+    if not row:
+        return None
+    url = _coerce_metadata(row.get("metadata")).get("image_url")
+    if url:
+        return url
+    draft = row.get("email_draft")
+    if isinstance(draft, str):
+        try:
+            draft = json.loads(draft)
+        except Exception:
+            draft = None
+    if isinstance(draft, dict):
+        imgs = draft.get("image_urls")
+        if isinstance(imgs, list) and imgs:
+            return imgs[0]
+    content = row.get("content") or ""
+    m = _MD_IMG_RE.search(content)
+    if m:
+        return m.group(1)
+    m2 = re.search(
+        r"https?://\S+?\.(?:png|jpg|jpeg|gif|webp)(?:\?\S*)?",
+        content, re.IGNORECASE,
+    )
+    return m2.group(0) if m2 else None
+
+
+def get_inbox_row_by_id(tenant_id: str, item_id: str) -> dict | None:
+    """Fetch a single inbox row scoped to the tenant. Returns None on
+    miss / error so callers can cheaply `if row:` check and move on."""
+    if not tenant_id or not item_id:
+        return None
+    try:
+        res = (
+            _db()
+            .table("inbox_items")
+            .select("id, agent, type, title, content, metadata, email_draft, status, created_at")
+            .eq("tenant_id", tenant_id)
+            .eq("id", item_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.warning(
+            "[asset_lookup] get_inbox_row_by_id failed tenant=%s id=%s: %s",
+            tenant_id, item_id, e,
+        )
+        return None
+
+
 # ─── Content library (cross-session, older history) ────────────────────────
 
 

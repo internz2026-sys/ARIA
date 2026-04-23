@@ -32,7 +32,7 @@ _CASE_STUDY_INTENT_RE = re.compile(
 
 _QUESTION_LOOKBACK_DAYS = 60
 _DEAL_LOOKBACK_DAYS = 180
-_MEDIA_LOOKBACK_MINUTES = 30
+_MEDIA_LOOKBACK_MINUTES = 360   # 6h
 
 # Task phrases that mean "the user wants an image embedded in this content".
 _IMAGE_INTENT_RE = re.compile(
@@ -231,16 +231,30 @@ async def run(tenant_id: str, context: dict | None = None) -> dict:
     # ("Recommended hero image: [IMAGE: <URL>]") so the user can copy-
     # paste the content into a CMS with the image slot already flagged.
     attached_image_url: str | None = None
-    if task_desc and _IMAGE_INTENT_RE.search(task_desc):
-        from backend.services.asset_lookup import get_latest_image_url
-        attached_image_url = get_latest_image_url(
-            tenant_id, within_minutes=_MEDIA_LOOKBACK_MINUTES,
+    if task_desc:
+        from backend.services.asset_lookup import (
+            get_latest_image_url, find_referenced_asset,
+            extract_image_url_from_row, task_has_reference,
         )
-        if attached_image_url:
-            logger.info(
-                "[content_writer] attaching Media image reference for %s: %s",
-                tenant_id, attached_image_url,
+        wants_image = bool(_IMAGE_INTENT_RE.search(task_desc)) or task_has_reference(task_desc)
+        if wants_image:
+            attached_image_url = get_latest_image_url(
+                tenant_id, within_minutes=_MEDIA_LOOKBACK_MINUTES,
             )
+            if not attached_image_url and task_has_reference(task_desc):
+                for row in find_referenced_asset(
+                    tenant_id, text_hint=task_desc, agent="media",
+                    types=["image"], limit=3,
+                ):
+                    u = extract_image_url_from_row(row)
+                    if u:
+                        attached_image_url = u
+                        break
+            if attached_image_url:
+                logger.info(
+                    "[content_writer] attaching Media image reference for %s: %s",
+                    tenant_id, attached_image_url,
+                )
 
     result = await _get().run(tenant_id, context)
 

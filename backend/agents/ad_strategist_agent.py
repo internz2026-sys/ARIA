@@ -20,7 +20,7 @@ _IMAGE_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 _URL_RE = re.compile(r"https?://\S+?\.(?:png|jpg|jpeg|gif|webp|svg)(?:\?\S*)?", re.IGNORECASE)
-_MEDIA_LOOKBACK_MIN = 60  # ads tolerate slightly staler images than email/social
+_MEDIA_LOOKBACK_MIN = 720  # 12h — ads tolerate staler images than email/social
 
 
 class AdStrategistAgent(BaseAgent):
@@ -104,10 +104,24 @@ async def run(tenant_id: str, context: dict | None = None) -> dict:
     m = _URL_RE.search(action)
     if m:
         image_url = m.group(0)
-    elif _IMAGE_INTENT_RE.search(action):
+    else:
         try:
-            from backend.services.asset_lookup import get_latest_image_url
-            image_url = get_latest_image_url(tenant_id, within_minutes=_MEDIA_LOOKBACK_MIN)
+            from backend.services.asset_lookup import (
+                get_latest_image_url, find_referenced_asset,
+                extract_image_url_from_row, task_has_reference,
+            )
+            wants_image = bool(_IMAGE_INTENT_RE.search(action)) or task_has_reference(action)
+            if wants_image:
+                image_url = get_latest_image_url(tenant_id, within_minutes=_MEDIA_LOOKBACK_MIN)
+                if not image_url and task_has_reference(action):
+                    for row in find_referenced_asset(
+                        tenant_id, text_hint=action, agent="media",
+                        types=["image"], limit=3,
+                    ):
+                        u = extract_image_url_from_row(row)
+                        if u:
+                            image_url = u
+                            break
         except Exception as e:
             logger.warning("[ad_strategist] media lookup failed for %s: %s", tenant_id, e)
 

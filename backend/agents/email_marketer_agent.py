@@ -49,8 +49,8 @@ _BLOG_DIGEST_RE = re.compile(
 # because stale media assets get cross-campaign-leaky fast; blog
 # lookback is looser because a Content Writer post is a deliberate
 # artifact that stays relevant for longer.
-_MEDIA_LOOKBACK_MINUTES = 30
-_BLOG_LOOKBACK_MINUTES = 180
+_MEDIA_LOOKBACK_MINUTES = 360   # 6h — user may return after lunch / next morning
+_BLOG_LOOKBACK_MINUTES = 1440   # 24h — blog posts stay relevant a day
 
 
 class EmailMarketerAgent(BaseAgent):
@@ -135,16 +135,31 @@ def _extract_image_urls_from_text(text: str) -> list[str]:
     return urls
 
 
-def _find_recent_media_image(tenant_id: str) -> str | None:
-    """Thin wrapper around the shared asset_lookup primitive.
+def _find_recent_media_image(tenant_id: str, *, task_hint: str = "") -> str | None:
+    """Image lookup with a two-tier fallback.
 
-    Kept as a local name so call sites below don't have to import the
-    service module directly and to preserve the 30-min window that's
-    right for email attachments specifically (social/ads may want
-    different windows).
+    1. `get_latest_image_url` with the primary window — fast path for
+       "just made it, use it now" cases.
+    2. `find_referenced_asset` (wider lookback + ILIKE + optional
+       semantic match) when the task text has anaphoric phrases
+       ("the banner", "my latest", "from earlier") and tier 1 missed.
     """
-    from backend.services.asset_lookup import get_latest_image_url
-    return get_latest_image_url(tenant_id, within_minutes=_MEDIA_LOOKBACK_MINUTES)
+    from backend.services.asset_lookup import (
+        get_latest_image_url, find_referenced_asset, extract_image_url_from_row,
+        task_has_reference,
+    )
+    url = get_latest_image_url(tenant_id, within_minutes=_MEDIA_LOOKBACK_MINUTES)
+    if url:
+        return url
+    if task_hint and task_has_reference(task_hint):
+        rows = find_referenced_asset(
+            tenant_id, text_hint=task_hint, agent="media", types=["image"], limit=3,
+        )
+        for row in rows:
+            u = extract_image_url_from_row(row)
+            if u:
+                return u
+    return None
 
 
 def _find_recent_blog_source(tenant_id: str) -> str:
@@ -370,8 +385,11 @@ async def run(tenant_id: str, context: dict | None = None) -> dict:
     #      attach random prior assets to every email).
     image_urls_from_task = _extract_image_urls_from_text(task_desc)
     chosen_image_url: str | None = image_urls_from_task[0] if image_urls_from_task else None
-    if not chosen_image_url and task_desc and _IMAGE_INTENT_RE.search(task_desc):
-        chosen_image_url = _find_recent_media_image(tenant_id)
+    if not chosen_image_url and task_desc:
+        from backend.services.asset_lookup import task_has_reference
+        wants_image = bool(_IMAGE_INTENT_RE.search(task_desc)) or task_has_reference(task_desc)
+        if wants_image:
+            chosen_image_url = _find_recent_media_image(tenant_id, task_hint=task_desc)
         if chosen_image_url:
             logger.info(
                 "[email_marketer] attached recent Media Agent image to email for tenant %s: %s",
