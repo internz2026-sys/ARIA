@@ -4997,6 +4997,23 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                                         break
                     except Exception as _img_err:
                         _logger.debug("[paperclip-watch] image attach skipped: %s", _img_err)
+                    # Last-ditch image rescue: if the agent leaked the
+                    # Supabase URL into one of the post bodies and we
+                    # don't have an image attached yet, promote the
+                    # leaked URL to image_url so the card renders and
+                    # the sanitizer scrubs it out of the visible text.
+                    if not attached_img:
+                        try:
+                            from backend.agents.social_manager_agent import (
+                                _extract_supabase_url as _sm_extract_url,
+                            )
+                            for p in normalized_posts:
+                                leaked = _sm_extract_url(p.get("text", ""))
+                                if leaked:
+                                    attached_img = leaked
+                                    break
+                        except Exception:
+                            pass
                     if attached_img:
                         for p in normalized_posts:
                             p["image_url"] = attached_img
@@ -5012,6 +5029,20 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                         "[paperclip-watch] normalized %d social posts for issue %s (image=%s)",
                         len(normalized_posts), paperclip_issue_id, bool(attached_img),
                     )
+                else:
+                    # Degraded path — no parseable posts. Clean the raw
+                    # output so the "what the agent wrote instead" panel
+                    # in the inbox doesn't leak status/deliverables/
+                    # supabase-url noise to the user.
+                    try:
+                        from backend.agents.social_manager_agent import (
+                            _sanitize_social_text as _sm_sanitize,
+                        )
+                        cleaned = _sm_sanitize(output)
+                        if cleaned:
+                            output = cleaned
+                    except Exception:
+                        pass
             except Exception as _norm_err:
                 _logger.debug(
                     "[paperclip-watch] social-post normalization skipped: %s", _norm_err,
@@ -5408,6 +5439,30 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
         social = _parse_social_drafts_from_text(body.content)
         if social or any(k in body.content.lower()[:500] for k in ("**twitter:**", "**linkedin:**", "**x:**", "**x/twitter:**")):
             content_type = "social_post"
+        # Scrub internal-plumbing leaks from skill-curl submissions too.
+        # The agent's `aria-backend-api` skill posts its raw reply here
+        # when it takes the direct-write path (Path A in CLAUDE.md), so
+        # the same sanitizer the watcher path runs needs to fire here or
+        # the "delivery summary" / Supabase URL noise survives to the UI.
+        if content_type == "social_post":
+            try:
+                from backend.agents.social_manager_agent import (
+                    _parse_posts as _sm_parse,
+                    _sanitize_social_text as _sm_sanitize,
+                )
+                parsed_posts = _sm_parse(body.content)
+                if parsed_posts:
+                    import json as _json_inline
+                    body.content = _json_inline.dumps({
+                        "action": "adapt_content",
+                        "posts": parsed_posts,
+                    })
+                else:
+                    cleaned = _sm_sanitize(body.content)
+                    if cleaned:
+                        body.content = cleaned
+            except Exception:
+                pass
 
     # ── Best-effort dedupe based on recent activity ────────────────────
     # When the agent doesn't send paperclip_issue_id (which is most of

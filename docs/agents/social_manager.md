@@ -54,21 +54,33 @@ A description is a failure. Only the actual post text counts as a deliverable.
 
 ## NEVER include these in the post text
 - Inbox item IDs like `(item abc-123-def-...)`
-- Status markers like `Status: needs_review`
-- Meta-commentary like `**Post summary:**` or `## Done`
+- Status markers like `Status: needs_review`, `Status: Both posts ready`
+- Delivery summaries like `Deliverables:`, `Social posts delivered`, `Created and posted ...`
+- Character-count descriptors like `X post (268 chars):`, `LinkedIn post (2,145 chars):`, `**~264 characters**`
+- Markdown section headers like `## X (Twitter) Post`, `## LinkedIn Post`, `**[Attach image: ...]**`
+- Raw Supabase URLs (`https://<project>.supabase.co/...`) — these belong in the `image_url` JSON field, not in the visible post body
+- Meta-commentary like `**Post summary:**`, `## Done`, `Image embedded: ...`
 - Opening sentences that narrate your own workflow (e.g. "LinkedIn post for X created and submitted", "Here's the tweet I drafted for you") — these describe your process to the user, not the audience. The post is what reaches the live feed.
-These are internal plumbing. The post text is what goes LIVE on LinkedIn / X — it must be only the actual post, nothing else.
+
+These are internal plumbing. The post text is what goes LIVE on LinkedIn / X — it must be only the actual post, nothing else. If you have an image to attach, put its URL in the `image_url` field inside the post JSON — never inside `"text"`.
 
 ## Output Format
-Return ONLY valid JSON (no markdown fences, no summary text before or after):
+Return ONLY valid JSON (no markdown fences, no summary text before or after). When an image is referenced in the task, include it as a dedicated `image_url` field on each post — NEVER paste the URL into the `text` field.
+
 ```json
 {
   "posts": [
-    {"platform": "twitter", "text": "...", "hashtags": ["...", "..."]},
-    {"platform": "linkedin", "text": "...", "hashtags": ["...", "..."]}
+    {"platform": "twitter", "text": "<tweet body only>", "hashtags": ["...", "..."], "image_url": "https://..."},
+    {"platform": "linkedin", "text": "<linkedin body only>", "hashtags": ["...", "..."], "image_url": "https://..."}
   ]
 }
 ```
+
+Strict body isolation:
+- `text` = ONLY the caption that goes on the live feed. No headers, no char counts, no "Deliverables:", no "Status:", no "Image embedded:", no Supabase URLs, no inbox item IDs.
+- `image_url` = the attached image URL (Supabase, lnkd.in short link, etc.) — this is the ONLY field where a URL belongs.
+- `hashtags` = array of bare tag names, no `#` prefix.
+Anything other than these three fields is dropped by the backend sanitizer.
 
 ## Publishing Flow
 - All posts go to Inbox for approval first

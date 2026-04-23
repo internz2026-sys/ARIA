@@ -54,8 +54,8 @@ Return ONLY valid JSON (no markdown fences):
 {{
   "action": "adapt_content",
   "posts": [
-    {{"platform": "twitter", "text": "...", "hashtags": ["...", "..."]}},
-    {{"platform": "linkedin", "text": "...", "hashtags": ["...", "..."]}}
+    {{"platform": "twitter", "text": "<tweet body only>", "hashtags": ["...", "..."], "image_url": "<optional URL>"}},
+    {{"platform": "linkedin", "text": "<linkedin body only>", "hashtags": ["...", "..."], "image_url": "<optional URL>"}}
   ]
 }}
 
@@ -64,7 +64,16 @@ Rules:
 - Twitter: max 280 chars including hashtags. Punchy, conversational, native-feeling. 2-3 hashtags max.
 - LinkedIn: max 3000 chars. Professional, insightful, thought-leadership tone. Can be longer and more detailed than the tweet. 3-5 hashtags.
 - Make both compelling and shareable.
-- Each post should feel native to its platform."""
+- Each post should feel native to its platform.
+
+STRICT body isolation — NEVER put any of these inside `text`:
+- Section headers like `## X (Twitter) Post`, `## LinkedIn Post`, `**~264 characters**`, `**[Attach image: ...]**`
+- Character-count descriptors like `X post (268 chars):`, `LinkedIn post (2,145 chars):`
+- Delivery summaries: `Deliverables:`, `Status:`, `Social posts delivered`, `Created and posted ...`, `Image embedded: ...`
+- Inbox item IDs: `(item abc-123-...)`
+- Raw Supabase URLs (`https://*.supabase.co/...`) — those go ONLY in `image_url`.
+
+`text` is the LIVE post body; if it shouldn't appear on X or LinkedIn, it must not appear in `text`. The backend strips leaked noise as a safety net, but relying on the sanitizer is a failure — write clean posts."""
 
     def build_user_message(self, action: str, context: dict | None) -> str:
         source_content = (context or {}).get("source_content", "")
@@ -146,9 +155,17 @@ Rules:
         raw = result.get("result", "")
         posts = _parse_posts(raw)
         if posts:
+            # Last-ditch image rescue: if no explicit image was attached
+            # but a post text contains a Supabase URL, promote it to
+            # image_url so the card renders correctly and the body
+            # sanitizer can strip the URL from the visible copy.
+            if not attached_image_url:
+                for p in posts:
+                    leaked = _extract_supabase_url(p.get("text", ""))
+                    if leaked:
+                        attached_image_url = leaked
+                        break
             if attached_image_url:
-                # Every post in the bundle gets the same image — simplest
-                # UX. Callers can strip it per-platform later if needed.
                 for p in posts:
                     p["image_url"] = attached_image_url
             result["social_posts"] = posts
@@ -163,6 +180,12 @@ Rules:
                 "action": "adapt_content",
                 "posts": posts,
             })
+        else:
+            # Degraded path — the agent wrote a summary instead of
+            # parseable posts. Sanitize the raw output so the
+            # "what the agent wrote instead" panel doesn't leak
+            # status/deliverables/item-id/Supabase URL noise to the user.
+            result["result"] = _sanitize_social_text(raw) or raw
         if attached_image_url:
             result["image_url"] = attached_image_url
 
@@ -170,6 +193,87 @@ Rules:
 
 
 _URL_RE = re.compile(r"https?://\S+?\.(?:png|jpg|jpeg|gif|webp|svg)(?:\?\S*)?", re.IGNORECASE)
+
+# Supabase storage URL — explicit match so the sanitizer can move these
+# out of post text even when the extension is missing or query-stripped.
+_SUPABASE_URL_RE = re.compile(r"https?://[^\s)]*\.supabase\.co/[^\s)]+", re.IGNORECASE)
+
+# Lines we never want the user to see in a social post body. These are
+# internal-plumbing phrases the Paperclip agent sometimes leaks into
+# its reply when it writes a "delivery summary" instead of the post
+# text the system prompt asked for.
+_NOISE_LINE_PATTERNS = [
+    re.compile(r"^\s*##?\s*(x\s*\(twitter\)|twitter|x)\s*post\s*$", re.IGNORECASE),
+    re.compile(r"^\s*##?\s*linkedin\s*post\s*$", re.IGNORECASE),
+    re.compile(r"^\s*\*\*\s*~?\d+\s*characters?\s*\*\*\s*$", re.IGNORECASE),
+    re.compile(r"^\s*\*\*?\s*\[?attach\s+image:?.*\]?\*?\*?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*deliverables?\s*:?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*status\s*:.*$", re.IGNORECASE),
+    re.compile(r"^\s*image\s+embedded\s*:.*$", re.IGNORECASE),
+    re.compile(r"^\s*social\s+posts\s+delivered\s*$", re.IGNORECASE),
+    re.compile(r"^\s*created\s+and\s+posted\b.*$", re.IGNORECASE),
+    re.compile(r"^\s*[-*]\s*x\s*(?:\s*\(?twitter\)?)?\s*post\s*\(\s*[\d,]+\s*chars?\s*\).*$", re.IGNORECASE),
+    re.compile(r"^\s*[-*]\s*linkedin\s*post\s*\(\s*[\d,]+\s*chars?\s*\).*$", re.IGNORECASE),
+    re.compile(r"^\s*[-*]\s*image\s+embedded\s*:.*$", re.IGNORECASE),
+]
+
+# Inline fragments to strip from any line we do keep.
+_INLINE_ITEM_REF_RE = re.compile(r"\s*\(\s*item\s+[0-9a-f-]{16,}\s*\)", re.IGNORECASE)
+
+
+def _sanitize_social_text(text: str) -> str:
+    """Strip internal-plumbing lines from a social post body.
+
+    Covers three failure modes we've seen in production:
+      1. Agent writes a "delivery summary" (Deliverables / Status /
+         Image embedded / item <uuid>) instead of the post itself
+      2. Agent leaks char-count descriptors like "X post (268 chars):"
+         as if they were bullets in the final copy
+      3. Agent pastes the raw Supabase storage URL into the post text
+
+    Returns the cleaned text. Raw Supabase URLs are removed from body
+    text (they belong in image_url, not in the visible copy). Empty
+    lines are collapsed so the stripped output doesn't leave gaps.
+    """
+    if not text:
+        return text
+    cleaned_lines: list[str] = []
+    for line in text.splitlines():
+        if any(pat.match(line) for pat in _NOISE_LINE_PATTERNS):
+            continue
+        stripped = line
+        stripped = _INLINE_ITEM_REF_RE.sub("", stripped)
+        stripped = _SUPABASE_URL_RE.sub("", stripped).rstrip()
+        # If the ONLY content on this line was a supabase URL / item ref,
+        # drop the line entirely.
+        if not stripped.strip():
+            if line.strip():
+                continue
+        cleaned_lines.append(stripped)
+    # Collapse runs of blank lines introduced by the stripping.
+    collapsed: list[str] = []
+    blank_run = 0
+    for line in cleaned_lines:
+        if line.strip():
+            blank_run = 0
+            collapsed.append(line)
+        else:
+            blank_run += 1
+            if blank_run <= 1:
+                collapsed.append(line)
+    return "\n".join(collapsed).strip()
+
+
+def _extract_supabase_url(text: str) -> str | None:
+    """Pull the first Supabase storage URL out of arbitrary text.
+
+    Used as a last-resort source for the image when the agent leaked
+    the URL into its body instead of putting it in image_url.
+    """
+    if not text:
+        return None
+    m = _SUPABASE_URL_RE.search(text)
+    return m.group(0) if m else None
 
 
 def _has_explicit_url(text: str) -> bool:
@@ -221,7 +325,12 @@ def _parse_posts(raw: str) -> list[dict]:
          frontend's publish buttons never render, the pipeline-image
          hook never fires, and the user sees raw markdown in the
          inbox instead of platform cards.
+
+    Every returned post has its `text` field run through the noise
+    sanitizer — strips Deliverables:/Status:/item-id/Supabase URL leaks
+    the agent sometimes pastes into the body.
     """
+    parsed: list[dict] = []
     try:
         # Try direct JSON parse
         start = raw.find("{")
@@ -230,24 +339,30 @@ def _parse_posts(raw: str) -> list[dict]:
             data = json.loads(raw[start:end])
             posts = data.get("posts", [])
             if posts:
-                return posts
+                parsed = posts
     except (json.JSONDecodeError, KeyError):
         pass
 
-    # Try finding JSON array
-    try:
-        start = raw.find("[")
-        end = raw.rfind("]") + 1
-        if start >= 0 and end > start:
-            parsed = json.loads(raw[start:end])
-            if isinstance(parsed, list) and parsed:
-                return parsed
-    except (json.JSONDecodeError, KeyError):
-        pass
+    if not parsed:
+        # Try finding JSON array
+        try:
+            start = raw.find("[")
+            end = raw.rfind("]") + 1
+            if start >= 0 and end > start:
+                maybe = json.loads(raw[start:end])
+                if isinstance(maybe, list) and maybe:
+                    parsed = maybe
+        except (json.JSONDecodeError, KeyError):
+            pass
 
-    # Markdown fallback
-    md = _parse_posts_from_markdown(raw)
-    return md or []
+    if not parsed:
+        # Markdown fallback
+        parsed = _parse_posts_from_markdown(raw) or []
+
+    for p in parsed:
+        if isinstance(p, dict) and isinstance(p.get("text"), str):
+            p["text"] = _sanitize_social_text(p["text"])
+    return parsed
 
 
 # Platform-header detector for the markdown fallback.

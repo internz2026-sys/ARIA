@@ -1524,6 +1524,25 @@ export default function InboxPage() {
             );
           }) : !isEditing ? (
             <div className="space-y-3">
+              {/* Image thumbnail fallback — even when posts can't be
+                  parsed, surface the attached media so the user sees
+                  what the Media Designer produced. Walks the same
+                  sources parseSocialPosts would (metadata.image_url,
+                  posts[].image_url, markdown, raw URL). */}
+              {(() => {
+                const fallbackThumb = getInboxThumbnail(item);
+                if (!fallbackThumb) return null;
+                return (
+                  <div className="rounded-xl border border-[#E0DED8] overflow-hidden bg-white">
+                    <img
+                      src={fallbackThumb}
+                      alt="Attached media"
+                      className="w-full h-auto object-cover max-h-[360px]"
+                      loading="lazy"
+                    />
+                  </div>
+                );
+              })()}
               {/* Needs-regeneration panel — this row is typed as
                   social_post but the agent returned a description
                   instead of parseable JSON posts. Show a clear CTA
