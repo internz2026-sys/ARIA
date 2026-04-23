@@ -53,15 +53,16 @@ def _estimate_tokens(text: str) -> int:
         return 0
     return max(1, len(text) // 4)
 
-# Per-agent hourly limits (requests) — keeps any single agent from hogging the budget
+# Per-agent hourly limits — keeps any single agent from hogging the budget
 AGENT_HOURLY_LIMITS: dict[str, dict] = {
-    "ceo": {"requests": 30},
-    "content_writer": {"requests": 10},
-    "email_marketer": {"requests": 15},
-    "social_manager": {"requests": 10},
-    "ad_strategist": {"requests": 10},
+    "ceo": {"requests": 30, "tokens": 80000},
+    "content_writer": {"requests": 10, "tokens": 40000},
+    "email_marketer": {"requests": 15, "tokens": 40000},
+    "social_manager": {"requests": 10, "tokens": 40000},
+    "ad_strategist": {"requests": 10, "tokens": 40000},
+    "media": {"requests": 15, "tokens": 20000},
 }
-DEFAULT_AGENT_LIMIT = {"requests": 15}
+DEFAULT_AGENT_LIMIT = {"requests": 15, "tokens": 40000}
 
 # Local cache to avoid hitting Supabase on every single check. Bounded so a
 # busy multi-tenant deployment can't grow these dicts unbounded over the
@@ -101,12 +102,12 @@ def _load_usage(tenant_id: str) -> dict:
             .maybe_single()
             .execute()
         )
-        if result.data:
+        if result and getattr(result, "data", None):
             usage = {
                 "hour": hour,
-                "input_tokens": result.data["input_tokens"],
-                "output_tokens": result.data["output_tokens"],
-                "requests": result.data["requests"],
+                "input_tokens": result.data.get("input_tokens") or 0,
+                "output_tokens": result.data.get("output_tokens") or 0,
+                "requests": result.data.get("requests") or 0,
             }
         else:
             usage = {"hour": hour, "input_tokens": 0, "output_tokens": 0, "requests": 0}
@@ -191,9 +192,15 @@ def get_agent_usage_summary(tenant_id: str) -> dict:
         if entry.get("hour") != hour:
             continue
         limits = AGENT_HOURLY_LIMITS.get(agent_id, DEFAULT_AGENT_LIMIT)
+        input_tokens = entry.get("input_tokens") or 0
+        output_tokens = entry.get("output_tokens") or 0
         summary[agent_id] = {
-            "requests": entry["requests"],
+            "requests": entry.get("requests", 0),
             "request_limit": limits["requests"],
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "token_limit": limits["tokens"],
         }
     return summary
 

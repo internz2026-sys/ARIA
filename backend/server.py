@@ -1934,13 +1934,14 @@ async def get_usage_dashboard(tenant_id: str):
     agent_usage = get_agent_usage_summary(tenant_id)
 
     # Ensure all agents appear even if they haven't been used this hour
-    for agent_id in ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist"]:
+    for agent_id in ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist", "media"]:
         if agent_id not in agent_usage:
             limits = AGENT_HOURLY_LIMITS.get(agent_id, DEFAULT_AGENT_LIMIT)
             agent_usage[agent_id] = {
-                "requests": 0, "request_limit": limits["requests"],
+                "requests": 0,
+                "request_limit": limits.get("requests", DEFAULT_AGENT_LIMIT["requests"]),
                 "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
-                "token_limit": limits["tokens"],
+                "token_limit": limits.get("tokens", DEFAULT_AGENT_LIMIT["tokens"]),
             }
 
     return {
