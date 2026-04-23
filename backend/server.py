@@ -2885,7 +2885,7 @@ async def virtual_office_agents(tenant_id: str):
 
 
 @app.get("/api/office/agents/{tenant_id}/{agent_id}/activity")
-async def virtual_office_agent_activity(tenant_id: str, agent_id: str, limit: int = 10):
+async def virtual_office_agent_activity(tenant_id: str, agent_id: str, limit: int = 5):
     """Recent activity feed for a specific agent — powers the
     AgentInfoPanel's Recent Activity list. Pulls from agent_logs
     (every dispatched action) and recent inbox_items authored by the

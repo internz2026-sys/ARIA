@@ -134,7 +134,7 @@ export default function AgentInfoPanel({ agent, onClose }: AgentInfoPanelProps) 
       setActivityLoading(true);
       try {
         const res = await authFetch(
-          `${API_URL}/api/office/agents/${tenantId}/${encodeURIComponent(agent.id)}/activity?limit=8`
+          `${API_URL}/api/office/agents/${tenantId}/${encodeURIComponent(agent.id)}/activity?limit=5`
         );
         if (!res.ok) return;
         const data = await res.json();
