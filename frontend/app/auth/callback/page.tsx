@@ -78,25 +78,25 @@ export default function AuthCallbackPage() {
       }, 4000);
     }
 
-    async function storeGoogleTokens(
-      tenantId: string,
-      providerToken: string | null | undefined,
-      providerRefreshToken: string | null | undefined,
-    ) {
-      if (!providerToken) return;
-      try {
-        await fetch(`${API_URL}/api/integrations/${tenantId}/google-tokens`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            google_access_token: providerToken,
-            google_refresh_token: providerRefreshToken || null,
-          }),
-        });
-      } catch {
-        // Non-blocking
-      }
-    }
+    // INTENTIONALLY REMOVED: the previous version of this page wrote
+    // `session.provider_token` (the Supabase Google OAuth token) into
+    // tenant_configs.google_access_token here. That worked back when
+    // sign-in itself requested Gmail scopes — the provider_token had
+    // gmail.send + gmail.readonly so storing it doubled as the Gmail
+    // integration's token.
+    //
+    // Sign-in now requests only basic profile + email scopes (so the
+    // OAuth client doesn't trip Google's sensitive-scope verification
+    // gate). The provider_token returned by Supabase sign-in no longer
+    // has Gmail access, and overwriting tenant_configs with it would
+    // CLOBBER the working Gmail token that the dedicated Settings →
+    // Connect Gmail flow had stored. That manifested as a backend 403
+    // "token may lack required scopes" the next time the agent tried
+    // to fetch a Gmail thread, and is why Reconnect "stopped sticking"
+    // after a re-login.
+    //
+    // Gmail tokens now ONLY come from /api/auth/google/connect/{tenant_id}
+    // (Settings → Integrations). Sign-in is no longer involved.
 
     async function processSession(session: {
       user: { created_at: string; email?: string };
@@ -124,7 +124,6 @@ export default function AuthCallbackPage() {
           const data = await res.json();
           if (data.tenant_id) {
             localStorage.setItem("aria_tenant_id", data.tenant_id);
-            await storeGoogleTokens(data.tenant_id, session.provider_token, session.provider_refresh_token);
             router.replace("/dashboard");
             return;
           } else {
@@ -136,13 +135,9 @@ export default function AuthCallbackPage() {
         }
       }
 
-      // New user — save tokens for after onboarding
-      if (session.provider_token) {
-        localStorage.setItem("aria_google_token", session.provider_token);
-        if (session.provider_refresh_token) {
-          localStorage.setItem("aria_google_refresh_token", session.provider_refresh_token);
-        }
-      }
+      // No legacy provider-token persistence here either: Gmail tokens
+      // come from the dedicated /api/auth/google/connect/{tenant_id}
+      // flow, not from the sign-in OAuth.
       router.replace("/welcome");
     }
 
