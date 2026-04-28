@@ -430,7 +430,7 @@ export default function CRMPage() {
             else if (tab === "companies") setShowAddCompany(true);
             else setShowAddDeal(true);
           }}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors"
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors shrink-0 whitespace-nowrap"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
           Add {tab === "contacts" ? "Contact" : tab === "companies" ? "Company" : "Deal"}
@@ -469,8 +469,12 @@ export default function CRMPage() {
             </select>
           </div>
 
-          {/* Table */}
-          <div className="bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
+          {/* Table — wrapper is overflow-x-auto so the 7-column table
+              can scroll horizontally on phones without forcing the whole
+              page wider. The table itself sets min-w-[720px] so columns
+              keep their natural width instead of squishing the email
+              into one character per row. */}
+          <div className="bg-white rounded-xl border border-[#E0DED8] overflow-x-auto">
             {contactLoading ? (
               <div className="p-8 text-center text-sm text-[#9E9C95]">Loading contacts...</div>
             ) : contacts.length === 0 ? (
@@ -478,7 +482,7 @@ export default function CRMPage() {
                 <p className="text-sm text-[#9E9C95]">No contacts yet. Add your first contact to get started.</p>
               </div>
             ) : (
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[720px] text-sm">
                 <thead>
                   <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
                     <th className="text-left px-4 py-3"><SortHeader label="Name" sortKey="name" sort={contactSort} onSort={(k) => { setContactSort(toggleSort(contactSort, k)); setContactPage(1); }} /></th>
@@ -540,13 +544,13 @@ export default function CRMPage() {
                 className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-[#E0DED8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 text-[#2C2C2A] placeholder:text-[#6B6A65]" />
             </div>
           </div>
-          <div className="bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
+          <div className="bg-white rounded-xl border border-[#E0DED8] overflow-x-auto">
             {companyLoading ? (
               <div className="p-8 text-center text-sm text-[#9E9C95]">Loading companies...</div>
             ) : companies.length === 0 ? (
               <div className="p-12 text-center"><p className="text-sm text-[#9E9C95]">No companies yet.</p></div>
             ) : (
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[640px] text-sm">
                 <thead>
                   <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
                     <th className="text-left px-4 py-3"><SortHeader label="Name" sortKey="name" sort={companySort} onSort={(k) => { setCompanySort(toggleSort(companySort, k)); setCompanyPage(1); }} /></th>

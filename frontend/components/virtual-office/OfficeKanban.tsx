@@ -158,7 +158,7 @@ export default function OfficeKanban() {
         onMouseDown={handleMouseDown}
         onTouchStart={handleTouchStart}
         onClick={() => handleClick() && setOpen((v) => !v)}
-        className="fixed left-0 top-0 z-[60] flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform touch-none"
+        className="fixed left-0 top-0 z-[60] flex items-center gap-2.5 h-[52px] px-3.5 sm:px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform touch-none"
         style={{
           transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
           background: "linear-gradient(135deg, #FF6B35 0%, #F7418F 100%)",
@@ -172,7 +172,10 @@ export default function OfficeKanban() {
           <rect x="3" y="14" width="7" height="7" rx="1.5" />
           <rect x="14" y="14" width="7" height="7" rx="1.5" />
         </svg>
-        Task Board
+        {/* Label hidden on phones — same compact-FAB pattern as the
+            CEO Chat bubble. The icon alone is enough; the four squares
+            already read as "tasks/board". */}
+        <span className="hidden sm:inline">Task Board</span>
         {active > 0 && (
           <span className="bg-white/25 text-white text-[11px] font-black px-2.5 py-0.5 rounded-full min-w-[24px] text-center">
             {active}
