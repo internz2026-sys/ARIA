@@ -36,26 +36,21 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
     // sourced from `BREAKPOINTS.md` so the JS clamp can't drift away
     // from the CSS responsive behavior.
     const isNarrow = window.innerWidth < BREAKPOINTS.md;
-    // Bottom safe-zone math on narrow viewports:
-    //   MobileBottomNav (56px) + widget height (52px) + visual gap (22px) = 130px
-    // Without this the widget's bottom edge ends up underneath / on top
-    // of the bottom nav after the user drags it. Top safe is 64 to clear
-    // the mobile header bar.
-    const bottomSafe = isNarrow ? 130 : 56;
-    const topSafe = isNarrow ? 64 : 8;
-    // Right-edge clamp depends on the FAB's actual width:
-    //  - Mobile (<md): the label is hidden so the FAB is roughly
-    //    52-60px (icon + px-3.5 padding). Reserve ~70px so the user
-    //    can drag right up against the right edge of the screen.
-    //  - Desktop (md+): the label is visible, FAB is ~180px wide; we
-    //    reserve that much so dragging past the right edge doesn't
-    //    push the label off-screen.
+    // Free placement: only constraint is "the widget must stay fully on
+    // screen so the user can always grab it again". No more header /
+    // bottom-nav exclusion zones — the user explicitly asked to be able
+    // to drop the FAB anywhere, including over the chrome. Reserve
+    // enough room on the right + bottom edges for the FAB's own body
+    // (height is fixed at 52px; width depends on the breakpoint, since
+    // the label is hidden on phones — see FloatingChat / OfficeKanban).
     const fabWidth = isNarrow ? 70 : 180;
-    const maxX = Math.max(0, window.innerWidth - fabWidth);
-    const maxY = Math.max(topSafe, window.innerHeight - bottomSafe);
+    const fabHeight = 52;
+    const margin = 4; // small breathing-room from the absolute edge
+    const maxX = Math.max(margin, window.innerWidth - fabWidth - margin);
+    const maxY = Math.max(margin, window.innerHeight - fabHeight - margin);
     return {
-      x: Math.max(8, Math.min(maxX, p.x)),
-      y: Math.max(topSafe, Math.min(maxY, p.y)),
+      x: Math.max(margin, Math.min(maxX, p.x)),
+      y: Math.max(margin, Math.min(maxY, p.y)),
     };
   }, []);
 
