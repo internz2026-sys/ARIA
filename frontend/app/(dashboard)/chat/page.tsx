@@ -7,6 +7,7 @@ import { useCeoChat, type ChatMessage } from "@/lib/use-ceo-chat";
 import { formatDateAgo } from "@/lib/utils";
 import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
 import { useConfirm } from "@/lib/use-confirm";
+import { useBelowBreakpoint } from "@/lib/use-breakpoint";
 
 function renderMarkdown(text: string) {
   const parts: React.ReactNode[] = [];
@@ -34,10 +35,19 @@ function renderMarkdown(text: string) {
 
 export default function CEOChatPage() {
   const [userName, setUserName] = useState("");
+  // Default the sidebar OPEN; on mobile we override to closed once the
+  // breakpoint hook reports below `lg`. The drawer renders as an overlay
+  // on mobile, so starting closed keeps the chat readable instead of
+  // forcing a 260px sidebar into a 390px viewport.
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isMobile = useBelowBreakpoint("lg");
+
+  useEffect(() => {
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
 
   const { messages, sessions, sessionId, sending, send, switchSession, startNewChat, deleteSession, deleteSessions } = useCeoChat();
   const { confirm } = useConfirm();
@@ -165,13 +175,37 @@ export default function CEOChatPage() {
   }
 
   return (
+    // `@container/chat` lets the inner sidebar/main split decide its
+    // layout from the actual chat-area width rather than the viewport,
+    // which is what we want once the dashboard sidebar may collapse.
     // `dvh` (dynamic viewport height) shrinks when the mobile keyboard
     // opens, so the chat input stays visible above the keyboard instead
-    // of being pushed off-screen. On desktop it behaves like `vh`.
-    <div className="flex h-[calc(100dvh-120px)]">
-      {/* ─── Chat History Sidebar ─── */}
-      <div className={`${sidebarOpen ? "w-[260px]" : "w-0"} shrink-0 transition-all duration-200 overflow-hidden border-r border-[#E0DED8]`}>
-        <div className="w-[260px] h-full flex flex-col bg-[#F8F8F6]">
+    // of being pushed off-screen.
+    <div className="@container/chat flex h-[calc(100dvh-120px)] relative">
+      {/* Mobile drawer backdrop. Renders only below `lg` and only when
+          the sidebar is open — desktop never sees it. Tap to dismiss. */}
+      {isMobile && sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-40"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* ─── Chat History Sidebar ───
+          Mobile (<lg): absolute-positioned overlay drawer, slides in
+          from the left with a backdrop above. Doesn't push the chat
+          column, so the chat keeps the full container width.
+          Desktop (lg+): inline column that animates from 0 → 260px and
+          pushes the chat column. */}
+      <div
+        className={`shrink-0 transition-all duration-200 overflow-hidden border-r border-[#E0DED8] bg-[#F8F8F6]
+          ${isMobile
+            ? `absolute inset-y-0 left-0 z-50 shadow-2xl ${sidebarOpen ? "w-[280px]" : "w-0"}`
+            : `relative ${sidebarOpen ? "w-[260px]" : "w-0"}`
+          }`}
+      >
+        <div className={`${isMobile ? "w-[280px]" : "w-[260px]"} h-full flex flex-col bg-[#F8F8F6]`}>
           <div className="px-3 py-3 border-b border-[#E0DED8] flex items-center justify-between gap-2">
             <span className="text-xs font-semibold text-[#5F5E5A] uppercase tracking-wide">Chat History</span>
             <div className="flex items-center gap-1.5">

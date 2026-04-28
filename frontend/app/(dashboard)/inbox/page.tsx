@@ -1911,13 +1911,16 @@ export default function InboxPage() {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col md:flex-row gap-4 md:min-h-[500px] md:h-[calc(100dvh-220px)]">
-          {/* Item list -- on mobile, hidden once an item is selected so the
-              detail pane gets full screen. On desktop (md+) both panes are
-              visible side-by-side as before. The list column is now
-              height-constrained so its inner list scrolls independently
-              of the detail pane (master-detail pattern). */}
-          <div className={`${mobileShowDetail ? "hidden" : "flex"} md:flex w-full md:w-[380px] shrink-0 flex-col gap-2 overflow-hidden`}>
+        <div className="@container/inbox flex flex-col @3xl/inbox:flex-row gap-4 @3xl/inbox:min-h-[500px] @3xl/inbox:h-[calc(100dvh-220px)]">
+          {/* Item list — switches between stacked (mobile) and side-by-
+              side master-detail based on the *container's* width via
+              `@container/inbox`. This is wider than viewport-`md:` was,
+              and reacts to the actual space available (a tablet with a
+              wide desktop sidebar collapsed gets the desktop layout;
+              the same tablet with the sidebar open keeps the stacked
+              one). The list column is height-constrained on wide
+              containers so its inner list scrolls independently. */}
+          <div className={`${mobileShowDetail ? "hidden" : "flex"} @3xl/inbox:flex w-full @3xl/inbox:w-[380px] shrink-0 flex-col gap-2 overflow-hidden`}>
             {/* Delete Mode toggle + bulk action toolbar.
                 Default (View Mode): just a single "Delete" button on the
                 right, nothing else. Clicking it flips to Delete Mode,
@@ -2146,7 +2149,7 @@ export default function InboxPage() {
               scroll container owns the scrolling (sticky master-detail). */}
           <div
             ref={detailPaneRef}
-            className={`${mobileShowDetail ? "flex" : "hidden"} md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}
+            className={`${mobileShowDetail ? "flex" : "hidden"} @3xl/inbox:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}
           >
             {selected ? (
               <>

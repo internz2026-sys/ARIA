@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { BREAKPOINTS } from "./use-breakpoint";
 
 interface DragState {
   dragging: boolean;
@@ -31,7 +32,10 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
   const rafRef = useRef<number | null>(null);
 
   const clampToViewport = useCallback((p: { x: number; y: number }) => {
-    const isNarrow = window.innerWidth < 768;
+    // `md` (768px) is the same threshold Tailwind uses for tablet+ —
+    // sourced from `BREAKPOINTS.md` so the JS clamp can't drift away
+    // from the CSS responsive behavior.
+    const isNarrow = window.innerWidth < BREAKPOINTS.md;
     // Bottom safe-zone math on narrow viewports:
     //   MobileBottomNav (56px) + widget height (52px) + visual gap (22px) = 130px
     // Without this the widget's bottom edge ends up underneath / on top

@@ -340,12 +340,13 @@ export default function ConversationsPage() {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col md:flex-row gap-4 md:min-h-[600px]">
-          {/* Thread list — on mobile, hidden once a thread is selected
-              so the detail pane gets full screen (master-detail stack
-              pattern matching the Inbox page). On desktop both panes
-              are always visible side-by-side. */}
-          <div className={`${selected ? "hidden md:block" : "block"} w-full md:w-[380px] shrink-0 space-y-2`}>
+        <div className="@container/threads flex flex-col @3xl/threads:flex-row gap-4 @3xl/threads:min-h-[600px]">
+          {/* Thread list — switches stacked vs. side-by-side based on
+              the *container's* width (via `@container/threads`) instead
+              of the viewport. Matches the Inbox page so both pages
+              behave consistently when the dashboard sidebar collapses
+              or the window is split. */}
+          <div className={`${selected ? "hidden @3xl/threads:block" : "block"} w-full @3xl/threads:w-[380px] shrink-0 space-y-2`}>
             {threads.map(thread => {
               const sc = STATUS_COLORS[thread.status] || STATUS_COLORS.open;
               return (
@@ -378,7 +379,7 @@ export default function ConversationsPage() {
           {/* Thread detail — on mobile, takes the whole row when a
               thread is selected; on desktop always visible alongside
               the list. */}
-          <div className={`${selected ? "flex" : "hidden"} md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}>
+          <div className={`${selected ? "flex" : "hidden"} @3xl/threads:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}>
             {selected ? (
               threadLoading ? (
                 <div className="flex items-center justify-center flex-1">

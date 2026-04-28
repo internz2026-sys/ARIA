@@ -15,6 +15,21 @@
   --border: #E0DED8;
 }
 
+html,
+body {
+  /* Prevents any rogue child element from forcing the layout wider than
+     the viewport — when that happens, mobile browsers auto-shrink the
+     page (the "I have to zoom out to see anything" symptom). Clipping
+     horizontal overflow at the root keeps the visual viewport pinned to
+     device-width regardless of stray fixed-pixel widths inside. */
+  overflow-x: hidden;
+  /* max-width:100vw + position:relative gives fixed-position overlays a
+     known containing block so they can't push the page wider than the
+     screen even before the overflow rule kicks in. */
+  max-width: 100vw;
+  position: relative;
+}
+
 body {
   font-family: "Inter", system-ui, sans-serif;
   color: var(--text-primary);
