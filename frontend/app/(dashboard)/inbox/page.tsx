@@ -2003,7 +2003,7 @@ export default function InboxPage() {
                 <div
                   key={item.id}
                   data-inbox-item={item.id}
-                  className={`flex items-start gap-2 p-4 rounded-xl border transition-all cursor-pointer ${
+                  className={`flex items-start gap-2 p-4 rounded-xl border transition-all cursor-pointer min-w-0 ${
                     isHighlighted
                       ? "border-[#534AB7] bg-[#EEEDFE] shadow-md ring-2 ring-[#534AB7]/40 animate-pulse"
                       : selected?.id === item.id

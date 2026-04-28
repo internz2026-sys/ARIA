@@ -190,8 +190,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           )}
         </div>
 
-        {/* Main content */}
-        <div className="flex-1 lg:ml-[240px] min-h-[100dvh]">
+        {/* Main content. `min-w-0` is critical: a flex child's default
+            `min-width: auto` lets it grow to fit its content, which is
+            exactly the bug behind "page is wider than the phone screen".
+            With `min-w-0` the column can shrink below content size and
+            children with `truncate` / `overflow-x-auto` actually clip
+            and scroll inside their own bounds instead of expanding the
+            whole page rightward. */}
+        <div className="flex-1 lg:ml-[240px] min-h-[100dvh] min-w-0">
           {/* Mobile header */}
           <div className="lg:hidden sticky top-0 z-30 bg-white border-b border-[#E0DED8] h-14 flex items-center px-4">
             <button
