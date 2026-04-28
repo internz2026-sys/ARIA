@@ -32,12 +32,18 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
 
   const clampToViewport = useCallback((p: { x: number; y: number }) => {
     const isNarrow = window.innerWidth < 768;
-    const bottomSafe = isNarrow ? 96 : 56;
+    // Bottom safe-zone math on narrow viewports:
+    //   MobileBottomNav (56px) + widget height (52px) + visual gap (22px) = 130px
+    // Without this the widget's bottom edge ends up underneath / on top
+    // of the bottom nav after the user drags it. Top safe is 64 to clear
+    // the mobile header bar.
+    const bottomSafe = isNarrow ? 130 : 56;
+    const topSafe = isNarrow ? 64 : 8;
     const maxX = Math.max(0, window.innerWidth - 180);
-    const maxY = Math.max(0, window.innerHeight - bottomSafe);
+    const maxY = Math.max(topSafe, window.innerHeight - bottomSafe);
     return {
       x: Math.max(8, Math.min(maxX, p.x)),
-      y: Math.max(8, Math.min(maxY, p.y)),
+      y: Math.max(topSafe, Math.min(maxY, p.y)),
     };
   }, []);
 

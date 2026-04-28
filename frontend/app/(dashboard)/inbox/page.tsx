@@ -1861,7 +1861,7 @@ export default function InboxPage() {
       </p>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 bg-white rounded-xl border border-[#E0DED8] p-1.5 overflow-x-auto">
+      <div className="sticky top-14 lg:top-0 z-30 flex items-center gap-1 bg-white rounded-xl border border-[#E0DED8] p-1.5 overflow-x-auto shadow-sm/5">
         {STATUS_TABS.map((tab) => (
           <button
             key={tab.key}
