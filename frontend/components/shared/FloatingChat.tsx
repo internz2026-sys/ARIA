@@ -10,6 +10,7 @@ import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
 import { useResizablePanel, type ResizeCorner } from "@/lib/use-resizable-panel";
 import { useConfirm } from "@/lib/use-confirm";
 import { useKeyboardState } from "@/lib/use-keyboard";
+import { useBelowBreakpoint } from "@/lib/use-breakpoint";
 import ConfirmationDialog from "@/components/shared/ConfirmationDialog";
 
 export default function FloatingChat() {
@@ -118,6 +119,12 @@ export default function FloatingChat() {
   // the user is typing. When the chat panel IS open, leaving the FAB
   // visible is fine because the panel takes the whole bottom area.
   const keyboard = useKeyboardState();
+  // Below `sm` breakpoint we treat the chat panel as a near-full-screen
+  // modal instead of a draggable, resizable bubble. The default 420px
+  // panel width is wider than a typical phone viewport, so without this
+  // override the right edge of the panel (and the send button) get
+  // clipped off-screen.
+  const isMobile = useBelowBreakpoint("sm");
 
   // Mark all messages as seen when panel is open
   useEffect(() => {
@@ -244,14 +251,30 @@ export default function FloatingChat() {
 
   const { left: basePanelX, top: basePanelY } = computePanelPosition(panelSize);
 
-  const panelStyle: React.CSSProperties = {
-    position: "fixed",
-    width: panelSize.w,
-    height: panelSize.h,
-    left: basePanelX,
-    top: basePanelY,
-    zIndex: 61,
-  };
+  // Mobile: pin the panel to the viewport with a small inset on each
+  // side so the rounded corners are visible and the panel can't extend
+  // past the screen. `bottom` reserves room for the iOS home indicator
+  // safe-area + the MobileBottomNav (56px). Width/height are derived
+  // from inset, so the saved 420×520 panelSize is intentionally ignored
+  // here — full-screen-like behavior is the right default on phones.
+  // Desktop keeps the existing draggable + resizable math.
+  const panelStyle: React.CSSProperties = isMobile
+    ? {
+        position: "fixed",
+        top: 12,
+        left: 12,
+        right: 12,
+        bottom: "calc(56px + max(12px, env(safe-area-inset-bottom)))",
+        zIndex: 61,
+      }
+    : {
+        position: "fixed",
+        width: panelSize.w,
+        height: panelSize.h,
+        left: basePanelX,
+        top: basePanelY,
+        zIndex: 61,
+      };
 
   // Tailwind class for the corner position + matching border-radius of the
   // resize grip. Listed explicitly because Tailwind's JIT needs literal
@@ -291,6 +314,13 @@ export default function FloatingChat() {
     ) : null;
   }
 
+  // On mobile, hide the FAB once the panel is open. The full-screen
+  // panel covers the area where the FAB used to sit and the panel's
+  // own X close button is the way out — leaving the FAB visible would
+  // just stack two purple circles in the same spot. Desktop keeps the
+  // FAB visible so users can drag the whole chat assembly around.
+  const hideButton = isMobile && open;
+
   return (
     <>
       <button
@@ -300,7 +330,7 @@ export default function FloatingChat() {
         onTouchStart={handleTouchStart}
         onClick={() => handleClick() && setOpen(v => !v)}
         className="fixed left-0 top-0 z-[60] flex items-center gap-2.5 h-[52px] px-3.5 sm:px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform touch-none"
-        style={{
+        style={hideButton ? { display: "none" } : {
           transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
           background: "linear-gradient(135deg, #534AB7 0%, #7C3AED 100%)",
           color: "#fff",
@@ -325,7 +355,11 @@ export default function FloatingChat() {
               button anchor. Edges are thin strips with a matching cursor;
               the corner keeps a visible SVG grip. Near edges are omitted
               because the panel's near side is locked to the button. */}
-          {handles.map((h) => {
+          {/* Resize handles only on desktop. On mobile the panel is a
+              fixed-size full-viewport modal — resizing makes no sense
+              and the handle hit-areas would just block taps on the
+              chat content underneath. */}
+          {!isMobile && handles.map((h) => {
             if (h === "n") return <div key={h} onMouseDown={startResize("n")} className="absolute left-0 right-0 top-0 h-1.5 cursor-ns-resize hover:bg-[#534AB7]/10 z-[62]" />;
             if (h === "s") return <div key={h} onMouseDown={startResize("s")} className="absolute left-0 right-0 bottom-0 h-1.5 cursor-ns-resize hover:bg-[#534AB7]/10 z-[62]" />;
             if (h === "e") return <div key={h} onMouseDown={startResize("e")} className="absolute top-0 bottom-0 right-0 w-1.5 cursor-ew-resize hover:bg-[#534AB7]/10 z-[62]" />;
@@ -354,20 +388,24 @@ export default function FloatingChat() {
               </div>
             );
           })}
-          {/* Header — doubles as a drag handle. Grabbing it anywhere that
-              isn't a button drags BOTH the panel and the toggle button
-              together, because they share the same useDraggable position.
-              Clicks on child buttons are filtered out so they still work. */}
+          {/* Header — doubles as a drag handle on desktop. On mobile
+              the panel is fixed-position so dragging would just move the
+              hidden FAB around behind the panel; we no-op the handlers
+              there to keep the gesture predictable. Clicks on child
+              buttons (history toggle, new chat, close) are filtered
+              out so they still work either way. */}
           <div
             onMouseDown={(e) => {
+              if (isMobile) return;
               if ((e.target as HTMLElement).closest("button")) return;
               handleMouseDown(e);
             }}
             onTouchStart={(e) => {
+              if (isMobile) return;
               if ((e.target as HTMLElement).closest("button")) return;
               handleTouchStart(e);
             }}
-            className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing select-none touch-none"
+            className={`flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0 select-none ${isMobile ? "" : "cursor-grab active:cursor-grabbing touch-none"}`}
           >
             <button
               onClick={() => setShowHistory(v => !v)}
