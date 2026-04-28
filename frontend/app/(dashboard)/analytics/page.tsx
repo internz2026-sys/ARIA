@@ -255,7 +255,7 @@ export default function AnalyticsPage() {
       ) : (
         <>
           {/* Activity over time — stacked bars per day */}
-          <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+          <div className="bg-white rounded-xl border border-[#E0DED8] p-4 sm:p-6">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="text-base font-semibold text-[#2C2C2A]">Activity over time</h2>
@@ -298,15 +298,15 @@ export default function AnalyticsPage() {
 
           {/* Two-column: by-agent + by-type */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+            <div className="bg-white rounded-xl border border-[#E0DED8] p-4 sm:p-6">
               <h2 className="text-base font-semibold text-[#2C2C2A] mb-4">By agent</h2>
               <div className="space-y-3">
                 {summary!.by_agent.map((a) => {
                   const color = AGENT_COLORS[a.agent] || "#5F5E5A";
                   const pct = (a.count / totalAgentWork) * 100;
                   return (
-                    <div key={a.agent} className="flex items-center gap-3">
-                      <div className="w-28 flex items-center gap-2">
+                    <div key={a.agent} className="flex items-center gap-2 sm:gap-3">
+                      <div className="w-24 sm:w-28 flex items-center gap-2 shrink-0">
                         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
                         <span className="text-xs font-medium text-[#2C2C2A] truncate">
                           {AGENT_NAMES[a.agent] || a.agent}
@@ -322,7 +322,7 @@ export default function AnalyticsPage() {
               </div>
             </div>
 
-            <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+            <div className="bg-white rounded-xl border border-[#E0DED8] p-4 sm:p-6">
               <h2 className="text-base font-semibold text-[#2C2C2A] mb-4">By content type</h2>
               <div className="space-y-3">
                 {summary!.by_type.map((t) => {
@@ -330,8 +330,8 @@ export default function AnalyticsPage() {
                   const color = TYPE_COLORS[bucket] || "#5F5E5A";
                   const pct = (t.count / totalByType) * 100;
                   return (
-                    <div key={t.type} className="flex items-center gap-3">
-                      <div className="w-28 flex items-center gap-2">
+                    <div key={t.type} className="flex items-center gap-2 sm:gap-3">
+                      <div className="w-24 sm:w-28 flex items-center gap-2 shrink-0">
                         <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: color }} />
                         <span className="text-xs font-medium text-[#2C2C2A] truncate capitalize">{t.type.replace(/_/g, " ")}</span>
                       </div>
@@ -349,7 +349,7 @@ export default function AnalyticsPage() {
           </div>
 
           {/* Status distribution — single stacked bar */}
-          <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+          <div className="bg-white rounded-xl border border-[#E0DED8] p-4 sm:p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-base font-semibold text-[#2C2C2A]">Status distribution</h2>
               <span className="text-xs text-[#9E9C95]">{totalByStatus} items</span>
@@ -383,7 +383,7 @@ export default function AnalyticsPage() {
           </div>
 
           {/* Recent activity feed */}
-          <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+          <div className="bg-white rounded-xl border border-[#E0DED8] p-4 sm:p-6">
             <h2 className="text-base font-semibold text-[#2C2C2A] mb-4">Recent activity</h2>
             <div className="divide-y divide-[#E0DED8]">
               {summary!.recent_activity.map((item) => (

@@ -130,7 +130,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   if (!authChecked) {
     return (
-      <div className="min-h-screen bg-[#F8F8F6] flex items-center justify-center">
+      <div className="min-h-[100dvh] bg-[#F8F8F6] flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
           <p className="text-sm text-[#5F5E5A]">Loading...</p>
@@ -144,7 +144,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <NotificationProvider>
       <OfficeAgentsProvider>
       <ConfirmProvider>
-      <div className="min-h-screen bg-[#F8F8F6] flex">
+      <div className="min-h-[100dvh] bg-[#F8F8F6] flex">
         {/* Mobile overlay */}
         {sidebarOpen && (
           <div
@@ -191,7 +191,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Main content */}
-        <div className="flex-1 lg:ml-[240px] min-h-screen">
+        <div className="flex-1 lg:ml-[240px] min-h-[100dvh]">
           {/* Mobile header */}
           <div className="lg:hidden sticky top-0 z-30 bg-white border-b border-[#E0DED8] h-14 flex items-center px-4">
             <button
