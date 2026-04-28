@@ -222,6 +222,158 @@ def system_stats() -> dict:
     return out
 
 
+def reset_user_password(*, target_user_id: str, actor_role: str, actor_id: str) -> dict:
+    """Trigger a password-recovery email for `target_user_id`. Returns
+    {ok, email?, action_link?, error?}.
+
+    Uses Supabase's admin generate_link with type='recovery', which:
+      1. Issues a signed recovery URL the user can click to set a new password
+      2. Emails the URL via the project's SMTP config (if configured)
+
+    The `action_link` is returned to the admin in the response so they
+    have a copy-able fallback when the project's SMTP is misconfigured —
+    they can paste it into Slack/etc. Don't log the link.
+
+    Permission rules (server-enforced — UI hints elsewhere are advisory):
+      - actor must be admin or super_admin
+      - admin can reset only role='user' targets (no peer- or super-resets)
+      - super_admin can reset anyone except themselves (use the public
+        forgot-password flow for self-reset to keep an audit gap)
+    """
+    if not target_user_id:
+        return {"ok": False, "error": "target_user_id required"}
+    if not is_admin(actor_role):
+        return {"ok": False, "error": "Forbidden"}
+    if target_user_id == actor_id:
+        return {"ok": False, "error": "Use the public forgot-password flow to reset your own password"}
+
+    target_role = get_user_role(target_user_id)
+    if not is_super_admin(actor_role) and target_role != "user":
+        return {"ok": False, "error": "Only a super_admin can reset another admin's password"}
+
+    sb = get_db()
+
+    # Need the email — Supabase's generate_link is keyed on email, not
+    # user_id. Pull it from auth.users via the admin API.
+    try:
+        target = sb.auth.admin.get_user_by_id(target_user_id)
+        # supabase-py wraps the response in a model; the `.user` attr holds
+        # the actual record. Older versions return the dict directly.
+        user_obj = getattr(target, "user", None) or target
+        target_email = (
+            getattr(user_obj, "email", None)
+            or (user_obj.get("email") if isinstance(user_obj, dict) else None)
+            or ""
+        )
+    except Exception as e:
+        logger.warning("[profiles] target lookup failed for %s: %s", target_user_id, e)
+        return {"ok": False, "error": "Target user not found"}
+
+    if not target_email:
+        return {"ok": False, "error": "Target user has no email on file"}
+
+    try:
+        link_res = sb.auth.admin.generate_link({
+            "type": "recovery",
+            "email": target_email,
+        })
+    except Exception as e:
+        logger.error("[profiles] generate_link failed for %s: %s", target_user_id, e)
+        return {"ok": False, "error": "Could not generate recovery link"}
+
+    # Different supabase-py versions surface the link in slightly
+    # different shapes — try both common ones, fall back to None.
+    action_link = (
+        getattr(link_res, "action_link", None)
+        or getattr(getattr(link_res, "properties", None), "action_link", None)
+        or (link_res.get("action_link") if isinstance(link_res, dict) else None)
+        or (link_res.get("properties", {}).get("action_link")
+            if isinstance(link_res, dict) and isinstance(link_res.get("properties"), dict) else None)
+    )
+
+    logger.info(
+        "[admin] %s (%s) triggered password reset for %s (%s)",
+        actor_id, actor_role, target_user_id, target_email,
+    )
+    return {"ok": True, "email": target_email, "action_link": action_link}
+
+
+def delete_user(*, target_user_id: str, actor_role: str, actor_id: str) -> dict:
+    """Hard-delete a user from Supabase auth and clean up their data.
+
+    Cascade behavior:
+      - `auth.users` delete cascades `profiles` (FK with on delete cascade)
+      - `onboarding_drafts` rows are removed explicitly (no FK cascade)
+      - Tenant-scoped data (inbox_items, agent_logs, etc) is INTENTIONALLY
+        left alone — a tenant can have multiple users, and nuking the
+        tenant just because one user is being removed could destroy a
+        whole company's content. If the deleted user was the only owner
+        of a tenant, the orphaned data has to be cleaned up via tenant
+        management separately.
+
+    Permission rules (mirror the password-reset rules):
+      - actor must be admin or super_admin
+      - admin can only delete role='user'
+      - super_admin can delete anyone except themselves (anti-lockout —
+        if the last super_admin needs to leave, promote another first)
+    """
+    if not target_user_id:
+        return {"ok": False, "error": "target_user_id required"}
+    if not is_admin(actor_role):
+        return {"ok": False, "error": "Forbidden"}
+    if target_user_id == actor_id:
+        return {"ok": False, "error": "You can't delete your own account from the admin panel"}
+
+    target_role = get_user_role(target_user_id)
+    if not is_super_admin(actor_role) and target_role != "user":
+        return {"ok": False, "error": "Only a super_admin can delete another admin"}
+
+    sb = get_db()
+
+    # Capture the email BEFORE deletion so we can log it / surface it to
+    # the caller. After the auth.users row is gone the profiles cascade
+    # has fired and we can't look it up anymore.
+    target_email = ""
+    try:
+        target = sb.auth.admin.get_user_by_id(target_user_id)
+        user_obj = getattr(target, "user", None) or target
+        target_email = (
+            getattr(user_obj, "email", None)
+            or (user_obj.get("email") if isinstance(user_obj, dict) else None)
+            or ""
+        )
+    except Exception:
+        # Non-fatal — we'll still attempt the delete.
+        pass
+
+    cleanup = {"profiles": False, "onboarding_drafts": 0, "auth_user": False}
+
+    # 1. Best-effort onboarding_drafts cleanup. Done BEFORE auth.users
+    #    deletion in case our own profiles row gets cascaded out before
+    #    we can reference it (the drafts table keys on user_id text).
+    try:
+        res = sb.table("onboarding_drafts").delete().eq("user_id", target_user_id).execute()
+        cleanup["onboarding_drafts"] = len(res.data or [])
+    except Exception as e:
+        logger.debug("[profiles] onboarding_drafts cleanup failed (non-fatal): %s", e)
+
+    # 2. Delete the auth user — this cascades the profiles row.
+    try:
+        sb.auth.admin.delete_user(target_user_id)
+        cleanup["auth_user"] = True
+        cleanup["profiles"] = True  # cascaded
+    except Exception as e:
+        logger.error("[profiles] delete_user failed for %s: %s", target_user_id, e)
+        return {"ok": False, "error": "Could not delete user from auth"}
+
+    invalidate_role_cache(target_user_id)
+    logger.warning(
+        "[admin] %s (%s) DELETED user %s (%s) — cleanup: %s",
+        actor_id, actor_role, target_user_id, target_email or "no-email", cleanup,
+    )
+    return {"ok": True, "email": target_email, "cleanup": cleanup}
+
+
 def list_recent_agent_logs(limit: int = 50) -> list[dict]:
     """Most recent agent runs across all tenants — for the admin
     activity feed. Failures return [] so the dashboard still loads."""

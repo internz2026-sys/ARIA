@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { authFetch, API_URL } from "@/lib/api";
+import { useConfirm } from "@/lib/use-confirm";
 
 // Role-based admin dashboard. Acts as its own guard: on mount, hits
 // /api/admin/me — backend middleware short-circuits non-admins with
@@ -52,7 +53,10 @@ export default function AdminPage() {
   const [roleFilter, setRoleFilter] = useState<"" | Role>("");
   const [loading, setLoading] = useState(true);
   const [pendingChange, setPendingChange] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ user_id: string; kind: "reset" | "delete" } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
+  const [successMsg, setSuccessMsg] = useState<string>("");
+  const { confirm } = useConfirm();
 
   // Initial role check — single source of truth for whether this page
   // even renders. Backend returns 200 + {role} for admins, 403 for
@@ -135,6 +139,62 @@ export default function AdminPage() {
       setErrorMsg(e?.message || "Couldn't change role");
     }
     setPendingChange(null);
+  };
+
+  const handleResetPassword = async (target: AdminUser) => {
+    const ok = await confirm({
+      title: "Send password reset link?",
+      message: `${target.email} will receive an email with a link to set a new password. They'll need to click it within the next hour.`,
+      confirmLabel: "Send reset link",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    setPendingAction({ user_id: target.user_id, kind: "reset" });
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const res = await authFetch(`${API_URL}/api/admin/users/${target.user_id}/reset-password`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `Failed (${res.status})`);
+      setSuccessMsg(`Password reset link sent to ${body.email || target.email}.`);
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Couldn't send reset link");
+    }
+    setPendingAction(null);
+  };
+
+  const handleDeleteUser = async (target: AdminUser) => {
+    // Two-step confirm: a generic "are you sure" then a typed-email
+    // gate would be the gold standard, but the existing confirm dialog
+    // only supports one prompt. Use destructive styling + verbose
+    // message so the user has to read what they're about to do.
+    const ok = await confirm({
+      title: "Delete this user permanently?",
+      message:
+        `${target.email || target.user_id} will be removed from auth, their profile cascaded out, and any onboarding drafts cleaned up. This CANNOT be undone. Tenant-scoped content (inbox items, agent runs) is preserved — clean it up separately if needed.`,
+      confirmLabel: "Delete user",
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
+    setPendingAction({ user_id: target.user_id, kind: "delete" });
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const res = await authFetch(`${API_URL}/api/admin/users/${target.user_id}`, {
+        method: "DELETE",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `Failed (${res.status})`);
+      setUsers((prev) => prev.filter((u) => u.user_id !== target.user_id));
+      setSuccessMsg(`Deleted ${body.email || target.email || "user"}.`);
+      loadStats();
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Couldn't delete user");
+    }
+    setPendingAction(null);
   };
 
   if (authState === "checking") {
@@ -228,6 +288,11 @@ export default function AdminPage() {
             {errorMsg}
           </div>
         )}
+        {successMsg && (
+          <div className="px-4 py-2 bg-[#E6F5ED] border-b border-[#1D9E75]/20 text-sm text-[#157A5A]">
+            {successMsg}
+          </div>
+        )}
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -238,14 +303,15 @@ export default function AdminPage() {
                 <th className="px-4 py-2 font-semibold">Role</th>
                 <th className="px-4 py-2 font-semibold">Joined</th>
                 <th className="px-4 py-2 font-semibold">Last change</th>
-                <th className="px-4 py-2 font-semibold text-right">Set role</th>
+                <th className="px-4 py-2 font-semibold">Set role</th>
+                <th className="px-4 py-2 font-semibold text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading && users.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-[#9E9C95]">Loading...</td></tr>
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-[#9E9C95]">Loading...</td></tr>
               ) : users.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-[#9E9C95]">No users match.</td></tr>
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-[#9E9C95]">No users match.</td></tr>
               ) : users.map((u) => {
                 const isSelf = me?.user_id === u.user_id;
                 const isTargetSuper = u.role === "super_admin";
@@ -270,7 +336,7 @@ export default function AdminPage() {
                     <td className="px-4 py-3 text-[#9E9C95] text-xs">
                       {u.updated_at ? new Date(u.updated_at).toLocaleDateString() : "—"}
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-3">
                       <select
                         value={u.role}
                         disabled={!canEdit || pendingChange === u.user_id}
@@ -283,6 +349,30 @@ export default function AdminPage() {
                         {/* super_admin only selectable when the actor is a super_admin */}
                         {isSuper && <option value="super_admin">Super Admin</option>}
                       </select>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {/* Actions: reset password + delete. Hidden on
+                          self (use the public flow instead) and on
+                          targets the actor can't manage (admins can't
+                          touch other admins / super_admins). */}
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleResetPassword(u)}
+                          disabled={!canEdit || pendingAction?.user_id === u.user_id}
+                          className="text-xs px-2 py-1 rounded-md border border-[#E0DED8] text-[#5F5E5A] bg-white hover:border-[#534AB7]/40 hover:text-[#534AB7] hover:bg-[#FAFAFF] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={!canEdit ? (isSelf ? "Use the public forgot-password flow for self-reset" : "Only a super admin can reset another admin") : "Send password reset email"}
+                        >
+                          {pendingAction?.user_id === u.user_id && pendingAction.kind === "reset" ? "Sending..." : "Reset password"}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteUser(u)}
+                          disabled={!canEdit || pendingAction?.user_id === u.user_id}
+                          className="text-xs px-2 py-1 rounded-md border border-[#FBC9B9] text-[#D85A30] bg-white hover:bg-[#FDEEE8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={!canEdit ? (isSelf ? "Can't delete your own account" : "Only a super admin can delete another admin") : "Permanently delete this user"}
+                        >
+                          {pendingAction?.user_id === u.user_id && pendingAction.kind === "delete" ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

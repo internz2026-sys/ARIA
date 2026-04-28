@@ -94,6 +94,49 @@ async def admin_set_role(target_user_id: str, request: Request):
     return result
 
 
+@router.post("/users/{target_user_id}/reset-password")
+async def admin_reset_password(target_user_id: str, request: Request):
+    """Trigger a password recovery email for the target user. Supabase
+    issues a recovery link and (if SMTP is configured on the project)
+    emails it. The link is also returned in the response so the admin
+    can copy-paste it as a fallback when email delivery is unreliable.
+
+    Server-side guards (also in profiles_service.reset_user_password):
+      - admin can only reset role='user' targets
+      - super_admin can reset anyone except themselves
+    """
+    actor_id, actor_role = _actor_from_request(request)
+    result = profiles_service.reset_user_password(
+        target_user_id=target_user_id,
+        actor_role=actor_role,
+        actor_id=actor_id,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=403, detail=result.get("error") or "Forbidden")
+    return result
+
+
+@router.delete("/users/{target_user_id}")
+async def admin_delete_user(target_user_id: str, request: Request):
+    """Hard-delete the target user from Supabase auth + cascading
+    profiles row + onboarding_drafts. Tenant-scoped data is left
+    alone (see service docstring for rationale).
+
+    Server-side guards (also in profiles_service.delete_user):
+      - admin can only delete role='user'
+      - super_admin can delete anyone except themselves
+    """
+    actor_id, actor_role = _actor_from_request(request)
+    result = profiles_service.delete_user(
+        target_user_id=target_user_id,
+        actor_role=actor_role,
+        actor_id=actor_id,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=403, detail=result.get("error") or "Forbidden")
+    return result
+
+
 @router.get("/stats")
 async def admin_stats(request: Request):
     """High-level counts for the dashboard cards."""
