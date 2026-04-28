@@ -105,7 +105,7 @@ export default function FloatingChat() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length, open]);
 
-  const { pos, btnRef, handleMouseDown, handleClick } = useDraggable(
+  const { pos, btnRef, handleMouseDown, handleTouchStart, handleClick } = useDraggable(
     typeof window !== "undefined" ? window.innerWidth - 200 : 1000,
     typeof window !== "undefined" ? window.innerHeight - 140 : 660,
     "ceo-chat",
@@ -269,8 +269,9 @@ export default function FloatingChat() {
         ref={btnRef}
         data-floating-widget="ceo-chat"
         onMouseDown={handleMouseDown}
+        onTouchStart={handleTouchStart}
         onClick={() => handleClick() && setOpen(v => !v)}
-        className="fixed left-0 top-0 z-[60] flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform"
+        className="fixed left-0 top-0 z-[60] flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform touch-none"
         style={{
           transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
           background: "linear-gradient(135deg, #534AB7 0%, #7C3AED 100%)",
@@ -331,7 +332,11 @@ export default function FloatingChat() {
               if ((e.target as HTMLElement).closest("button")) return;
               handleMouseDown(e);
             }}
-            className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing select-none"
+            onTouchStart={(e) => {
+              if ((e.target as HTMLElement).closest("button")) return;
+              handleTouchStart(e);
+            }}
+            className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing select-none touch-none"
           >
             <button
               onClick={() => setShowHistory(v => !v)}

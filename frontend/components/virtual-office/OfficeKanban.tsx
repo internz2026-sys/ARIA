@@ -19,7 +19,7 @@ export default function OfficeKanban() {
   const panelRef = useRef<HTMLDivElement>(null);
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
-  const { pos, btnRef, handleMouseDown, handleClick } = useDraggable(
+  const { pos, btnRef, handleMouseDown, handleTouchStart, handleClick } = useDraggable(
     typeof window !== "undefined" ? window.innerWidth - 200 : 1000,
     typeof window !== "undefined" ? window.innerHeight - 80 : 700,
     "task-board",
@@ -149,8 +149,9 @@ export default function OfficeKanban() {
         ref={btnRef}
         data-floating-widget="task-board"
         onMouseDown={handleMouseDown}
+        onTouchStart={handleTouchStart}
         onClick={() => handleClick() && setOpen((v) => !v)}
-        className="fixed left-0 top-0 z-[60] flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform"
+        className="fixed left-0 top-0 z-[60] flex items-center gap-2.5 h-[52px] px-5 rounded-2xl text-sm font-extrabold tracking-wide select-none cursor-grab active:cursor-grabbing will-change-transform touch-none"
         style={{
           transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
           background: "linear-gradient(135deg, #FF6B35 0%, #F7418F 100%)",
@@ -214,7 +215,11 @@ export default function OfficeKanban() {
               if ((e.target as HTMLElement).closest("button")) return;
               handleMouseDown(e);
             }}
-            className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing select-none"
+            onTouchStart={(e) => {
+              if ((e.target as HTMLElement).closest("button")) return;
+              handleTouchStart(e);
+            }}
+            className="flex items-center justify-between px-4 py-3 border-b border-[#E0DED8] shrink-0 cursor-grab active:cursor-grabbing select-none touch-none"
           >
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full" style={{ background: "linear-gradient(135deg, #FF6B35, #F7418F)" }} />

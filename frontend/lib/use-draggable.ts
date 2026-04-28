@@ -17,7 +17,8 @@ interface DragState {
  * Returns:
  *  - pos: current {x,y} (synced during drag via RAF + on release)
  *  - btnRef: attach to the draggable element
- *  - handleMouseDown: attach to onMouseDown
+ *  - handleMouseDown: attach to onMouseDown (desktop mouse)
+ *  - handleTouchStart: attach to onTouchStart (mobile / tablet touch)
  *  - handleClick: attach to onClick (filters out drags)
  *  - dragging: true during active drag
  */
@@ -28,6 +29,17 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
   const btnRef = useRef<HTMLButtonElement>(null);
   const onDragStartRef = useRef<(() => void) | null>(null);
   const rafRef = useRef<number | null>(null);
+
+  const clampToViewport = useCallback((p: { x: number; y: number }) => {
+    const isNarrow = window.innerWidth < 768;
+    const bottomSafe = isNarrow ? 96 : 56;
+    const maxX = Math.max(0, window.innerWidth - 180);
+    const maxY = Math.max(0, window.innerHeight - bottomSafe);
+    return {
+      x: Math.max(8, Math.min(maxX, p.x)),
+      y: Math.max(8, Math.min(maxY, p.y)),
+    };
+  }, []);
 
   // Init position on mount — restore from localStorage if available,
   // then clamp to the current viewport. Previously the initial position
@@ -54,14 +66,7 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
     // or a system nav bar when it eventually opens. The margin on
     // mobile matches Tailwind `bottom-20` (~5rem) — same visual
     // budget the prompt calls out.
-    const isNarrow = window.innerWidth < 768;
-    const maxX = Math.max(0, window.innerWidth - 180);
-    const bottomSafe = isNarrow ? 96 : 56;
-    const maxY = Math.max(0, window.innerHeight - bottomSafe);
-    p = {
-      x: Math.max(8, Math.min(maxX, p.x)),
-      y: Math.max(8, Math.min(maxY, p.y)),
-    };
+    p = clampToViewport(p);
 
     setPos(p);
     posRef.current = p;
@@ -69,6 +74,67 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
       btnRef.current.style.transform = `translate3d(${p.x}px, ${p.y}px, 0)`;
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-clamp on viewport changes (orientation flip, browser zoom,
+  // window resize). Without this, a widget pinned to bottom-right on
+  // landscape ends up half-off-screen after rotating to portrait.
+  useEffect(() => {
+    const onResize = () => {
+      const next = clampToViewport(posRef.current);
+      if (next.x === posRef.current.x && next.y === posRef.current.y) return;
+      posRef.current = next;
+      setPos(next);
+      if (btnRef.current) {
+        btnRef.current.style.transform = `translate3d(${next.x}px, ${next.y}px, 0)`;
+      }
+      if (storageKey) {
+        try { localStorage.setItem(`aria_widget_pos_${storageKey}`, JSON.stringify(next)); } catch {}
+      }
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, [clampToViewport, storageKey]);
+
+  // Shared drag step — applies the per-frame translate + clamp + RAF
+  // throttle. Used by both the mouse and touch handlers.
+  const stepDrag = useCallback((clientX: number, clientY: number) => {
+    const d = dragRef.current;
+    const btn = btnRef.current;
+    const dx = clientX - d.startX;
+    const dy = clientY - d.startY;
+    if (!d.moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+      d.moved = true;
+      onDragStartRef.current?.();
+    }
+    if (d.moved && btn) {
+      const next = clampToViewport({ x: d.elX + dx, y: d.elY + dy });
+      btn.style.transform = `translate3d(${next.x}px, ${next.y}px, 0)`;
+      posRef.current = next;
+      if (rafRef.current === null) {
+        rafRef.current = requestAnimationFrame(() => {
+          setPos({ ...posRef.current });
+          rafRef.current = null;
+        });
+      }
+    }
+  }, [clampToViewport]);
+
+  const finishDrag = useCallback(() => {
+    const d = dragRef.current;
+    d.dragging = false;
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    setPos({ ...posRef.current });
+    if (storageKey && d.moved) {
+      try { localStorage.setItem(`aria_widget_pos_${storageKey}`, JSON.stringify(posRef.current)); } catch {}
+    }
+  }, [storageKey]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -79,53 +145,50 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
     d.startY = e.clientY;
     d.elX = posRef.current.x;
     d.elY = posRef.current.y;
-    const btn = btnRef.current;
 
     function onMove(ev: MouseEvent) {
-      const dx = ev.clientX - d.startX;
-      const dy = ev.clientY - d.startY;
-      if (!d.moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
-        d.moved = true;
-        onDragStartRef.current?.();
-      }
-      if (d.moved && btn) {
-        // Keep the same bottom safe-area policy as the mount-time
-        // clamp: mobile needs more breathing room below so the
-        // button doesn't end up under the keyboard / bottom nav.
-        const isNarrow = window.innerWidth < 768;
-        const bottomSafe = isNarrow ? 96 : 56;
-        const nx = Math.max(0, Math.min(window.innerWidth - 180, d.elX + dx));
-        const ny = Math.max(0, Math.min(window.innerHeight - bottomSafe, d.elY + dy));
-        btn.style.transform = `translate3d(${nx}px, ${ny}px, 0)`;
-        posRef.current = { x: nx, y: ny };
-        // Sync React state so panels follow (RAF-throttled)
-        if (rafRef.current === null) {
-          rafRef.current = requestAnimationFrame(() => {
-            setPos({ ...posRef.current });
-            rafRef.current = null;
-          });
-        }
-      }
+      stepDrag(ev.clientX, ev.clientY);
     }
-
     function onUp() {
-      d.dragging = false;
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
-      setPos({ ...posRef.current });
-      // Persist position to localStorage
-      if (storageKey && d.moved) {
-        try { localStorage.setItem(`aria_widget_pos_${storageKey}`, JSON.stringify(posRef.current)); } catch {}
-      }
+      finishDrag();
     }
-
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
-  }, []);
+  }, [stepDrag, finishDrag]);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (!e.touches.length) return;
+    const t0 = e.touches[0];
+    const d = dragRef.current;
+    d.dragging = true;
+    d.moved = false;
+    d.startX = t0.clientX;
+    d.startY = t0.clientY;
+    d.elX = posRef.current.x;
+    d.elY = posRef.current.y;
+
+    // passive:false so we can preventDefault and stop the page from
+    // scrolling under the finger while dragging the widget. Without
+    // this, the user's drag gesture also scrolls the inbox list,
+    // which is jarring.
+    function onTouchMove(ev: TouchEvent) {
+      if (!ev.touches.length) return;
+      if (d.moved) ev.preventDefault();
+      const t = ev.touches[0];
+      stepDrag(t.clientX, t.clientY);
+    }
+    function onTouchEnd() {
+      document.removeEventListener("touchmove", onTouchMove);
+      document.removeEventListener("touchend", onTouchEnd);
+      document.removeEventListener("touchcancel", onTouchEnd);
+      finishDrag();
+    }
+    document.addEventListener("touchmove", onTouchMove, { passive: false });
+    document.addEventListener("touchend", onTouchEnd);
+    document.addEventListener("touchcancel", onTouchEnd);
+  }, [stepDrag, finishDrag]);
 
   const handleClick = useCallback(() => {
     // Only fire if it wasn't a drag
@@ -137,6 +200,7 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
     posRef,
     btnRef,
     handleMouseDown,
+    handleTouchStart,
     handleClick,
     /** Register a callback that fires when drag starts (e.g. close panel) */
     onDragStart: (fn: () => void) => { onDragStartRef.current = fn; },
