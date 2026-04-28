@@ -58,14 +58,34 @@ export default function SignUpPage() {
         emailRedirectTo: `${window.location.origin}/auth/callback?mode=signup`,
       },
     });
+    // Path 1: explicit error. Supabase returns "User already registered"
+    // when the project has email-confirmation disabled. Normalize the
+    // common substrings so a friendly message wins over the raw error.
     if (error) {
-      setGeneralError(error.message);
+      const m = error.message.toLowerCase();
+      if (m.includes("already registered") || m.includes("already exists") || m.includes("user already")) {
+        setGeneralError("This email is already registered. Try signing in instead.");
+      } else {
+        setGeneralError(error.message);
+      }
       setEmailLoading(false);
       return;
     }
-    // Supabase returns a session immediately when email confirmation is
-    // disabled in project settings. When confirmation IS required, the
-    // session is null and we need to tell the user to check their inbox.
+    // Path 2: silent collision. When email-confirmation IS enabled (the
+    // Supabase default), signUp returns 200 + a stub user with an empty
+    // `identities` array as a privacy-preserving "user enumeration"
+    // mitigation — the attacker can't tell from the response whether
+    // the address is registered. We explicitly want the legitimate
+    // user to know, so detect the empty-identities shape and surface
+    // a clear "already registered" message.
+    if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      setGeneralError("This email is already registered. Try signing in instead.");
+      setEmailLoading(false);
+      return;
+    }
+    // Path 3: real success. If a session came back the project has
+    // email-confirmation off — go straight to onboarding. Otherwise
+    // tell the user to check their inbox for the confirmation link.
     if (data?.session) {
       router.replace("/welcome");
       return;

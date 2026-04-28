@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { useNotifications } from "@/lib/use-notifications";
 import { useConfirm } from "@/lib/use-confirm";
+import { useRole, clearRoleCache } from "@/lib/use-role";
 
 // Sidebar grouped into 4 sections to reduce the cognitive load of the
 // previous flat 14-item list. "Chat with CEO" is a full-page chat route
@@ -145,12 +146,26 @@ const navItems = [
   },
 ];
 
+// Admin-only nav. Rendered separately because visibility depends on
+// the user's role (fetched live from /api/admin/me) — not appropriate
+// for the static `navItems` array above.
+const adminNavItem = {
+  label: "Admin",
+  href: "/admin",
+  icon: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 01-1.043 3.296 3.745 3.745 0 01-3.296 1.043A3.745 3.745 0 0112 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 01-3.296-1.043 3.745 3.745 0 01-1.043-3.296A3.745 3.745 0 013 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 011.043-3.296 3.746 3.746 0 013.296-1.043A3.746 3.746 0 0112 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 013.296 1.043 3.746 3.746 0 011.043 3.296A3.745 3.745 0 0121 12z" />
+    </svg>
+  ),
+};
+
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [user, setUser] = useState<{ name: string; email: string; initials: string } | null>(null);
   const { badges } = useNotifications();
   const { confirm } = useConfirm();
+  const { isAdmin, isSuperAdmin } = useRole();
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -178,6 +193,7 @@ export default function Sidebar() {
     });
     if (!ok) return;
     await supabase.auth.signOut();
+    clearRoleCache();
     router.replace("/login");
   }
 
@@ -259,6 +275,24 @@ export default function Sidebar() {
                     System
                   </p>
                   <div className="space-y-0.5">{ungrouped.map(renderItem)}</div>
+                </div>
+              )}
+              {/* Administration — only rendered when /api/admin/me
+                  reports admin or super_admin. The endpoint is the
+                  single source of truth (matches the gate that the
+                  /admin page itself uses), so toggling roles in the DB
+                  flips the sidebar visibility on next page load. */}
+              {isAdmin && (
+                <div className="mb-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[#9E9C95] px-3 mb-1.5 flex items-center gap-1.5">
+                    Administration
+                    {isSuperAdmin && (
+                      <span className="text-[8px] font-bold text-[#8A6D00] bg-[#FFF4D6] border border-[#D4B24C]/40 px-1 py-px rounded">
+                        SUPER
+                      </span>
+                    )}
+                  </p>
+                  <div className="space-y-0.5">{renderItem(adminNavItem as any)}</div>
                 </div>
               )}
             </>
