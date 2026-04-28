@@ -43,7 +43,15 @@ export function useDraggable(initialX: number, initialY: number, storageKey?: st
     // the mobile header bar.
     const bottomSafe = isNarrow ? 130 : 56;
     const topSafe = isNarrow ? 64 : 8;
-    const maxX = Math.max(0, window.innerWidth - 180);
+    // Right-edge clamp depends on the FAB's actual width:
+    //  - Mobile (<md): the label is hidden so the FAB is roughly
+    //    52-60px (icon + px-3.5 padding). Reserve ~70px so the user
+    //    can drag right up against the right edge of the screen.
+    //  - Desktop (md+): the label is visible, FAB is ~180px wide; we
+    //    reserve that much so dragging past the right edge doesn't
+    //    push the label off-screen.
+    const fabWidth = isNarrow ? 70 : 180;
+    const maxX = Math.max(0, window.innerWidth - fabWidth);
     const maxY = Math.max(topSafe, window.innerHeight - bottomSafe);
     return {
       x: Math.max(8, Math.min(maxX, p.x)),
