@@ -7,7 +7,10 @@ services:
       dockerfile: backend/Dockerfile
     container_name: aria-backend
     ports:
-      - "8000:8000"
+      # Bound to the docker bridge IP only — backend isn't exposed to the
+      # public internet. Paperclip's containers reach it through the docker
+      # bridge (172.17.0.1), and the agent skill curls use this same IP.
+      - "172.17.0.1:8000:8000"
     env_file: .env
     environment:
       - REDIS_URL=redis://redis:6379
@@ -34,7 +37,9 @@ services:
         NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
     container_name: aria-frontend
     ports:
-      - "3000:3000"
+      # Loopback-only — nginx (in this same compose) proxies public
+      # traffic to it. Direct exposure on :3000 would bypass nginx.
+      - "127.0.0.1:3000:3000"
     depends_on:
       - backend
     restart: unless-stopped
@@ -53,7 +58,9 @@ services:
     container_name: aria-qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"
+      # Loopback-only — Qdrant is internal infra; remote access goes
+      # through the backend container (qdrant on the docker network).
+      - "127.0.0.1:6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
 
@@ -63,12 +70,24 @@ services:
     container_name: aria-nginx
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      # Hostinger's managed Traefik holds the public 80/443 sockets on
+      # this VPS, so we serve nginx on 8080/8443 and let Traefik route
+      # to it. The labels below tell Traefik which Host header to match
+      # and which backend port to hit. SSL termination happens at the
+      # Traefik layer (letsencrypt resolver) — nginx itself only needs
+      # to handle HTTP on its forwarded port.
+      - "8080:80"
+      - "8443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf
       - certbot_data:/etc/letsencrypt
       - certbot_www:/var/www/certbot
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.aria.entrypoints=websecure"
+      - "traefik.http.routers.aria.rule=Host(`72-61-126-188.sslip.io`)"
+      - "traefik.http.routers.aria.tls.certresolver=letsencrypt"
+      - "traefik.http.services.aria.loadbalancer.server.port=80"
     depends_on:
       - backend
       - frontend
