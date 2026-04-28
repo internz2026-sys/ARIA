@@ -141,9 +141,17 @@ export default function SettingsPage() {
     }
     window.addEventListener("message", onMessage);
 
-    // Open dedicated Google OAuth flow via backend
+    // Pin the Google OAuth flow to the user's currently-signed-in ARIA
+    // email. Without this, Google's authorize endpoint reads the
+    // browser's accounts.google.com cookies — which is a different
+    // identity store from Supabase's session, so users with multiple
+    // Google accounts in their browser would see Google auto-pick the
+    // wrong account (or get blocked because that account isn't a test
+    // user). Passing it as login_hint forces Google to either use that
+    // specific account or prompt the user to sign in to it.
+    const params = user.email ? `?email=${encodeURIComponent(user.email)}` : "";
     const popup = window.open(
-      `${API_URL}/api/auth/google/connect/${tenantId}`,
+      `${API_URL}/api/auth/google/connect/${tenantId}${params}`,
       "google_auth",
       "width=600,height=700"
     );
