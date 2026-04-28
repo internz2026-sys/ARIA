@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { API_URL } from "@/lib/api";
@@ -19,6 +19,68 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+
+  // Swipe-to-close gesture state. Tracks the starting touch point so
+  // we can compute horizontal delta on touchend. We only act on
+  // gestures that are clearly horizontal (>2x as much X as Y travel)
+  // so vertical scrolling through the menu items still works.
+  const swipeStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
+  const sidebarDragXRef = useRef<number>(0);
+  const sidebarPanelRef = useRef<HTMLDivElement | null>(null);
+
+  const handleSidebarTouchStart = (e: React.TouchEvent) => {
+    if (!e.touches.length) return;
+    const t = e.touches[0];
+    swipeStartRef.current = { x: t.clientX, y: t.clientY, t: Date.now() };
+    sidebarDragXRef.current = 0;
+  };
+
+  const handleSidebarTouchMove = (e: React.TouchEvent) => {
+    const start = swipeStartRef.current;
+    if (!start || !e.touches.length) return;
+    const dx = e.touches[0].clientX - start.x;
+    const dy = e.touches[0].clientY - start.y;
+    // Only follow the finger when the gesture is mostly horizontal +
+    // leftward. Otherwise let native vertical scrolling happen.
+    if (Math.abs(dx) > Math.abs(dy) * 1.5 && dx < 0) {
+      sidebarDragXRef.current = dx;
+      if (sidebarPanelRef.current) {
+        sidebarPanelRef.current.style.transform = `translateX(${dx}px)`;
+        sidebarPanelRef.current.style.transition = "none";
+      }
+    }
+  };
+
+  const handleSidebarTouchEnd = () => {
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    const dx = sidebarDragXRef.current;
+    sidebarDragXRef.current = 0;
+    // Restore the transition before snapping back / closing so the
+    // animation reads as smooth instead of an instant jump.
+    if (sidebarPanelRef.current) {
+      sidebarPanelRef.current.style.transition = "";
+      sidebarPanelRef.current.style.transform = "";
+    }
+    if (!start) return;
+    const elapsed = Date.now() - start.t;
+    // Close if dragged > 60px left, OR a quick flick (>0.5 px/ms)
+    // covered at least 25px — matches the "native app" feel.
+    if (dx < -60 || (dx < -25 && elapsed < 300 && Math.abs(dx) / Math.max(1, elapsed) > 0.5)) {
+      setSidebarOpen(false);
+    }
+  };
+
+  // Auto-close the sidebar whenever a nav link inside it is tapped.
+  // Sidebar component renders next/link <a> elements; event delegation
+  // on the wrapper div catches every link without forcing the Sidebar
+  // to know about the open/close state.
+  const handleSidebarClick = (e: React.MouseEvent) => {
+    const link = (e.target as HTMLElement).closest("a");
+    if (link && sidebarOpen) {
+      setSidebarOpen(false);
+    }
+  };
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
@@ -96,13 +158,36 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <Sidebar />
         </div>
 
-        {/* Sidebar - mobile */}
+        {/* Sidebar - mobile.
+            - top-0 bottom-14 (instead of inset-y-0) leaves a 56px gap
+              at the bottom for the MobileBottomNav so the user can
+              still tap Inbox/Chats while the drawer is open.
+            - z-[55] sits above the backdrop (z-40) but below
+              MobileBottomNav (z-[60]) so the bottom bar wins overlap.
+            - Touch handlers implement swipe-to-close (left swipe).
+              Vertical-only scroll inside the menu still works because
+              we ignore gestures that aren't dominantly horizontal.
+            - onClick delegate auto-closes when a nav link is tapped. */}
         <div
-          className={`fixed inset-y-0 left-0 z-50 w-[240px] transform transition-transform duration-200 ease-in-out lg:hidden ${
+          ref={sidebarPanelRef}
+          onTouchStart={handleSidebarTouchStart}
+          onTouchMove={handleSidebarTouchMove}
+          onTouchEnd={handleSidebarTouchEnd}
+          onTouchCancel={handleSidebarTouchEnd}
+          onClick={handleSidebarClick}
+          className={`fixed top-0 bottom-14 left-0 z-[55] w-[240px] transform transition-transform duration-200 ease-in-out lg:hidden ${
             sidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
         >
           <Sidebar />
+          {/* Subtle right-edge handle — affords the swipe gesture
+              without adding visual noise. Mobile-only; hidden on lg+. */}
+          {sidebarOpen && (
+            <div
+              aria-hidden="true"
+              className="absolute right-0 top-1/2 -translate-y-1/2 h-12 w-1 rounded-full bg-[#C5C3BC]/60 mr-1"
+            />
+          )}
         </div>
 
         {/* Main content */}

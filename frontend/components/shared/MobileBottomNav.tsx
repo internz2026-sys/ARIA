@@ -73,7 +73,7 @@ export default function MobileBottomNav() {
 
   return (
     <nav
-      className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-[#E0DED8] flex"
+      className="lg:hidden fixed bottom-0 inset-x-0 z-[60] bg-white border-t border-[#E0DED8] flex"
       // Respect iOS home-indicator safe-area so the tap targets don't
       // collide with the bottom gesture zone.
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
