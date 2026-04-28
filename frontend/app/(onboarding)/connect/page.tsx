@@ -89,7 +89,7 @@ export default function ConnectPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => handleConnect(integration.id)}
-                  className="flex-1 h-9 rounded-lg bg-[#534AB7] text-white text-xs font-semibold hover:bg-[#4840A0] transition"
+                  className="flex-1 h-9 rounded-lg bg-[#534AB7] text-white text-xs font-semibold hover:bg-[#433AA0] transition"
                 >
                   Connect
                 </button>
@@ -110,7 +110,7 @@ export default function ConnectPage() {
         </a>
         <a
           href="/launching"
-          className="inline-flex items-center gap-2 h-11 px-8 rounded-lg bg-[#534AB7] text-white font-semibold text-sm hover:bg-[#4840A0] transition shadow-sm"
+          className="inline-flex items-center gap-2 h-11 px-8 rounded-lg bg-[#534AB7] text-white font-semibold text-sm hover:bg-[#433AA0] transition shadow-sm"
         >
           Start ARIA
           <svg width="16" height="16" fill="none" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>

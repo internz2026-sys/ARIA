@@ -430,7 +430,7 @@ export default function CRMPage() {
             else if (tab === "companies") setShowAddCompany(true);
             else setShowAddDeal(true);
           }}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors"
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
           Add {tab === "contacts" ? "Contact" : tab === "companies" ? "Company" : "Deal"}
@@ -685,7 +685,7 @@ export default function CRMPage() {
             <textarea value={newContact.notes} onChange={e => setNewContact({ ...newContact, notes: e.target.value })} className={inputCls} rows={3} placeholder="Any notes..." />
           </FormField>
           <button onClick={handleCreateContact} disabled={!newContact.name.trim()}
-            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors disabled:opacity-40"
+            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-40"
           >Add Contact</button>
         </div>
       </Modal>
@@ -714,7 +714,7 @@ export default function CRMPage() {
             <textarea value={newCompany.notes} onChange={e => setNewCompany({ ...newCompany, notes: e.target.value })} className={inputCls} rows={3} />
           </FormField>
           <button onClick={handleCreateCompany} disabled={!newCompany.name.trim()}
-            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors disabled:opacity-40"
+            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-40"
           >Add Company</button>
         </div>
       </Modal>
@@ -739,7 +739,7 @@ export default function CRMPage() {
             <textarea value={newDeal.notes} onChange={e => setNewDeal({ ...newDeal, notes: e.target.value })} className={inputCls} rows={3} />
           </FormField>
           <button onClick={handleCreateDeal} disabled={!newDeal.title.trim()}
-            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition-colors disabled:opacity-40"
+            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-40"
           >Add Deal</button>
         </div>
       </Modal>

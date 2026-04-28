@@ -144,7 +144,7 @@ function UploadModal({ open, onClose, tenantId, onSuccess }: { open: boolean; on
           <button
             disabled={!file || loading}
             onClick={handleUpload}
-            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition disabled:opacity-40"
+            className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition disabled:opacity-40"
           >
             {loading ? "Parsing..." : "Upload & Parse"}
           </button>
@@ -194,7 +194,7 @@ function UploadModal({ open, onClose, tenantId, onSuccess }: { open: boolean; on
               <button
                 disabled={!campaignName.trim() || loading}
                 onClick={handleCreateAndLink}
-                className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition disabled:opacity-40"
+                className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition disabled:opacity-40"
               >
                 {loading ? "Creating..." : "Create Campaign & Link Report"}
               </button>
@@ -273,7 +273,7 @@ function CreateCampaignModal({ open, onClose, tenantId, onSuccess }: { open: boo
         <button
           disabled={!name.trim() || loading}
           onClick={handleCreate}
-          className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition disabled:opacity-40"
+          className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition disabled:opacity-40"
         >
           {loading ? "Creating..." : "Create Campaign"}
         </button>
@@ -325,7 +325,7 @@ export default function CampaignsPage() {
           </button>
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition"
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
             New Campaign
@@ -362,7 +362,7 @@ export default function CampaignsPage() {
             <button onClick={() => setShowUpload(true)} className="px-4 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] hover:bg-[#F8F8F6] transition">
               Upload Report
             </button>
-            <button onClick={() => setShowCreate(true)} className="px-4 py-2 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition">
+            <button onClick={() => setShowCreate(true)} className="px-4 py-2 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition">
               New Campaign
             </button>
           </div>

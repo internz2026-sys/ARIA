@@ -358,7 +358,7 @@ export default function DescribePage() {
               <button
                 type="submit"
                 disabled={!input.trim() || loading}
-                className="h-11 px-5 rounded-lg bg-[#534AB7] text-white text-sm font-semibold hover:bg-[#4840A0] transition flex-shrink-0 disabled:opacity-40"
+                className="h-11 px-5 rounded-lg bg-[#534AB7] text-white text-sm font-semibold hover:bg-[#433AA0] transition flex-shrink-0 disabled:opacity-40"
               >
                 Send
               </button>
@@ -436,7 +436,7 @@ export default function DescribePage() {
             <button
               onClick={handleContinue}
               disabled={questionsAnswered < 3}
-              className="w-full flex items-center justify-center gap-2 h-11 rounded-lg bg-[#534AB7] text-white font-semibold text-sm hover:bg-[#4840A0] transition shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+              className="w-full flex items-center justify-center gap-2 h-11 rounded-lg bg-[#534AB7] text-white font-semibold text-sm hover:bg-[#433AA0] transition shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {isComplete ? "Review & finish" : "Continue to review"}
               <svg width="16" height="16" fill="none" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>

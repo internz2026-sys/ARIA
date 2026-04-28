@@ -305,7 +305,7 @@ export default function SelectAgentsPage() {
         <button
           onClick={handleLaunch}
           disabled={saving}
-          className="inline-flex items-center gap-2 h-11 px-8 rounded-lg bg-[#534AB7] text-white font-semibold text-sm hover:bg-[#4840A0] transition shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
+          className="inline-flex items-center gap-2 h-11 px-8 rounded-lg bg-[#534AB7] text-white font-semibold text-sm hover:bg-[#433AA0] transition shadow-sm disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {saving ? (
             <>

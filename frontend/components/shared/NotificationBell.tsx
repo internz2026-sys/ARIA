@@ -89,7 +89,7 @@ export default function NotificationBell() {
               <button
                 onClick={() => markAsRead()}
                 disabled={count === 0}
-                className="text-xs font-medium text-[#534AB7] hover:text-[#4840A0] disabled:text-[#B0AFA8] disabled:cursor-not-allowed disabled:hover:text-[#B0AFA8]"
+                className="text-xs font-medium text-[#534AB7] hover:text-[#433AA0] disabled:text-[#B0AFA8] disabled:cursor-not-allowed disabled:hover:text-[#B0AFA8]"
                 title={count === 0 ? "All notifications are already read" : "Mark all as read"}
               >
                 Mark all read

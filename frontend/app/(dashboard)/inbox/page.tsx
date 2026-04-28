@@ -1313,7 +1313,7 @@ export default function InboxPage() {
                 <button
                   onClick={() => handleSaveEdit(item)}
                   disabled={editSaving}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors disabled:opacity-60"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-60"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
@@ -1715,7 +1715,7 @@ export default function InboxPage() {
               <button
                 onClick={() => handleSaveEdit(item)}
                 disabled={editSaving}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors disabled:opacity-60"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-60"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
@@ -1733,7 +1733,7 @@ export default function InboxPage() {
           )}
           <button
             onClick={() => handleCopy(item.content)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4339A0] transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -2155,7 +2155,7 @@ export default function InboxPage() {
                 <div className="md:hidden flex items-center gap-2 px-4 py-3 border-b border-[#E0DED8] bg-white">
                   <button
                     onClick={() => { setMobileShowDetail(false); }}
-                    className="flex items-center gap-1.5 text-sm font-medium text-[#534AB7] hover:text-[#4339A0]"
+                    className="flex items-center gap-1.5 text-sm font-medium text-[#534AB7] hover:text-[#433AA0]"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />

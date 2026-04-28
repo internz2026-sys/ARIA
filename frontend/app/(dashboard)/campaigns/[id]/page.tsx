@@ -358,7 +358,7 @@ export default function CampaignDetailPage() {
               <button
                 onClick={generateAiReport}
                 disabled={aiLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition disabled:opacity-40"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition disabled:opacity-40"
               >
                 {aiLoading ? (
                   <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Analyzing...</>
@@ -499,7 +499,7 @@ export default function CampaignDetailPage() {
               <p className="text-sm text-[#5F5E5A] mb-3">No AI analysis generated yet for this report.</p>
               <button
                 onClick={generateAiReport}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#4840A0] transition"
+                className="px-4 py-2 text-sm font-medium rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition"
               >
                 Generate AI Report
               </button>

@@ -148,7 +148,7 @@ export default function LaunchingPage() {
 
             <a
               href="/dashboard"
-              className="inline-flex items-center gap-2 h-12 px-10 rounded-lg bg-[#534AB7] text-white font-semibold text-[15px] hover:bg-[#4840A0] transition shadow-lg shadow-[#534AB7]/20"
+              className="inline-flex items-center gap-2 h-12 px-10 rounded-lg bg-[#534AB7] text-white font-semibold text-[15px] hover:bg-[#433AA0] transition shadow-lg shadow-[#534AB7]/20"
             >
               Go to Dashboard
               <svg width="18" height="18" fill="none" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
