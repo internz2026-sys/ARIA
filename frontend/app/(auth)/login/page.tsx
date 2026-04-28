@@ -97,14 +97,23 @@ function LoginForm() {
   async function handleGoogleSignIn() {
     setGeneralError("");
     setGoogleLoading(true);
+    // Sign-in only requests Google's basic profile + email scopes (no
+    // Gmail). That way the OAuth client doesn't trip Google's app
+    // verification gate for sensitive scopes — anyone can sign up
+    // without being on a test-users allowlist. Gmail integration runs
+    // through its own OAuth flow on the Settings → Integrations page,
+    // so the Gmail scopes are only requested when the user explicitly
+    // opts into the Gmail feature.
+    //
+    // `prompt=select_account` forces Google's account picker every
+    // time, so the browser's last-used Google account doesn't get
+    // auto-selected.
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback?mode=login`,
-        scopes: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
         queryParams: {
-          access_type: "offline",
-          prompt: "consent",
+          prompt: "select_account",
         },
       },
     });

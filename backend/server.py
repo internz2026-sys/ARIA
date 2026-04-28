@@ -2436,19 +2436,18 @@ async def google_connect(tenant_id: str, request: Request):
         base_url = f"{proto}://{host}"
     redirect_uri = f"{base_url}/api/auth/google/callback"
 
-    # Preselect the right Google account using the tenant owner's email
-    # as login_hint. Without this, Google grabs whatever Google account
-    # the browser has cached most recently — which on a shared device or
-    # after the user signed into a different Google product elsewhere
-    # silently authorizes the wrong inbox. login_hint is just a hint
-    # (the user can still pick another account); select_account forces
-    # the picker to render so they have the chance.
-    login_hint = ""
-    try:
-        config = get_tenant_config(tenant_id)
-        login_hint = (config.owner_email or "").strip()
-    except Exception:
-        login_hint = ""
+    # NOTE: previously we set `login_hint = tenant_config.owner_email`
+    # to pre-select the right account. That backfires in two cases:
+    #  (1) Multi-user tenants where the current signed-in user isn't the
+    #      original tenant owner — Google would pre-select the owner's
+    #      email and the user had to actively un-pick it
+    #  (2) Stale tenants where the owner_email belonged to a Google
+    #      account the user no longer wants integrated.
+    # An optional `?email=...` query param lets the frontend override
+    # which account to hint at (e.g., the currently signed-in user's
+    # email). Falls back to NO hint, which leaves the picker empty and
+    # respects whatever account the user actively chooses.
+    requested_hint = (request.query_params.get("email") or "").strip()
 
     params = {
         "client_id": client_id,
@@ -2462,8 +2461,8 @@ async def google_connect(tenant_id: str, request: Request):
         "prompt": "consent select_account",
         "state": tenant_id,
     }
-    if login_hint:
-        params["login_hint"] = login_hint
+    if requested_hint:
+        params["login_hint"] = requested_hint
     auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
     return RedirectResponse(auth_url)
 

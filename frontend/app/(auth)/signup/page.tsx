@@ -99,14 +99,17 @@ export default function SignUpPage() {
   async function handleGoogleSignUp() {
     setGeneralError("");
     setGoogleLoading(true);
+    // Sign-up only requests Google's basic scopes (no Gmail). Same
+    // reasoning as the login page — keeps the OAuth flow off the
+    // sensitive-scopes gate so any user can sign up without being on a
+    // test-users allowlist. Gmail integration is opt-in via the
+    // Settings → Integrations flow.
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback?mode=signup`,
-        scopes: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
         queryParams: {
-          access_type: "offline",
-          prompt: "consent",
+          prompt: "select_account",
         },
       },
     });
