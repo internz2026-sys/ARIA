@@ -1911,7 +1911,7 @@ export default function InboxPage() {
           </div>
         </div>
       ) : (
-        <div className="flex gap-4 min-h-[500px] h-[calc(100dvh-220px)]">
+        <div className="flex flex-col md:flex-row gap-4 md:min-h-[500px] md:h-[calc(100dvh-220px)]">
           {/* Item list -- on mobile, hidden once an item is selected so the
               detail pane gets full screen. On desktop (md+) both panes are
               visible side-by-side as before. The list column is now

@@ -333,7 +333,8 @@ export default function CalendarPage() {
     }
 
     return (
-      <div className="border border-[#E0DED8] rounded-xl overflow-hidden">
+      <div className="border border-[#E0DED8] rounded-xl overflow-x-auto">
+        <div className="min-w-[640px]">
         <div className="grid grid-cols-7 bg-[#F8F8F6] border-b border-[#E0DED8]">
           {DAYS.map((d) => (
             <div key={d} className="text-center text-[10px] font-semibold text-[#5F5E5A] py-2 uppercase tracking-wide">{d}</div>
@@ -377,6 +378,7 @@ export default function CalendarPage() {
             })}
           </div>
         ))}
+        </div>
       </div>
     );
   }
@@ -388,7 +390,8 @@ export default function CalendarPage() {
     const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
 
     return (
-      <div className="border border-[#E0DED8] rounded-xl overflow-hidden">
+      <div className="border border-[#E0DED8] rounded-xl overflow-x-auto">
+        <div className="min-w-[640px]">
         <div className="grid grid-cols-7 bg-[#F8F8F6] border-b border-[#E0DED8]">
           {days.map((d, i) => (
             <div key={i} className={`text-center py-2 border-r border-[#E0DED8] last:border-r-0 ${isSameDay(d, new Date()) ? "bg-[#EEEDFE]" : ""}`}>
@@ -411,6 +414,7 @@ export default function CalendarPage() {
               </div>
             );
           })}
+        </div>
         </div>
       </div>
     );

@@ -340,9 +340,12 @@ export default function ConversationsPage() {
           </div>
         </div>
       ) : (
-        <div className="flex gap-4 min-h-[600px]">
-          {/* Thread list */}
-          <div className="w-full md:w-[380px] shrink-0 space-y-2">
+        <div className="flex flex-col md:flex-row gap-4 md:min-h-[600px]">
+          {/* Thread list — on mobile, hidden once a thread is selected
+              so the detail pane gets full screen (master-detail stack
+              pattern matching the Inbox page). On desktop both panes
+              are always visible side-by-side. */}
+          <div className={`${selected ? "hidden md:block" : "block"} w-full md:w-[380px] shrink-0 space-y-2`}>
             {threads.map(thread => {
               const sc = STATUS_COLORS[thread.status] || STATUS_COLORS.open;
               return (
@@ -372,8 +375,10 @@ export default function ConversationsPage() {
             })}
           </div>
 
-          {/* Thread detail */}
-          <div className="hidden md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col">
+          {/* Thread detail — on mobile, takes the whole row when a
+              thread is selected; on desktop always visible alongside
+              the list. */}
+          <div className={`${selected ? "flex" : "hidden"} md:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}>
             {selected ? (
               threadLoading ? (
                 <div className="flex items-center justify-center flex-1">
@@ -381,6 +386,19 @@ export default function ConversationsPage() {
                 </div>
               ) : (
                 <>
+                  {/* Mobile-only "Back" button — hides on md:+ since
+                      the list pane is visible there. */}
+                  <div className="md:hidden flex items-center gap-2 px-4 py-3 border-b border-[#E0DED8] bg-white">
+                    <button
+                      onClick={() => setSelected(null)}
+                      className="flex items-center gap-1.5 text-sm font-medium text-[#534AB7] hover:text-[#433AA0]"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                      </svg>
+                      Back to threads
+                    </button>
+                  </div>
                   {/* Thread header */}
                   <div className="border-b border-[#E0DED8] p-5">
                     <div className="flex items-center gap-2 mb-1">

@@ -610,11 +610,11 @@ export default function CRMPage() {
           {dealLoading ? (
             <div className="p-8 text-center text-sm text-[#9E9C95]">Loading deals...</div>
           ) : (
-            <div className="flex gap-3 overflow-x-auto pb-4">
+            <div className="flex flex-col md:flex-row gap-3 md:overflow-x-auto pb-4">
               {DEAL_STAGES.map(stage => {
                 const stageDeals = deals.filter(d => d.stage === stage.key);
                 return (
-                  <div key={stage.key} className="min-w-[260px] w-[260px] shrink-0">
+                  <div key={stage.key} className="w-full md:min-w-[260px] md:w-[260px] md:shrink-0">
                     {/* Column header */}
                     <div className="flex items-center gap-2 px-3 py-2.5 mb-2">
                       <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: stage.color }} />

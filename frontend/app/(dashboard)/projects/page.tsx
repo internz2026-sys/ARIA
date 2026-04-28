@@ -230,8 +230,8 @@ function TableView({
   highlightedId: string | null;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-[#E0DED8] overflow-hidden">
-      <table className="w-full">
+    <div className="bg-white rounded-xl border border-[#E0DED8] overflow-x-auto">
+      <table className="w-full min-w-[720px]">
         <thead>
           <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
             <th className="w-[40px] px-4 py-3">
