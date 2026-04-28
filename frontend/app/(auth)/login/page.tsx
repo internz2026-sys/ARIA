@@ -26,10 +26,12 @@ export default function LoginPage() {
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [generalError, setGeneralError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
 
-  // Check for OAuth error in URL params
   useEffect(() => {
     const error = searchParams.get("error");
     if (error === "auth_failed") {
@@ -48,9 +50,53 @@ function LoginForm() {
     });
   }, [router]);
 
+  async function handleEmailSignIn(e: React.FormEvent) {
+    e.preventDefault();
+    setGeneralError("");
+    if (!email.trim() || !password) {
+      setGeneralError("Email and password are required.");
+      return;
+    }
+    setEmailLoading(true);
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password,
+    });
+    if (error) {
+      setGeneralError(error.message);
+      setEmailLoading(false);
+      return;
+    }
+    // Same post-auth routing as the dashboard layout: tenant_id present
+    // means onboarding is complete -> /dashboard; otherwise the user
+    // needs to finish onboarding at /welcome. Look up the tenant by
+    // owner email so a returning user who clears localStorage still
+    // ends up in the right place.
+    const userEmail = data?.user?.email;
+    let nextRoute = "/welcome";
+    if (userEmail) {
+      try {
+        const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
+        const res = await fetch(
+          `${apiBase}/api/tenant/by-email/${encodeURIComponent(userEmail)}`,
+          { headers: { Authorization: `Bearer ${data.session?.access_token || ""}` } },
+        );
+        const json = await res.json();
+        if (json.tenant_id) {
+          localStorage.setItem("aria_tenant_id", json.tenant_id);
+          nextRoute = "/dashboard";
+        }
+      } catch {
+        // Backend hiccup — fall through to /welcome and let the
+        // dashboard layout double-check on next mount.
+      }
+    }
+    router.replace(nextRoute);
+  }
+
   async function handleGoogleSignIn() {
     setGeneralError("");
-    setLoading(true);
+    setGoogleLoading(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
@@ -64,20 +110,22 @@ function LoginForm() {
     });
     if (error) {
       setGeneralError(error.message);
-      setLoading(false);
+      setGoogleLoading(false);
     }
   }
 
+  const anyLoading = emailLoading || googleLoading;
+
   return (
     <div className="w-full max-w-[420px] mx-auto px-6 py-10">
-      <div className="bg-white rounded-2xl border border-[#E0DED8] shadow-sm p-8">
+      <div className="bg-white rounded-2xl border border-[#E0DED8] shadow-sm p-6 sm:p-8">
         {/* Logo */}
         <div className="flex justify-center mb-6">
           <img src="/logo.webp" alt="ARIA" className="h-14 w-14 rounded-full object-cover shadow-lg shadow-[#534AB7]/20" />
         </div>
 
         <h1 className="text-[26px] font-bold text-[#2C2C2A] text-center mb-1">Welcome back</h1>
-        <p className="text-[#5F5E5A] text-center mb-8 text-[15px]">Sign in to your ARIA account</p>
+        <p className="text-[#5F5E5A] text-center mb-6 text-[15px]">Sign in to your ARIA account</p>
 
         {/* General error */}
         {generalError && (
@@ -86,19 +134,73 @@ function LoginForm() {
           </div>
         )}
 
+        {/* Email + password form */}
+        <form onSubmit={handleEmailSignIn} className="space-y-3">
+          <div>
+            <label htmlFor="email" className="block text-xs font-medium text-[#5F5E5A] mb-1">Email</label>
+            <input
+              id="email"
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={anyLoading}
+              placeholder="you@example.com"
+              className="w-full h-12 px-3 rounded-lg border border-[#E0DED8] bg-white text-[15px] text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7] disabled:opacity-60"
+            />
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor="password" className="text-xs font-medium text-[#5F5E5A]">Password</label>
+              <a href="/forgot-password" className="text-xs text-[#534AB7] hover:underline">
+                Forgot password?
+              </a>
+            </div>
+            <input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={anyLoading}
+              placeholder="••••••••"
+              className="w-full h-12 px-3 rounded-lg border border-[#E0DED8] bg-white text-[15px] text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7] disabled:opacity-60"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={anyLoading}
+            className="w-full flex items-center justify-center gap-2 h-12 rounded-lg bg-[#534AB7] text-white text-sm font-semibold hover:bg-[#433AA0] transition disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {emailLoading ? (
+              <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+            ) : null}
+            {emailLoading ? "Signing in..." : "Sign in"}
+          </button>
+        </form>
+
+        {/* Divider */}
+        <div className="flex items-center gap-3 my-5">
+          <div className="flex-1 h-px bg-[#E0DED8]" />
+          <span className="text-[11px] uppercase tracking-wide text-[#9E9C95]">or</span>
+          <div className="flex-1 h-px bg-[#E0DED8]" />
+        </div>
+
         {/* Google OAuth */}
         <button
           type="button"
           onClick={handleGoogleSignIn}
-          disabled={loading}
+          disabled={anyLoading}
           className="w-full flex items-center justify-center gap-2.5 border border-[#E0DED8] rounded-lg h-12 text-sm font-medium text-[#2C2C2A] hover:bg-[#F8F8F6] transition disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          {loading ? (
+          {googleLoading ? (
             <div className="w-5 h-5 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
           ) : (
             <GoogleIcon />
           )}
-          {loading ? "Redirecting..." : "Continue with Google"}
+          {googleLoading ? "Redirecting..." : "Continue with Google"}
         </button>
       </div>
 

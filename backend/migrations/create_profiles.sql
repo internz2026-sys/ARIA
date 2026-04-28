@@ -36,6 +36,31 @@ select id, email, raw_user_meta_data ->> 'full_name', 'user'
 from auth.users
 on conflict (user_id) do nothing;
 
+-- Auto-create a default 'user' profile whenever a new auth.users row is
+-- inserted (Google OAuth signup, email/password signup, magic link, etc).
+-- Without this, manual email/password signups would never appear in the
+-- /admin user table until an admin manually re-runs the backfill above.
+-- Idempotent — `on conflict do nothing` skips if a profile already exists.
+create or replace function public.profiles_handle_new_auth_user()
+returns trigger language plpgsql security definer as $$
+begin
+  insert into public.profiles (user_id, email, full_name, role)
+  values (
+    new.id,
+    new.email,
+    new.raw_user_meta_data ->> 'full_name',
+    'user'
+  )
+  on conflict (user_id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_on_auth_user_insert on auth.users;
+create trigger profiles_on_auth_user_insert
+  after insert on auth.users
+  for each row execute procedure public.profiles_handle_new_auth_user();
+
 -- BOOTSTRAP YOUR FIRST SUPER_ADMIN:
 -- After running the above, find your auth user's UUID at
 -- Supabase Dashboard -> Authentication -> Users, then run:

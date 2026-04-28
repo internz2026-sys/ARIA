@@ -17,8 +17,13 @@ function GoogleIcon() {
 
 export default function SignUpPage() {
   const router = useRouter();
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [generalError, setGeneralError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [verifyMessage, setVerifyMessage] = useState("");
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
 
   // Only auto-redirect if fully onboarded (session + tenant_id)
   useEffect(() => {
@@ -29,9 +34,51 @@ export default function SignUpPage() {
     });
   }, [router]);
 
+  async function handleEmailSignUp(e: React.FormEvent) {
+    e.preventDefault();
+    setGeneralError("");
+    setVerifyMessage("");
+    if (!email.trim() || !password) {
+      setGeneralError("Email and password are required.");
+      return;
+    }
+    if (password.length < 8) {
+      setGeneralError("Password must be at least 8 characters.");
+      return;
+    }
+    setEmailLoading(true);
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim().toLowerCase(),
+      password,
+      options: {
+        // Stash full_name in user_metadata so the profiles backfill +
+        // the admin user table can show a human-readable name later.
+        // Supabase exposes this on the JWT as user_metadata.full_name.
+        data: fullName.trim() ? { full_name: fullName.trim() } : undefined,
+        emailRedirectTo: `${window.location.origin}/auth/callback?mode=signup`,
+      },
+    });
+    if (error) {
+      setGeneralError(error.message);
+      setEmailLoading(false);
+      return;
+    }
+    // Supabase returns a session immediately when email confirmation is
+    // disabled in project settings. When confirmation IS required, the
+    // session is null and we need to tell the user to check their inbox.
+    if (data?.session) {
+      router.replace("/welcome");
+      return;
+    }
+    setVerifyMessage(
+      "Check your email — we sent you a confirmation link. Click it to finish creating your account.",
+    );
+    setEmailLoading(false);
+  }
+
   async function handleGoogleSignUp() {
     setGeneralError("");
-    setLoading(true);
+    setGoogleLoading(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
@@ -45,13 +92,15 @@ export default function SignUpPage() {
     });
     if (error) {
       setGeneralError(error.message);
-      setLoading(false);
+      setGoogleLoading(false);
     }
   }
 
+  const anyLoading = emailLoading || googleLoading;
+
   return (
     <div className="w-full max-w-[420px] mx-auto px-6 py-10">
-      <div className="bg-white rounded-2xl border border-[#E0DED8] shadow-sm p-8">
+      <div className="bg-white rounded-2xl border border-[#E0DED8] shadow-sm p-6 sm:p-8">
         {/* Logo */}
         <div className="flex justify-center mb-6">
           <img src="/logo.webp" alt="ARIA" className="h-14 w-14 rounded-full object-cover shadow-lg shadow-[#534AB7]/20" />
@@ -65,7 +114,7 @@ export default function SignUpPage() {
         </div>
 
         <h1 className="text-[26px] font-bold text-[#2C2C2A] text-center mb-1">Create your account</h1>
-        <p className="text-[#5F5E5A] text-center mb-8 text-[15px]">Start automating your marketing with AI agents</p>
+        <p className="text-[#5F5E5A] text-center mb-6 text-[15px]">Start automating your marketing with AI agents</p>
 
         {/* General error */}
         {generalError && (
@@ -73,20 +122,90 @@ export default function SignUpPage() {
             {generalError}
           </div>
         )}
+        {verifyMessage && (
+          <div className="mb-5 p-3 rounded-lg bg-[#E6F5ED] border border-[#1D9E75]/30 text-[#1D9E75] text-sm">
+            {verifyMessage}
+          </div>
+        )}
+
+        {/* Email + password form */}
+        <form onSubmit={handleEmailSignUp} className="space-y-3">
+          <div>
+            <label htmlFor="full_name" className="block text-xs font-medium text-[#5F5E5A] mb-1">Full name</label>
+            <input
+              id="full_name"
+              type="text"
+              autoComplete="name"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              disabled={anyLoading}
+              placeholder="Jane Doe"
+              className="w-full h-12 px-3 rounded-lg border border-[#E0DED8] bg-white text-[15px] text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7] disabled:opacity-60"
+            />
+          </div>
+          <div>
+            <label htmlFor="email" className="block text-xs font-medium text-[#5F5E5A] mb-1">Email</label>
+            <input
+              id="email"
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={anyLoading}
+              placeholder="you@example.com"
+              className="w-full h-12 px-3 rounded-lg border border-[#E0DED8] bg-white text-[15px] text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7] disabled:opacity-60"
+            />
+          </div>
+          <div>
+            <label htmlFor="password" className="block text-xs font-medium text-[#5F5E5A] mb-1">
+              Password <span className="text-[#9E9C95] font-normal">(min 8 chars)</span>
+            </label>
+            <input
+              id="password"
+              type="password"
+              autoComplete="new-password"
+              required
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={anyLoading}
+              placeholder="••••••••"
+              className="w-full h-12 px-3 rounded-lg border border-[#E0DED8] bg-white text-[15px] text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7] disabled:opacity-60"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={anyLoading}
+            className="w-full flex items-center justify-center gap-2 h-12 rounded-lg bg-[#534AB7] text-white text-sm font-semibold hover:bg-[#433AA0] transition disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {emailLoading ? (
+              <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+            ) : null}
+            {emailLoading ? "Creating account..." : "Get started"}
+          </button>
+        </form>
+
+        {/* Divider */}
+        <div className="flex items-center gap-3 my-5">
+          <div className="flex-1 h-px bg-[#E0DED8]" />
+          <span className="text-[11px] uppercase tracking-wide text-[#9E9C95]">or</span>
+          <div className="flex-1 h-px bg-[#E0DED8]" />
+        </div>
 
         {/* Google OAuth */}
         <button
           type="button"
           onClick={handleGoogleSignUp}
-          disabled={loading}
+          disabled={anyLoading}
           className="w-full flex items-center justify-center gap-2.5 border border-[#E0DED8] rounded-lg h-12 text-sm font-medium text-[#2C2C2A] hover:bg-[#F8F8F6] transition disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          {loading ? (
+          {googleLoading ? (
             <div className="w-5 h-5 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
           ) : (
             <GoogleIcon />
           )}
-          {loading ? "Redirecting..." : "Continue with Google"}
+          {googleLoading ? "Redirecting..." : "Continue with Google"}
         </button>
 
         <p className="text-xs text-[#B0AFA8] text-center mt-5 leading-relaxed">
