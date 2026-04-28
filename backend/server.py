@@ -624,6 +624,7 @@ from backend.routers.crm import router as crm_router
 from backend.routers.inbox import router as inbox_router
 from backend.routers.campaigns import router as campaigns_router
 from backend.routers.email import router as email_router
+from backend.routers.admin import router as admin_router
 # NOTE: backend/routers/paperclip.py was a webhook receiver for the HTTP
 # adapter experiment — we reverted to claude_local, so Paperclip never
 # calls our webhook anymore. The agents now POST results back to ARIA via
@@ -633,6 +634,7 @@ app.include_router(crm_router)
 app.include_router(inbox_router)
 app.include_router(campaigns_router)
 app.include_router(email_router)
+app.include_router(admin_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -713,6 +715,26 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
     except HTTPException:
         from starlette.responses import JSONResponse
         return JSONResponse(status_code=401, content={"detail": "Invalid or expired token"}, headers=cors_headers)
+
+    # RBAC gate for /api/admin/* — every admin endpoint requires the
+    # caller's profiles.role to be 'admin' or 'super_admin'. The role
+    # is also stamped onto request.state so individual handlers can
+    # read it without a second lookup. Roles live in the profiles
+    # table (created by migrations/create_profiles.sql); the lookup
+    # is cached for 60s so repeated admin calls don't hammer the DB.
+    if path.startswith("/api/admin/"):
+        from backend.services.profiles import get_user_role, is_admin
+        user_id = (user.get("sub") or "")
+        role = get_user_role(user_id)
+        if not is_admin(role):
+            from starlette.responses import JSONResponse
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Admin access required"},
+                headers=cors_headers,
+            )
+        request.state.user = user
+        request.state.role = role
 
     # Tenant ownership check: if path has a tenant_id segment, verify ownership
     # Skip for paths that don't use tenant_id (CEO chat uses session_id instead)

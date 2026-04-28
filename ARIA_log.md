@@ -2,6 +2,63 @@
 
 ---
 
+## 2026-04-29 — Role-based admin access (RBAC + /admin dashboard)
+
+New `profiles` table is the single source of truth for user roles
+(`user` / `admin` / `super_admin`). The auth middleware reads
+`profiles.role` for any path under `/api/admin/*` and 403's anyone
+who isn't at least `admin`. The role lookup is cached for 60s so
+admin clicks don't hammer Supabase.
+
+### What landed
+- `backend/migrations/create_profiles.sql` — schema + auto-updated_at
+  trigger + backfill for existing auth.users (everyone defaults to
+  role='user'). Safe to re-run.
+- `backend/services/profiles.py` — `get_user_role`, `set_user_role`
+  (with super_admin protection + anti-self-demote), `list_profiles`
+  (search + role filter), `system_stats`.
+- `backend/routers/admin.py` — `/api/admin/me`, `/users`, `/users/{id}/role`,
+  `/stats`, `/agent-logs`. Every handler reads `request.state.role`
+  set by middleware; super_admin-only mutations re-check before write.
+- `backend/server.py` — middleware enriches `request.state.user/role`
+  on `/api/admin/*` and 403's non-admins.
+- `frontend/app/(dashboard)/admin/page.tsx` — single-page admin
+  console (stats cards + searchable user table + role dropdown).
+  Acts as its own guard: hits `/api/admin/me` on mount, redirects
+  to `/dashboard` with a Restricted Access panel on 403.
+
+### Manual setup (one-time per environment)
+
+1. Run the migration in Supabase SQL Editor:
+   ```
+   backend/migrations/create_profiles.sql
+   ```
+   This creates the table, the trigger, and backfills every existing
+   auth user with `role='user'`.
+
+2. Bootstrap your first super_admin. Find your user UUID at
+   Supabase Dashboard → Authentication → Users, then run:
+   ```sql
+   update public.profiles set role = 'super_admin' where user_id = '<your-uuid>';
+   ```
+
+3. Visit `/admin` while signed in as that user. From there you can
+   promote/demote anyone else without touching SQL again.
+
+### Why the frontend doesn't use a Next.js middleware
+
+The spec called for a `middleware.ts`-based redirect to avoid the
+"flash of admin UI" problem. ARIA's Supabase client uses
+`flowType: implicit` and stores the JWT in localStorage, which
+Next.js middleware (server-side) literally cannot read. Migrating to
+cookie-based sessions (`@supabase/ssr`) would be the right long-term
+move but would touch every page that calls `supabase.auth.getSession`.
+For now we use a client-side guard at the page level — the brief
+"Verifying access..." spinner is the tradeoff. Backend RBAC is the
+load-bearing protection regardless of what the frontend does.
+
+---
+
 ## 2026-04-23/24 — Multi-agent asset recall (A–H) + CEO/UX hardening
 
 Two consecutive sessions. First session (2026-04-17 to 2026-04-22): CEO persona + mobile polish + real-time Calendar sync + create-and-schedule workflow. Second session (2026-04-23/24): full 8-layer multi-agent asset recall stack (A–H) so sub-agents can always find the assets their teammates produced, regardless of time gap, wording, or session boundary.
