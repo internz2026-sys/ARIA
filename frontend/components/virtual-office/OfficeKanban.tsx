@@ -5,6 +5,7 @@ import KanbanBoard from "@/components/shared/KanbanBoard";
 import { useDraggable } from "@/lib/use-draggable";
 import { useResizablePanel, type ResizeCorner } from "@/lib/use-resizable-panel";
 import { useTaskUpdates } from "@/lib/socket";
+import { useKeyboardState } from "@/lib/use-keyboard";
 import {
   type Task,
   fetchTasks,
@@ -24,6 +25,11 @@ export default function OfficeKanban() {
     typeof window !== "undefined" ? window.innerHeight - 80 : 700,
     "task-board",
   );
+
+  // Hide while the on-screen keyboard is open and the panel itself is
+  // closed — see FloatingChat for the rationale (keeps the FAB from
+  // overlapping form inputs / the keyboard's top row).
+  const keyboard = useKeyboardState();
 
   // Listen for real-time task updates from backend
   const taskUpdate = useTaskUpdates(tenantId);
@@ -142,6 +148,7 @@ export default function OfficeKanban() {
   }[corner];
 
   if (pos.x < 0) return null;
+  if (keyboard.open && !open) return null;
 
   return (
     <>

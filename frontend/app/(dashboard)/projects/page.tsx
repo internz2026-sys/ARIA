@@ -110,7 +110,7 @@ export default function ProjectsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-[#2C2C2A]">Projects</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-[#2C2C2A]">Projects</h1>
           <p className="text-sm text-[#5F5E5A] mt-1">Tasks delegated by the CEO agent to your marketing team</p>
         </div>
         <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-1 border border-[#E0DED8]">

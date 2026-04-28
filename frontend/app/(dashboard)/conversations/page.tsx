@@ -275,10 +275,10 @@ export default function ConversationsPage() {
   ];
 
   return (
-    <div className="max-w-[1400px] space-y-4">
+    <div className="max-w-screen-2xl mx-auto space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-[#2C2C2A]">Conversations</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">Conversations</h1>
           <p className="text-sm text-[#5F5E5A]">Email threads with your contacts</p>
         </div>
         <button

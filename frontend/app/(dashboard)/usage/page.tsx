@@ -50,7 +50,7 @@ export default function UsagePage() {
 
   if (loading) {
     return (
-      <div className="max-w-[1000px] flex items-center justify-center min-h-[300px]">
+      <div className="max-w-5xl mx-auto flex items-center justify-center min-h-[300px]">
         <div className="animate-pulse text-sm text-[#9E9C95]">Loading usage data...</div>
       </div>
     );
@@ -60,9 +60,9 @@ export default function UsagePage() {
   const agents = data?.agents || {};
 
   return (
-    <div className="max-w-[1000px] space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-[#2C2C2A]">API Usage</h1>
+        <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">API Usage</h1>
         <p className="text-sm text-[#5F5E5A]">Monitor token consumption and rate limits across all agents</p>
       </div>
 

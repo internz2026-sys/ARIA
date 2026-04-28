@@ -4,9 +4,9 @@ import React from "react";
 
 export default function ReportsPage() {
   return (
-    <div className="max-w-[1400px] space-y-6">
+    <div className="max-w-screen-2xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-[#2C2C2A]">Reports</h1>
+        <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">Reports</h1>
         <p className="text-sm text-[#5F5E5A] mt-1">Generated reports from your marketing agents</p>
       </div>
 

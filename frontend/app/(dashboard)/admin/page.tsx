@@ -229,10 +229,10 @@ export default function AdminPage() {
   const isSuper = me?.role === "super_admin";
 
   return (
-    <div className="max-w-[1400px] space-y-6">
+    <div className="max-w-screen-2xl mx-auto space-y-6">
       <div>
         <div className="flex items-center gap-3 mb-1">
-          <h1 className="text-2xl font-semibold text-[#2C2C2A]">Admin</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">Admin</h1>
           {me?.role && (
             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${ROLE_BADGE[me.role]}`}>
               {ROLE_LABELS[me.role].toUpperCase()}

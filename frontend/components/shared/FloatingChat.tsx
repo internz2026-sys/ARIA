@@ -9,6 +9,7 @@ import { renderMarkdown } from "@/lib/render-markdown";
 import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
 import { useResizablePanel, type ResizeCorner } from "@/lib/use-resizable-panel";
 import { useConfirm } from "@/lib/use-confirm";
+import { useKeyboardState } from "@/lib/use-keyboard";
 import ConfirmationDialog from "@/components/shared/ConfirmationDialog";
 
 export default function FloatingChat() {
@@ -110,6 +111,13 @@ export default function FloatingChat() {
     typeof window !== "undefined" ? window.innerHeight - 140 : 660,
     "ceo-chat",
   );
+
+  // Hide the FAB when the on-screen keyboard is open AND the chat
+  // panel itself isn't open. Keeps the bubble from blocking form
+  // inputs (Sign Out / Change Password / etc) on other pages while
+  // the user is typing. When the chat panel IS open, leaving the FAB
+  // visible is fine because the panel takes the whole bottom area.
+  const keyboard = useKeyboardState();
 
   // Mark all messages as seen when panel is open
   useEffect(() => {
@@ -262,6 +270,26 @@ export default function FloatingChat() {
   }[corner];
 
   if (pos.x < 0) return null;
+
+  // Hide the FAB while the on-screen keyboard is open AND the chat
+  // panel itself isn't open. Two reasons: (a) the FAB sits right at the
+  // bottom of the screen, exactly where the keyboard typically pops up,
+  // so it ends up overlapping the keyboard's top row of keys; (b) when
+  // the user is typing into a form on another page (Sign Out / Change
+  // Password / Settings inputs), having the FAB float on top of those
+  // controls is just noise. When the chat panel IS open we leave the
+  // FAB visible because the panel itself takes over the bottom area.
+  const hideForKeyboard = keyboard.open && !open;
+  if (hideForKeyboard) {
+    return pendingConfirmation ? (
+      <ConfirmationDialog
+        data={pendingConfirmation}
+        onConfirm={confirmAction}
+        onCancel={cancelAction}
+        loading={sending}
+      />
+    ) : null;
+  }
 
   return (
     <>

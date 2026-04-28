@@ -85,10 +85,10 @@ export default function AgentsPage() {
   }
 
   return (
-    <div className="max-w-[1200px] space-y-6">
+    <div className="max-w-screen-xl mx-auto space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-semibold text-[#2C2C2A]">Marketing Agents</h1>
+        <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">Marketing Agents</h1>
         <p className="text-sm text-[#5F5E5A] mt-1">Your AI marketing team — 6 agents working together</p>
       </div>
 

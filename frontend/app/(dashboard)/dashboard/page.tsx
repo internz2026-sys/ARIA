@@ -196,10 +196,10 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-[1400px]">
+    <div className="space-y-6 max-w-screen-2xl mx-auto">
       {/* Greeting */}
       <div>
-        <h1 className="text-2xl font-semibold text-[#2C2C2A]">{getGreeting()}, {firstName || "..."}</h1>
+        <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">{getGreeting()}, {firstName || "..."}</h1>
         <p className="text-sm text-[#5F5E5A] mt-0.5">
           {getDateString()} &middot;{" "}
           <span className="text-[#534AB7] font-medium">

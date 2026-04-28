@@ -1854,15 +1854,19 @@ export default function InboxPage() {
   };
 
   return (
-    <div className="max-w-[1400px] space-y-4">
-      <h1 className="text-2xl font-semibold text-[#2C2C2A]">Inbox</h1>
+    <div className="max-w-screen-2xl mx-auto space-y-4">
+      <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">Inbox</h1>
       <p className="text-sm text-[#5F5E5A] -mt-2">
         Content and deliverables from your marketing agents
       </p>
 
-      {/* Tabs */}
-      <div className="sticky top-14 lg:top-0 z-30 flex items-center gap-1 bg-white rounded-xl border border-[#E0DED8] p-1.5 overflow-x-auto shadow-sm/5">
-        {STATUS_TABS.map((tab) => (
+      {/* Tabs — wrapped in a relative div with a right-edge gradient
+          fade so users see at a glance that there's more content past
+          the visible edge. The fade is pointer-events:none so it
+          doesn't intercept taps on the last visible tab. */}
+      <div className="relative sticky top-14 lg:top-0 z-30">
+        <div className="flex items-center gap-1 bg-white rounded-xl border border-[#E0DED8] p-1.5 overflow-x-auto shadow-sm/5 [-webkit-overflow-scrolling:touch] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {STATUS_TABS.map((tab) => (
           <button
             key={tab.key}
             onClick={() => { setActiveTab(tab.key); setSelected(null); setCheckedIds(new Set()); setPage(1); setIsDeleteMode(false); }}
@@ -1885,7 +1889,12 @@ export default function InboxPage() {
               );
             })()}
           </button>
-        ))}
+          ))}
+        </div>
+        {/* Right-edge fade — purely cosmetic affordance that there's
+            more to scroll. Same color as the tab card so it blends
+            in. pointer-events:none so the gradient never eats taps. */}
+        <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-10 bg-gradient-to-l from-white to-transparent rounded-r-xl" />
       </div>
 
       {/* Content */}

@@ -161,12 +161,12 @@ export default function AnalyticsPage() {
   const totalByStatus = (summary?.by_status || []).reduce((s, t) => s + t.count, 0) || 1;
 
   return (
-    <div className="max-w-[1400px] space-y-6">
+    <div className="max-w-screen-2xl mx-auto space-y-6">
       {/* Header — sticky on mobile so the date-range pills stay reachable
           while scrolling through the long stat list. lg+ stays inline. */}
       <div className="sticky top-14 lg:top-0 z-30 -mx-6 px-6 lg:mx-0 lg:px-0 py-2 lg:py-0 bg-[#F8F8F6]/85 backdrop-blur-md lg:bg-transparent lg:backdrop-blur-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold text-[#2C2C2A]">Analytics</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">Analytics</h1>
           <p className="text-sm text-[#5F5E5A] mt-0.5">Performance, output, and agent activity at a glance</p>
         </div>
         <div className="flex items-center gap-1 bg-white rounded-lg border border-[#E0DED8] p-1 self-start sm:self-auto overflow-x-auto">
