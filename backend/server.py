@@ -2436,15 +2436,34 @@ async def google_connect(tenant_id: str, request: Request):
         base_url = f"{proto}://{host}"
     redirect_uri = f"{base_url}/api/auth/google/callback"
 
+    # Preselect the right Google account using the tenant owner's email
+    # as login_hint. Without this, Google grabs whatever Google account
+    # the browser has cached most recently — which on a shared device or
+    # after the user signed into a different Google product elsewhere
+    # silently authorizes the wrong inbox. login_hint is just a hint
+    # (the user can still pick another account); select_account forces
+    # the picker to render so they have the chance.
+    login_hint = ""
+    try:
+        config = get_tenant_config(tenant_id)
+        login_hint = (config.owner_email or "").strip()
+    except Exception:
+        login_hint = ""
+
     params = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": GOOGLE_GMAIL_SCOPES,
         "access_type": "offline",
-        "prompt": "consent",
+        # `consent` re-prompts for permissions (so we always get a fresh
+        # refresh_token); `select_account` forces the account picker so
+        # Google can't auto-pick a stale browser-cached account.
+        "prompt": "consent select_account",
         "state": tenant_id,
     }
+    if login_hint:
+        params["login_hint"] = login_hint
     auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
     return RedirectResponse(auth_url)
 
