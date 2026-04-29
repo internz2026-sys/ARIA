@@ -88,6 +88,7 @@ class IntegrationsConfig(BaseModel):
     # Google OAuth (Gmail sending + inbox sync)
     google_access_token: Optional[str] = None
     google_refresh_token: Optional[str] = None
+    google_email: Optional[str] = None        # Email of the actual Google account that was connected (may differ from owner_email)
     gmail_last_sync_at: Optional[str] = None  # ISO timestamp of last inbound sync
     gmail_history_id: Optional[str] = None    # Gmail history ID for incremental sync
     # WhatsApp Cloud API (per-tenant)

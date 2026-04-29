@@ -2436,18 +2436,27 @@ async def google_connect(tenant_id: str, request: Request):
         base_url = f"{proto}://{host}"
     redirect_uri = f"{base_url}/api/auth/google/callback"
 
-    # NOTE: previously we set `login_hint = tenant_config.owner_email`
-    # to pre-select the right account. That backfires in two cases:
-    #  (1) Multi-user tenants where the current signed-in user isn't the
-    #      original tenant owner — Google would pre-select the owner's
-    #      email and the user had to actively un-pick it
-    #  (2) Stale tenants where the owner_email belonged to a Google
-    #      account the user no longer wants integrated.
-    # An optional `?email=...` query param lets the frontend override
-    # which account to hint at (e.g., the currently signed-in user's
-    # email). Falls back to NO hint, which leaves the picker empty and
-    # respects whatever account the user actively chooses.
-    requested_hint = (request.query_params.get("email") or "").strip()
+    # login_hint policy: prefer the email of the *previously connected*
+    # Google account (stored in integrations.google_email after a
+    # successful OAuth). Reason: the user's ARIA signup email may be a
+    # Google Workspace for Education / Business account whose admin has
+    # third-party Gmail OAuth disabled. Pinning the OAuth flow to that
+    # email reproduces "Access blocked: Authorization Error / Error 400:
+    # invalid_request" before the picker even renders. By contrast, the
+    # email that *was* successfully connected before is by definition an
+    # account that permits Gmail OAuth — so reusing it for Reconnect is
+    # always safe and correct. Falls back to no hint on first connect
+    # (so `prompt=select_account` shows Google's native picker and the
+    # user can pick any signed-in account).
+    hint_email: Optional[str] = None
+    try:
+        existing_config = get_tenant_config(tenant_id)
+        if existing_config and existing_config.integrations.google_email:
+            hint_email = existing_config.integrations.google_email
+    except Exception:
+        # Tenant not found or config load failed — fall through to no
+        # hint, which is the correct behavior for first-time connects.
+        pass
 
     params = {
         "client_id": client_id,
@@ -2461,8 +2470,8 @@ async def google_connect(tenant_id: str, request: Request):
         "prompt": "consent select_account",
         "state": tenant_id,
     }
-    if requested_hint:
-        params["login_hint"] = requested_hint
+    if hint_email:
+        params["login_hint"] = hint_email
     auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
     return RedirectResponse(auth_url)
 
@@ -2527,12 +2536,37 @@ async def google_callback(request: Request, code: str = "", state: str = "", err
             status_code=400,
         )
 
+    # Look up which Google account actually got connected so we can
+    # store it. Two reasons to bother: (1) the ARIA signup email and the
+    # connected Gmail email can legitimately differ — common case is a
+    # user signing up to ARIA with a school/work Workspace account but
+    # connecting a personal Gmail for sending, and (2) on Reconnect we
+    # want to login_hint at *this* email (the one we already know works
+    # with third-party Gmail OAuth), not the ARIA signup email which
+    # may be a blocked Workspace account.
+    connected_email = ""
+    try:
+        async with httpx.AsyncClient() as client:
+            ui_resp = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=5.0,
+            )
+        if ui_resp.status_code == 200:
+            connected_email = (ui_resp.json() or {}).get("email", "") or ""
+    except Exception:
+        # Userinfo lookup is best-effort; failing it shouldn't break
+        # the OAuth flow itself. Reconnect just won't have a hint.
+        pass
+
     # Save tokens to tenant config
     try:
         config = get_tenant_config(tenant_id)
         config.integrations.google_access_token = access_token
         if refresh_token:
             config.integrations.google_refresh_token = refresh_token
+        if connected_email:
+            config.integrations.google_email = connected_email
         save_tenant_config(config)
     except Exception as e:
         return HTMLResponse(
@@ -2574,7 +2608,14 @@ async def gmail_status(tenant_id: str):
                 pass  # Refresh failed — still report based on what we have
 
         connected = has_access or has_refresh
-        return {"connected": connected, "email": config.owner_email if connected else None}
+        # Prefer the actual Google account email captured at OAuth time;
+        # fall back to owner_email for tenants connected before we
+        # started recording it.
+        display_email = (
+            config.integrations.google_email
+            or config.owner_email
+        ) if connected else None
+        return {"connected": connected, "email": display_email}
     except Exception:
         return {"connected": False, "email": None}
 

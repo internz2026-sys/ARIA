@@ -55,6 +55,7 @@ export default function SettingsPage() {
     window.location.href = "/login";
   };
   const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
+  const [gmailEmail, setGmailEmail] = useState<string>("");
   const [gmailReconnecting, setGmailReconnecting] = useState(false);
   const [twitterConnected, setTwitterConnected] = useState<boolean | null>(null);
   const [twitterUsername, setTwitterUsername] = useState("");
@@ -87,7 +88,7 @@ export default function SettingsPage() {
     if (tenantId) {
       authFetch(`${API_URL}/api/integrations/${tenantId}/gmail-status`)
         .then(r => r.json())
-        .then(data => setGmailConnected(!!data?.connected))
+        .then(data => { setGmailConnected(!!data?.connected); setGmailEmail(data?.email || ""); })
         .catch(() => setGmailConnected(false));
       authFetch(`${API_URL}/api/integrations/${tenantId}/twitter-status`)
         .then(r => r.json())
@@ -117,7 +118,7 @@ export default function SettingsPage() {
     function refreshGmailStatus() {
       authFetch(`${API_URL}/api/integrations/${tenantId}/gmail-status`)
         .then(r => r.json())
-        .then(data => setGmailConnected(!!data?.connected))
+        .then(data => { setGmailConnected(!!data?.connected); setGmailEmail(data?.email || ""); })
         .catch(() => {});
       setGmailReconnecting(false);
     }
@@ -141,17 +142,19 @@ export default function SettingsPage() {
     }
     window.addEventListener("message", onMessage);
 
-    // Pin the Google OAuth flow to the user's currently-signed-in ARIA
-    // email. Without this, Google's authorize endpoint reads the
-    // browser's accounts.google.com cookies — which is a different
-    // identity store from Supabase's session, so users with multiple
-    // Google accounts in their browser would see Google auto-pick the
-    // wrong account (or get blocked because that account isn't a test
-    // user). Passing it as login_hint forces Google to either use that
-    // specific account or prompt the user to sign in to it.
-    const params = user.email ? `?email=${encodeURIComponent(user.email)}` : "";
+    // Do NOT pin login_hint to the user's ARIA email. If the user signed
+    // into ARIA with a Google Workspace for Education / Workspace for
+    // Business account, that account's admin almost always has third-
+    // party OAuth with sensitive Gmail scopes blocked — and forcing it
+    // via login_hint just deterministically reproduces the
+    // "Access blocked: Authorization Error / Error 400: invalid_request"
+    // page even when the user has a perfectly working personal Gmail
+    // signed in to the same browser. Letting Google show its native
+    // account picker (via prompt=select_account on the backend) lets
+    // the user pick whichever Google account actually has Gmail OAuth
+    // enabled, regardless of which account they used to sign into ARIA.
     const popup = window.open(
-      `${API_URL}/api/auth/google/connect/${tenantId}${params}`,
+      `${API_URL}/api/auth/google/connect/${tenantId}`,
       "google_auth",
       "width=600,height=700"
     );
@@ -395,7 +398,7 @@ export default function SettingsPage() {
                   <p className="text-sm font-medium text-[#2C2C2A]">Gmail</p>
                   <p className="text-xs text-[#5F5E5A] mt-0.5 break-words">
                     {gmailConnected === null ? "Checking..." : gmailConnected
-                      ? `Connected — emails sent from ${user.email}`
+                      ? `Connected — emails sent from ${gmailEmail || user.email}`
                       : "Not connected — Email Marketer can only draft, not send"}
                   </p>
                 </div>
@@ -416,6 +419,16 @@ export default function SettingsPage() {
                 </div>
               ) : null}
             </div>
+            {gmailConnected === false && (
+              <div className="px-5 pb-4 -mt-1">
+                <p className="text-[11px] text-[#8A8983] leading-relaxed">
+                  <span className="font-medium text-[#5F5E5A]">Tip:</span> when the Google account picker
+                  appears, choose a <span className="font-medium">personal Gmail account</span>.
+                  Work or school accounts (Google Workspace) usually have third-party Gmail
+                  access disabled by their admin and will return an &ldquo;Access blocked&rdquo; error.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Twitter / X */}
