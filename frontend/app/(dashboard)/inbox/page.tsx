@@ -2022,27 +2022,28 @@ export default function InboxPage() {
         <div className="flex flex-col @3xl/inbox:flex-row gap-4 @3xl/inbox:min-h-[500px] @3xl/inbox:h-[calc(100dvh-220px)]">
           {/* Item list — switches between stacked (mobile) and side-by-
               side master-detail based on the *container's* width via
-              `@container/inbox` (declared on the wrapper above). Two
-              gotchas drove the current shape:
-                1. `@container/inbox` and its consumers (`@3xl/inbox:*`)
-                   must NOT live on the same element. Self-referential
-                   container queries are technically legal CSS but don't
-                   reliably trigger here — the master-detail layout
-                   silently stayed in flex-col on wide desktop and the
-                   detail pane rendered into a zero-effective-height
-                   stacked column. Wrapping splits declaration from
-                   consumption and fixes it.
-                2. Don't combine bare `hidden` with `@3xl/inbox:flex` to
-                   reveal a pane on wide widths. The Tailwind container-
-                   queries plugin generates its variants in a CSS
-                   position that doesn't always beat the base `hidden`
-                   in cascade order — same-specificity tie, source-order
-                   wins, and `hidden` was getting written later. Pane
-                   stayed `display: none` on full desktop. The fix: use
-                   `@max-3xl/inbox:hidden` instead — pane is `flex` by
-                   default, and only hidden at NARROW container widths
-                   when the mobile master-detail mode says to. */}
-          <div className={`flex w-full @3xl/inbox:w-[380px] shrink-0 flex-col gap-2 overflow-hidden ${mobileShowDetail ? "@max-3xl/inbox:hidden" : ""}`}>
+              `@container/inbox` (declared on the wrapper above).
+              Two gotchas drove the current shape:
+                1. `@container/inbox` and `@3xl/inbox:*` must NOT live
+                   on the same element. Self-referential container
+                   queries are legal CSS but unreliable in practice —
+                   the master-detail layout silently stayed flex-col
+                   on wide desktop. Wrapping the declaration on a
+                   parent div fixes it (see outer `@container/inbox`).
+                2. The conditional uses bare `hidden`/`flex` plus
+                   `@3xl/inbox:flex` as the wide-width override. We do
+                   NOT use `@max-3xl/inbox:hidden` — that variant only
+                   exists in newer plugin versions, and we're pinned
+                   to `@tailwindcss/container-queries@0.1.1` which
+                   only emits min-width (`@`) variants. The class
+                   would silently compile to nothing, leaving both
+                   panes always visible on mobile and stacking them
+                   vertically. With (1) fixed and the cascade order
+                   correct (Tailwind emits plugin variants AFTER base
+                   utilities, so `@3xl/inbox:flex` wins over `hidden`
+                   when the container is wide enough), the bare
+                   conditional pattern works on both viewports. */}
+          <div className={`${mobileShowDetail ? "hidden" : "flex"} @3xl/inbox:flex w-full @3xl/inbox:w-[380px] shrink-0 flex-col gap-2 overflow-hidden`}>
             {/* Delete Mode toggle + bulk action toolbar.
                 Default (View Mode): just a single "Delete" button on the
                 right, nothing else. Clicking it flips to Delete Mode,
@@ -2281,7 +2282,7 @@ export default function InboxPage() {
               scroll container owns the scrolling (sticky master-detail). */}
           <div
             ref={detailPaneRef}
-            className={`flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col ${mobileShowDetail ? "" : "@max-3xl/inbox:hidden"}`}
+            className={`${mobileShowDetail ? "flex" : "hidden"} @3xl/inbox:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}
           >
             {selected ? (
               <>
