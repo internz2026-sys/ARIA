@@ -243,6 +243,79 @@ function looksLikeHtml(text: string): boolean {
   return /<\/?[a-z][\s\S]*>/i.test(text);
 }
 
+/** Build a plain-text excerpt of an inbox item's body for the list-row
+ *  preview. The list cards previously only showed the title (plus an
+ *  email preview snippet for email rows), which made non-email rows
+ *  look empty — Content Writer / Social Manager / image rows just
+ *  rendered the title with no hint of what was inside. This pulls the
+ *  first line or two of body text so each card communicates its actual
+ *  content at a glance.
+ *
+ *  Handles three shapes the `content` column can take:
+ *    1. Raw HTML (e.g., email_marketer rows mirrored into content)
+ *       → strip tags via stripHtml
+ *    2. Social Manager JSON blob (`{"posts": [...]}`)
+ *       → extract the first post's text
+ *    3. Plain text or markdown
+ *       → strip leading markdown decoration (`## `, `**`, `*`, `-`,
+ *         backticks, image/link syntax) so the excerpt reads naturally
+ *
+ *  Returns null when there's nothing useful to show (empty content, or
+ *  the content is purely an image URL with no surrounding prose). The
+ *  caller skips rendering the line in that case so we don't show an
+ *  empty `<p>` tag. */
+function getInboxExcerpt(item: InboxItem): string | null {
+  const raw = (item.content || "").trim();
+  if (!raw) return null;
+
+  // Social Manager / similar agents stash a {"posts": [...]} blob in
+  // content. Pull the first post's text rather than showing literal
+  // JSON to the user.
+  if (raw.startsWith("{") && raw.includes('"posts"')) {
+    try {
+      const data = JSON.parse(raw);
+      const firstText = data?.posts?.[0]?.text || data?.posts?.[0]?.body;
+      if (typeof firstText === "string" && firstText.trim()) {
+        return firstText.trim().slice(0, 220);
+      }
+    } catch {
+      // Malformed JSON — fall through to plain-text handling below.
+    }
+  }
+
+  let text = raw;
+  if (looksLikeHtml(text)) text = stripHtml(text);
+
+  // Drop pure image-only content (a single ![](url) or bare URL) —
+  // the list-row thumbnail already conveys it; an empty excerpt is
+  // better than the literal markdown.
+  const imageOnly =
+    /^!\[[^\]]*\]\(\S+\)\s*$/.test(text) ||
+    /^https?:\/\/\S+?\.(?:png|jpg|jpeg|gif|webp)(?:\?\S*)?\s*$/i.test(text);
+  if (imageOnly) return null;
+
+  text = text
+    // Strip inline markdown decoration so the excerpt reads as prose.
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, "")          // images
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")        // [text](url) -> text
+    .replace(/^#{1,6}\s+/gm, "")                    // ## heading -> heading
+    .replace(/\*\*([^*]+)\*\*/g, "$1")              // **bold** -> bold
+    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "$1")   // *italic* -> italic
+    .replace(/`([^`]+)`/g, "$1")                    // `code` -> code
+    .replace(/^\s*[-*+]\s+/gm, "")                  // bullet markers
+    .replace(/\n{2,}/g, " · ")                      // paragraph breaks -> mid-dot
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Avoid duplicating the title verbatim in the excerpt.
+  if (text && item.title && text.toLowerCase().startsWith(item.title.toLowerCase())) {
+    text = text.slice(item.title.length).replace(/^[\s.,:;—-]+/, "").trim();
+  }
+
+  if (!text) return null;
+  return text.length > 220 ? text.slice(0, 220).trimEnd() + "…" : text;
+}
+
 export default function InboxPage() {
   const { showToast } = useNotifications();
   const { confirm } = useConfirm();
@@ -1840,12 +1913,37 @@ export default function InboxPage() {
                 </div>
               );
             })()}
-            {looksLikeHtml(item.content)
-              ? <div className="whitespace-pre-wrap">{stripHtml(item.content)}</div>
-              : item.content.includes("## ") || item.content.includes("**")
-                ? renderMarkdown(item.content)
-                : <div className="whitespace-pre-wrap">{item.content}</div>
-            }
+            {(() => {
+              // Defensive: a corrupt sub-agent reply or a placeholder
+              // row that never got filled in can leave content as null
+              // / undefined / "". `.includes()` on null throws, which
+              // would white-screen the detail pane silently. Coerce to
+              // empty string and render an explicit empty-state.
+              const body = item.content || "";
+              if (!body.trim()) {
+                const thumb = getInboxThumbnail(item);
+                if (thumb) {
+                  // Image-only row (Media Designer with no caption) —
+                  // the thumbnail above already covers the deliverable.
+                  return null;
+                }
+                return (
+                  <p className="text-sm text-[#9E9C95] italic">
+                    This item doesn&rsquo;t have a body yet. The agent may
+                    still be working on it, or the run finished without
+                    posting content. Try Reopen / re-dispatching from CEO
+                    chat.
+                  </p>
+                );
+              }
+              if (looksLikeHtml(body)) {
+                return <div className="whitespace-pre-wrap">{stripHtml(body)}</div>;
+              }
+              if (body.includes("## ") || body.includes("**")) {
+                return renderMarkdown(body);
+              }
+              return <div className="whitespace-pre-wrap">{body}</div>;
+            })()}
           </div>
         )}
       </div>
@@ -2037,9 +2135,19 @@ export default function InboxPage() {
                     <div className="flex items-start gap-3">
                       <div className="flex-1 min-w-0">
                         <h4 className="text-sm font-semibold text-[#2C2C2A] truncate">{item.title}</h4>
-                        {item.email_draft?.preview_snippet && (
+                        {/* Email rows get their dedicated preview_snippet
+                            (subject's HTML body distilled by the parser).
+                            Every other row falls through to a plain-text
+                            excerpt of `content` so the card shows what's
+                            actually inside instead of just the title. */}
+                        {item.email_draft?.preview_snippet ? (
                           <p className="text-xs text-[#9E9C95] mt-1 line-clamp-2">{item.email_draft.preview_snippet}</p>
-                        )}
+                        ) : (() => {
+                          const excerpt = getInboxExcerpt(item);
+                          return excerpt ? (
+                            <p className="text-xs text-[#9E9C95] mt-1 line-clamp-2">{excerpt}</p>
+                          ) : null;
+                        })()}
                       </div>
                       {(() => {
                         const thumb = getInboxThumbnail(item);
