@@ -2018,16 +2018,31 @@ export default function InboxPage() {
           </div>
         </div>
       ) : (
-        <div className="@container/inbox flex flex-col @3xl/inbox:flex-row gap-4 @3xl/inbox:min-h-[500px] @3xl/inbox:h-[calc(100dvh-220px)]">
+        <div className="@container/inbox">
+        <div className="flex flex-col @3xl/inbox:flex-row gap-4 @3xl/inbox:min-h-[500px] @3xl/inbox:h-[calc(100dvh-220px)]">
           {/* Item list — switches between stacked (mobile) and side-by-
               side master-detail based on the *container's* width via
-              `@container/inbox`. This is wider than viewport-`md:` was,
-              and reacts to the actual space available (a tablet with a
-              wide desktop sidebar collapsed gets the desktop layout;
-              the same tablet with the sidebar open keeps the stacked
-              one). The list column is height-constrained on wide
-              containers so its inner list scrolls independently. */}
-          <div className={`${mobileShowDetail ? "hidden" : "flex"} @3xl/inbox:flex w-full @3xl/inbox:w-[380px] shrink-0 flex-col gap-2 overflow-hidden`}>
+              `@container/inbox` (declared on the wrapper above). Two
+              gotchas drove the current shape:
+                1. `@container/inbox` and its consumers (`@3xl/inbox:*`)
+                   must NOT live on the same element. Self-referential
+                   container queries are technically legal CSS but don't
+                   reliably trigger here — the master-detail layout
+                   silently stayed in flex-col on wide desktop and the
+                   detail pane rendered into a zero-effective-height
+                   stacked column. Wrapping splits declaration from
+                   consumption and fixes it.
+                2. Don't combine bare `hidden` with `@3xl/inbox:flex` to
+                   reveal a pane on wide widths. The Tailwind container-
+                   queries plugin generates its variants in a CSS
+                   position that doesn't always beat the base `hidden`
+                   in cascade order — same-specificity tie, source-order
+                   wins, and `hidden` was getting written later. Pane
+                   stayed `display: none` on full desktop. The fix: use
+                   `@max-3xl/inbox:hidden` instead — pane is `flex` by
+                   default, and only hidden at NARROW container widths
+                   when the mobile master-detail mode says to. */}
+          <div className={`flex w-full @3xl/inbox:w-[380px] shrink-0 flex-col gap-2 overflow-hidden ${mobileShowDetail ? "@max-3xl/inbox:hidden" : ""}`}>
             {/* Delete Mode toggle + bulk action toolbar.
                 Default (View Mode): just a single "Delete" button on the
                 right, nothing else. Clicking it flips to Delete Mode,
@@ -2266,7 +2281,7 @@ export default function InboxPage() {
               scroll container owns the scrolling (sticky master-detail). */}
           <div
             ref={detailPaneRef}
-            className={`${mobileShowDetail ? "flex" : "hidden"} @3xl/inbox:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}
+            className={`flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col ${mobileShowDetail ? "" : "@max-3xl/inbox:hidden"}`}
           >
             {selected ? (
               <>
@@ -2297,6 +2312,7 @@ export default function InboxPage() {
               </div>
             )}
           </div>
+        </div>
         </div>
       )}
       {/* Schedule Picker Modal */}
