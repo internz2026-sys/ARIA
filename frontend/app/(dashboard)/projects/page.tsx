@@ -11,11 +11,15 @@ import {
   AGENT_LABELS,
   PRIORITY_STYLES,
   fetchTasks,
+  fetchTrashedTasks,
   patchTaskStatus,
   deleteTaskApi,
+  restoreTaskApi,
+  permanentDeleteTaskApi,
 } from "@/lib/task-config";
 
 type ViewMode = "table" | "board";
+type TabMode = "active" | "trash";
 const PAGE_SIZE = 20;
 
 export default function ProjectsPage() {
@@ -31,6 +35,12 @@ export default function ProjectsPage() {
   // operations explicitly. Single-row deletes still go through the
   // confirm dialog below regardless of edit mode.
   const [editMode, setEditMode] = useState(false);
+  // Active vs Trash tab — Trash shows soft-deleted tasks with Restore
+  // + Delete Forever actions. Switching tabs auto-clears edit mode +
+  // selections so a stale checkbox can't act on the wrong list.
+  const [tabMode, setTabMode] = useState<TabMode>("active");
+  const [trashedTasks, setTrashedTasks] = useState<Task[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
   const { confirm } = useConfirm();
 
   // Deep-link support — a notification click for a project / task
@@ -109,6 +119,51 @@ export default function ProjectsPage() {
     }
   };
 
+  // Lazy-fetch trashed tasks when the user switches to the Trash tab.
+  useEffect(() => {
+    if (tabMode !== "trash") return;
+    const tid = localStorage.getItem("aria_tenant_id");
+    if (!tid) return;
+    setTrashLoading(true);
+    fetchTrashedTasks(tid)
+      .then(setTrashedTasks)
+      .catch(() => setTrashedTasks([]))
+      .finally(() => setTrashLoading(false));
+  }, [tabMode]);
+
+  const handleRestore = useCallback(async (taskId: string) => {
+    setTrashedTasks((prev) => prev.filter((t) => t.id !== taskId));
+    try {
+      await restoreTaskApi(taskId);
+      // Refresh active list so the restored task appears.
+      const tid = localStorage.getItem("aria_tenant_id");
+      if (tid) fetchTasks(tid).then(setTasks).catch(() => {});
+    } catch {
+      // On failure, refetch trash so the row reappears in case the
+      // optimistic remove was wrong.
+      const tid = localStorage.getItem("aria_tenant_id");
+      if (tid) fetchTrashedTasks(tid).then(setTrashedTasks).catch(() => {});
+    }
+  }, []);
+
+  const handlePermanentDelete = useCallback(async (task: Task) => {
+    const ok = await confirm({
+      title: "Delete this task forever?",
+      message: `${task.task.slice(0, 120)}${task.task.length > 120 ? "..." : ""}\n\nThis is permanent — the task and its agent history will be gone for good. This cannot be undone.`,
+      confirmLabel: "Delete forever",
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
+    setTrashedTasks((prev) => prev.filter((t) => t.id !== task.id));
+    try {
+      await permanentDeleteTaskApi(task.id);
+    } catch {
+      const tid = localStorage.getItem("aria_tenant_id");
+      if (tid) fetchTrashedTasks(tid).then(setTrashedTasks).catch(() => {});
+    }
+  }, [confirm]);
+
   const handleBulkDelete = async () => {
     if (checkedIds.size === 0) return;
     const n = checkedIds.size;
@@ -146,15 +201,38 @@ export default function ProjectsPage() {
       <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-[#2C2C2A]">Projects</h1>
-          <p className="text-sm text-[#5F5E5A] mt-1">Tasks delegated by the CEO agent to your marketing team</p>
+          <p className="text-sm text-[#5F5E5A] mt-1">
+            {tabMode === "trash"
+              ? "Soft-deleted tasks. Restore to bring them back, or delete forever."
+              : "Tasks delegated by the CEO agent to your marketing team"}
+          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Active / Trash tab toggle. Switching to Trash auto-exits
+              edit mode + drops selections so a stale checked id from
+              the Active tab can't act on a Trash row. */}
+          <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-1 border border-[#E0DED8]">
+            <button
+              onClick={() => { setTabMode("active"); }}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${tabMode === "active" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
+            >
+              Active
+            </button>
+            <button
+              onClick={() => { setTabMode("trash"); setEditMode(false); setCheckedIds(new Set()); }}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${tabMode === "trash" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
+            >
+              Trash
+            </button>
+          </div>
           {/* Manage / Done toggle — gates the bulk-select checkbox column
               in the table. Hidden in Board view since there's no bulk
-              selection there. Auto-clears any in-flight selection when
-              leaving edit mode so a stray checked item can't be deleted
-              from a "Done" state. */}
-          {viewMode === "table" && (
+              selection there. Hidden in Trash view since trash rows
+              have their own Restore + Delete Forever actions per row.
+              Auto-clears any in-flight selection when leaving edit mode
+              so a stray checked item can't be deleted from a "Done"
+              state. */}
+          {tabMode === "active" && viewMode === "table" && (
             <button
               onClick={() => {
                 setEditMode((m) => {
@@ -175,24 +253,35 @@ export default function ProjectsPage() {
               {editMode ? "Done" : "Manage"}
             </button>
           )}
-          <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-1 border border-[#E0DED8]">
-            <button
-              onClick={() => setViewMode("table")}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "table" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
-            >
-              Table
-            </button>
-            <button
-              onClick={() => { setViewMode("board"); setEditMode(false); setCheckedIds(new Set()); }}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "board" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
-            >
-              Board
-            </button>
-          </div>
+          {/* Table / Board switcher hidden in Trash — trashed rows
+              don't have a Kanban representation. */}
+          {tabMode === "active" && (
+            <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-1 border border-[#E0DED8]">
+              <button
+                onClick={() => setViewMode("table")}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "table" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
+              >
+                Table
+              </button>
+              <button
+                onClick={() => { setViewMode("board"); setEditMode(false); setCheckedIds(new Set()); }}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "board" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
+              >
+                Board
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {tasks.length === 0 ? (
+      {tabMode === "trash" ? (
+        <TrashView
+          tasks={trashedTasks}
+          loading={trashLoading}
+          onRestore={handleRestore}
+          onPermanentDelete={handlePermanentDelete}
+        />
+      ) : tasks.length === 0 ? (
         <div className="bg-white rounded-xl border border-[#E0DED8] p-12 text-center">
           <div className="w-12 h-12 rounded-full bg-[#EEEDFE] flex items-center justify-center mx-auto mb-4">
             <svg className="w-6 h-6 text-[#534AB7]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -389,6 +478,79 @@ function TableView({
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ─── Trash View ─── */
+function TrashView({
+  tasks, loading, onRestore, onPermanentDelete,
+}: {
+  tasks: Task[];
+  loading: boolean;
+  onRestore: (id: string) => void;
+  onPermanentDelete: (task: Task) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="bg-white rounded-xl border border-[#E0DED8] p-12 text-center">
+        <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin mx-auto" />
+      </div>
+    );
+  }
+  if (tasks.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border border-[#E0DED8] p-12 text-center">
+        <div className="w-12 h-12 rounded-full bg-[#F8F8F6] flex items-center justify-center mx-auto mb-4">
+          <svg className="w-6 h-6 text-[#9E9C95]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+          </svg>
+        </div>
+        <p className="text-[#2C2C2A] font-semibold mb-1">Trash is empty</p>
+        <p className="text-sm text-[#5F5E5A]">Deleted tasks land here. You can restore them or delete forever.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="bg-white rounded-xl border border-[#E0DED8] divide-y divide-[#E0DED8]">
+      {tasks.map((t) => {
+        const agent = AGENT_LABELS[t.agent] || { name: t.agent, color: "#5F5E5A" };
+        const deletedAt = (t as any).deleted_at as string | undefined;
+        const deletedDisplay = deletedAt ? new Date(deletedAt).toLocaleDateString() : "—";
+        return (
+          <div
+            key={t.id}
+            className="flex items-start gap-3 px-4 py-3 hover:bg-[#FAFAFA] transition"
+          >
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-[#2C2C2A] leading-relaxed line-clamp-2">{t.task}</p>
+              <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                <span className="inline-flex items-center gap-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full" style={{ backgroundColor: agent.color + "15", color: agent.color }}>
+                  <span className="w-1 h-1 rounded-full" style={{ backgroundColor: agent.color }} />
+                  {agent.name}
+                </span>
+                <span className="text-[10px] text-[#9E9C95]">deleted {deletedDisplay}</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => onRestore(t.id)}
+                className="text-xs px-2.5 py-1 rounded-md border border-[#1D9E75]/30 text-[#157A5A] bg-white hover:bg-[#E6F5ED] transition-colors"
+                title="Move back to active tasks"
+              >
+                Restore
+              </button>
+              <button
+                onClick={() => onPermanentDelete(t)}
+                className="text-xs px-2.5 py-1 rounded-md border border-[#D85A30]/30 text-[#B8491F] bg-white hover:bg-[#FDEEE8] transition-colors"
+                title="Delete forever — cannot be undone"
+              >
+                Delete forever
+              </button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

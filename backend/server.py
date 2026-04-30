@@ -3195,13 +3195,14 @@ async def virtual_office_agents(tenant_id: str):
     except Exception:
         pass
 
-    # Also check tasks table for agents with in_progress tasks
+    # Also check tasks table for agents with in_progress tasks.
+    # Soft-deleted tasks should not count as active — exclude them.
     task_statuses: dict[str, str] = {}
     try:
         sb = _get_supabase()
         result = sb.table("tasks").select("agent,task").eq(
             "tenant_id", tenant_id
-        ).eq("status", "in_progress").execute()
+        ).eq("status", "in_progress").is_("deleted_at", "null").execute()
         for t in (result.data or []):
             task_statuses[t["agent"]] = t["task"]
     except Exception:
@@ -3577,11 +3578,14 @@ async def analytics_data(tenant_id: str, date_range: str = "7d"):
     # ── Task completion / scheduled task stats ────────────────────
     task_totals = {"total": 0, "completed": 0, "in_progress": 0, "failed": 0}
     try:
+        # Skip soft-deleted tasks so the analytics totals reflect the
+        # user's actual active workload, not their trash.
         tasks_res = (
             sb.table("tasks")
             .select("status")
             .eq("tenant_id", tenant_id)
             .gte("created_at", cutoff_iso)
+            .is_("deleted_at", "null")
             .limit(2000)
             .execute()
         )

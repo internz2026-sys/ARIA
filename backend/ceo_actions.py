@@ -1080,7 +1080,15 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
             task = result.data[0] if result.data else None
             return {"task": task}
         elif operation == "read":
-            query = sb.table("tasks").select("*").eq("tenant_id", tenant_id)
+            # Hide soft-deleted tasks from CEO listings — they live in
+            # the Trash tab now, not in the user's mental model of
+            # "active work".
+            query = (
+                sb.table("tasks")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .is_("deleted_at", "null")
+            )
             if params.get("agent"):
                 query = query.eq("agent", params["agent"])
             if params.get("status"):

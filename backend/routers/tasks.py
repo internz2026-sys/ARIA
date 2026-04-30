@@ -105,14 +105,40 @@ def _verify_task_owner(request: Request, sb, task_id: str) -> dict:
 
 @router.get("/{tenant_id}")
 async def list_tasks(tenant_id: str):
-    """List all tasks for a tenant, ordered by creation date."""
+    """List all live tasks for a tenant, ordered by creation date.
+
+    Soft-delete: rows with `deleted_at` set are hidden from this list
+    (they live in the Trash tab via /trash/{tenant_id}). The filter
+    is `deleted_at is null` rather than `is null` because supabase-py's
+    `.is_("deleted_at", "null")` produces the proper PostgREST query.
+    """
     try:
         sb = get_db()
         result = (
             sb.table("tasks")
             .select("*")
             .eq("tenant_id", tenant_id)
+            .is_("deleted_at", "null")
             .order("created_at", desc=True)
+            .execute()
+        )
+        return {"tasks": result.data}
+    except Exception as e:
+        return {"tasks": [], "error": str(e)}
+
+
+@router.get("/trash/{tenant_id}")
+async def list_trashed_tasks(tenant_id: str):
+    """List soft-deleted tasks for the Trash tab. Newest-deleted first
+    so the user sees their most-recent regrets at the top."""
+    try:
+        sb = get_db()
+        result = (
+            sb.table("tasks")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .not_.is_("deleted_at", "null")
+            .order("deleted_at", desc=True)
             .execute()
         )
         return {"tasks": result.data}
@@ -181,7 +207,13 @@ async def update_task(task_id: str, body: TaskUpdate, request: Request):
 
 @router.delete("/{task_id}")
 async def delete_task(task_id: str, request: Request):
-    """Delete a task. If it was in_progress, sync agent back to idle."""
+    """Soft-delete a task — sets `deleted_at = now()` instead of issuing
+    a real DELETE. The row drops out of the main task list immediately
+    (list_tasks filters `deleted_at IS NULL`) and reappears in the
+    Trash tab where the user can restore or permanently delete it.
+
+    If the task was in_progress, sync agent back to idle.
+    """
     from backend.server import _emit_agent_status
 
     sb = get_db()
@@ -190,10 +222,14 @@ async def delete_task(task_id: str, request: Request):
     # destructive write happens.
     task = _verify_task_owner(request, sb, task_id)
 
-    sb.table("tasks").delete().eq("id", task_id).execute()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sb.table("tasks").update({
+        "deleted_at": now_iso,
+        "updated_at": now_iso,
+    }).eq("id", task_id).execute()
 
-    # If the deleted task was in_progress, check whether the agent has
-    # OTHER active tasks before flipping it to idle.
+    # If the soft-deleted task was in_progress, check whether the agent
+    # has OTHER active tasks before flipping it to idle.
     if task and task.get("status") == "in_progress":
         agent_id = task["agent"]
         tid = task["tenant_id"]
@@ -203,6 +239,8 @@ async def delete_task(task_id: str, request: Request):
             .eq("tenant_id", tid)
             .eq("agent", agent_id)
             .eq("status", "in_progress")
+            .is_("deleted_at", "null")  # exclude already-trashed tasks
+            .neq("id", task_id)
             .limit(1)
             .execute()
         )
@@ -212,4 +250,35 @@ async def delete_task(task_id: str, request: Request):
                 action="task_deleted",
             )
 
-    return {"ok": True}
+    return {"ok": True, "soft_deleted": True}
+
+
+@router.post("/{task_id}/restore")
+async def restore_task(task_id: str, request: Request):
+    """Restore a soft-deleted task — clears `deleted_at`, returning the
+    row to the main task list. No-op if the task isn't currently
+    soft-deleted (idempotent)."""
+    sb = get_db()
+
+    # _verify_task_owner accepts soft-deleted rows (it queries by id
+    # without a deleted_at filter), so restore is gated by the same
+    # ownership check as the original delete.
+    _verify_task_owner(request, sb, task_id)
+
+    sb.table("tasks").update({
+        "deleted_at": None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", task_id).execute()
+
+    return {"ok": True, "restored": True}
+
+
+@router.delete("/{task_id}/permanent")
+async def permanent_delete_task(task_id: str, request: Request):
+    """Hard-delete a task from the DB. Reachable from the Trash tab
+    only — the regular DELETE handler does a soft delete. After this,
+    the row is gone for good."""
+    sb = get_db()
+    _verify_task_owner(request, sb, task_id)
+    sb.table("tasks").delete().eq("id", task_id).execute()
+    return {"ok": True, "permanently_deleted": True}

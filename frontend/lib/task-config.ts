@@ -46,5 +46,23 @@ export async function patchTaskStatus(taskId: string, status: string): Promise<v
 }
 
 export async function deleteTaskApi(taskId: string): Promise<void> {
+  // Soft-delete since 2026-04-30 — sets deleted_at on the row instead
+  // of issuing a real DELETE. Row drops out of the main list and shows
+  // up in the Trash tab where it can be restored or permanently
+  // removed.
   await authFetch(`${API_URL}/api/tasks/${taskId}`, { method: "DELETE" });
+}
+
+export async function fetchTrashedTasks(tenantId: string): Promise<Task[]> {
+  const res = await authFetch(`${API_URL}/api/tasks/trash/${tenantId}`);
+  const data = await res.json();
+  return data.tasks || [];
+}
+
+export async function restoreTaskApi(taskId: string): Promise<void> {
+  await authFetch(`${API_URL}/api/tasks/${taskId}/restore`, { method: "POST" });
+}
+
+export async function permanentDeleteTaskApi(taskId: string): Promise<void> {
+  await authFetch(`${API_URL}/api/tasks/${taskId}/permanent`, { method: "DELETE" });
 }
