@@ -6386,8 +6386,18 @@ _CRM_VERB_RE = _re_crm.compile(
     r"\b(create|add|update|delete|remove|find|show|list|search|email|call)\b"
 )
 
-# In-memory chat cache with LRU eviction (max 100 sessions)
-_chat_sessions: dict[str, list[dict]] = {}
+# Chat session state — cache + per-session locks + eviction live in
+# `backend/services/chat_state.py` since 2026-04-30 (slice 4a). The
+# names are aliased back to their original underscore-prefixed forms
+# below so the dozens of call sites in this file keep working
+# without further edits.
+from backend.services.chat_state import (
+    chat_sessions as _chat_sessions,
+    session_locks as _chat_session_locks,
+    get_session_lock as _get_chat_session_lock,
+    evict_old_sessions as _evict_chat_sessions,
+    MAX_CACHED_SESSIONS as _MAX_CACHED_SESSIONS,
+)
 
 
 # ── Pending schedules — "create it AND schedule it" intents ───────────
@@ -6545,36 +6555,10 @@ def _task_type_for_agent(agent: str) -> str:
         "social_manager": "publish_post",
     }
     return mapping.get(agent, "reminder")
-_MAX_CACHED_SESSIONS = 100
-
-# Per-session asyncio.Lock so two concurrent ceo_chat requests for the
-# same session_id don't interleave their session.append(user) /
-# session.append(assistant) calls and corrupt the conversation history.
-# Created lazily on first use; lifecycle matches _chat_sessions.
-_chat_session_locks: dict[str, "asyncio.Lock"] = {}
-
-
-def _get_chat_session_lock(session_id: str) -> "asyncio.Lock":
-    """Return the asyncio.Lock for this session_id, creating one if needed.
-
-    Safe to call from any coroutine on the main event loop -- dict.setdefault
-    is atomic in CPython for the GIL-protected modify-or-create case.
-    """
-    lock = _chat_session_locks.get(session_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _chat_session_locks[session_id] = lock
-    return lock
-
-
-def _evict_chat_sessions():
-    """Remove oldest sessions if cache exceeds max size."""
-    if len(_chat_sessions) > _MAX_CACHED_SESSIONS:
-        excess = len(_chat_sessions) - _MAX_CACHED_SESSIONS
-        for key in list(_chat_sessions.keys())[:excess]:
-            del _chat_sessions[key]
-            # Drop the lock too if no longer needed
-            _chat_session_locks.pop(key, None)
+# _MAX_CACHED_SESSIONS, _chat_session_locks, _get_chat_session_lock,
+# _evict_chat_sessions all moved to backend/services/chat_state.py
+# (slice 4a). Imported + aliased at the top of this file alongside
+# _chat_sessions.
 
 
 def _save_chat_message(session_id: str, tenant_id: str, role: str, content: str, delegations: list | None = None):
