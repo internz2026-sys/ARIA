@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import KanbanBoard from "@/components/shared/KanbanBoard";
 import PriorityActionsSection from "@/components/shared/PriorityActionsSection";
+import { useConfirm } from "@/lib/use-confirm";
 import {
   type Task,
   STATUS_COLUMNS,
@@ -25,6 +26,12 @@ export default function ProjectsPage() {
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  // Edit Mode gates the bulk-select checkbox column. Off by default so a
+  // misclick never reaches a delete; the user has to opt in to bulk
+  // operations explicitly. Single-row deletes still go through the
+  // confirm dialog below regardless of edit mode.
+  const [editMode, setEditMode] = useState(false);
+  const { confirm } = useConfirm();
 
   // Deep-link support — a notification click for a project / task
   // resource lands here with ?id=<uuid>. Scroll it into view,
@@ -62,11 +69,24 @@ export default function ProjectsPage() {
     patchTaskStatus(taskId, status);
   }, []);
 
-  const handleDelete = useCallback((taskId: string) => {
+  const handleDelete = useCallback(async (taskId: string) => {
+    // Find the task so the modal can quote a snippet — surfacing what
+    // they're about to lose makes accidental confirmations far less
+    // likely than a generic "are you sure" prompt.
+    const target = tasks.find(t => t.id === taskId);
+    const snippet = target?.task ? target.task.slice(0, 120) + (target.task.length > 120 ? "..." : "") : "this task";
+    const ok = await confirm({
+      title: "Delete this project task?",
+      message: `${snippet}\n\nThis permanently removes the task and its agent history. This cannot be undone.`,
+      confirmLabel: "Delete task",
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
     setTasks(prev => prev.filter(t => t.id !== taskId));
     setCheckedIds(prev => { const n = new Set(prev); n.delete(taskId); return n; });
     deleteTaskApi(taskId);
-  }, []);
+  }, [tasks, confirm]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(tasks.length / PAGE_SIZE));
@@ -91,6 +111,15 @@ export default function ProjectsPage() {
 
   const handleBulkDelete = async () => {
     if (checkedIds.size === 0) return;
+    const n = checkedIds.size;
+    const ok = await confirm({
+      title: `Delete ${n} ${n === 1 ? "task" : "tasks"}?`,
+      message: `This permanently removes ${n === 1 ? "this task" : `all ${n} selected tasks`} and ${n === 1 ? "its" : "their"} agent history. This cannot be undone.`,
+      confirmLabel: `Delete ${n} ${n === 1 ? "task" : "tasks"}`,
+      cancelLabel: "Cancel",
+      destructive: true,
+    });
+    if (!ok) return;
     setBulkLoading(true);
     await Promise.all(Array.from(checkedIds).map(id => deleteTaskApi(id)));
     setTasks(prev => prev.filter(t => !checkedIds.has(t.id)));
@@ -114,24 +143,52 @@ export default function ProjectsPage() {
       <PriorityActionsSection />
 
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-[#2C2C2A]">Projects</h1>
           <p className="text-sm text-[#5F5E5A] mt-1">Tasks delegated by the CEO agent to your marketing team</p>
         </div>
-        <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-1 border border-[#E0DED8]">
-          <button
-            onClick={() => setViewMode("table")}
-            className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "table" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
-          >
-            Table
-          </button>
-          <button
-            onClick={() => setViewMode("board")}
-            className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "board" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
-          >
-            Board
-          </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Manage / Done toggle — gates the bulk-select checkbox column
+              in the table. Hidden in Board view since there's no bulk
+              selection there. Auto-clears any in-flight selection when
+              leaving edit mode so a stray checked item can't be deleted
+              from a "Done" state. */}
+          {viewMode === "table" && (
+            <button
+              onClick={() => {
+                setEditMode((m) => {
+                  if (m) setCheckedIds(new Set());
+                  return !m;
+                });
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition ${
+                editMode
+                  ? "border-[#534AB7] bg-[#EEEDFE] text-[#534AB7]"
+                  : "border-[#E0DED8] bg-white text-[#5F5E5A] hover:border-[#534AB7]/40 hover:text-[#534AB7]"
+              }`}
+              title={editMode ? "Exit bulk-select mode" : "Enable checkboxes for bulk actions"}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              {editMode ? "Done" : "Manage"}
+            </button>
+          )}
+          <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-1 border border-[#E0DED8]">
+            <button
+              onClick={() => setViewMode("table")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "table" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
+            >
+              Table
+            </button>
+            <button
+              onClick={() => { setViewMode("board"); setEditMode(false); setCheckedIds(new Set()); }}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${viewMode === "board" ? "bg-white text-[#2C2C2A] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"}`}
+            >
+              Board
+            </button>
+          </div>
         </div>
       </div>
 
@@ -147,8 +204,12 @@ export default function ProjectsPage() {
         </div>
       ) : viewMode === "table" ? (
         <>
-          {/* Bulk actions bar */}
-          {checkedIds.size > 0 && (
+          {/* Bulk actions bar — only visible in Edit Mode AND with at
+              least one selection. Belt-and-braces: even though
+              checkedIds is auto-cleared when leaving edit mode, the
+              `editMode &&` guard prevents an in-flight optimistic
+              update from briefly flashing the bar. */}
+          {editMode && checkedIds.size > 0 && (
             <div className="mb-3 flex items-center gap-3 px-4 py-2.5 bg-[#EEEDFE] rounded-lg border border-[#534AB7]/20">
               <span className="text-xs font-semibold text-[#534AB7]">{checkedIds.size} selected</span>
               <button
@@ -176,6 +237,7 @@ export default function ProjectsPage() {
             onToggleAll={toggleAll}
             allChecked={checkedIds.size === paginatedTasks.length && paginatedTasks.length > 0}
             highlightedId={highlightedId}
+            editMode={editMode}
           />
 
           {/* Pagination */}
@@ -224,7 +286,7 @@ export default function ProjectsPage() {
 /* ─── Table View ─── */
 function TableView({
   tasks, onStatusChange, onDelete, checkedIds, onToggleCheck, onToggleAll, allChecked,
-  highlightedId,
+  highlightedId, editMode,
 }: {
   tasks: Task[];
   onStatusChange: (id: string, s: string) => void;
@@ -234,20 +296,26 @@ function TableView({
   onToggleAll: () => void;
   allChecked: boolean;
   highlightedId: string | null;
+  editMode: boolean;
 }) {
   return (
     <div className="bg-white rounded-xl border border-[#E0DED8] overflow-x-auto">
       <table className="w-full min-w-[720px]">
         <thead>
           <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
-            <th className="w-[40px] px-4 py-3">
-              <input
-                type="checkbox"
-                checked={allChecked}
-                onChange={onToggleAll}
-                className="w-4 h-4 rounded border-[#E0DED8] text-[#534AB7] focus:ring-[#534AB7]/30 cursor-pointer"
-              />
-            </th>
+            {/* Checkbox column header — only present in Edit Mode so
+                the table layout collapses cleanly when the checkboxes
+                are hidden, instead of leaving an empty 40px gutter. */}
+            {editMode && (
+              <th className="w-[40px] px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={allChecked}
+                  onChange={onToggleAll}
+                  className="w-4 h-4 rounded border-[#E0DED8] text-[#534AB7] focus:ring-[#534AB7]/30 cursor-pointer"
+                />
+              </th>
+            )}
             <th className="text-left px-4 py-3 text-xs font-semibold text-[#5F5E5A] uppercase tracking-wide">Task</th>
             <th className="text-left px-4 py-3 text-xs font-semibold text-[#5F5E5A] uppercase tracking-wide w-[140px]">Agent</th>
             <th className="text-left px-4 py-3 text-xs font-semibold text-[#5F5E5A] uppercase tracking-wide w-[100px]">Priority</th>
@@ -271,14 +339,16 @@ function TableView({
                     : checked ? "bg-[#EEEDFE]/30" : "hover:bg-[#F8F8F6]/50"
                 }`}
               >
-                <td className="px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => onToggleCheck(task.id)}
-                    className="w-4 h-4 rounded border-[#E0DED8] text-[#534AB7] focus:ring-[#534AB7]/30 cursor-pointer"
-                  />
-                </td>
+                {editMode && (
+                  <td className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => onToggleCheck(task.id)}
+                      className="w-4 h-4 rounded border-[#E0DED8] text-[#534AB7] focus:ring-[#534AB7]/30 cursor-pointer"
+                    />
+                  </td>
+                )}
                 <td className="px-4 py-3">
                   <p className="text-sm text-[#2C2C2A] leading-relaxed">{task.task}</p>
                 </td>
