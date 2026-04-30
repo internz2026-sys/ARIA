@@ -40,6 +40,14 @@ interface CeoChatState {
   sessions: ChatSession[];
   sessionId: string;
   sending: boolean;
+  /** True while the history endpoint is in-flight for the current session.
+   *  Drives the chat widget's skeleton state so the user sees "loading"
+   *  instead of the empty-state copy during the fetch. */
+  loadingHistory: boolean;
+  /** Set when a history fetch fails (network / auth / 5xx). The chat
+   *  widget can surface this to distinguish "session has 0 messages"
+   *  from "we couldn't load the history". */
+  historyError: string | null;
   pendingConfirmation: PendingConfirmation | null;
   send: (text: string) => Promise<void>;
   cancel: () => void;
@@ -48,6 +56,8 @@ interface CeoChatState {
   switchSession: (sid: string) => void;
   startNewChat: () => void;
   refreshSessions: () => void;
+  /** Manually retry the last failed history fetch. */
+  reloadHistory: () => void;
   /** Hard-delete a session + its messages. If `sid` is the current
    *  session the view resets to a fresh chat state. */
   deleteSession: (sid: string) => Promise<void>;
@@ -113,9 +123,20 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [sending, setSending] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const mountedRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
+  // Aborts the in-flight history fetch when the user switches sessions
+  // before the previous fetch resolved. Without this, a fast A→B→A
+  // switch could land B's response after A is already selected,
+  // showing B's messages under A's session header.
+  const historyAbortRef = useRef<AbortController | null>(null);
+  // Bumped by reloadHistory() to retrigger the fetch effect even when
+  // sessionId hasn't changed. Pure dependency on `sessionId` would
+  // ignore a click on the retry button.
+  const [historyReloadTick, setHistoryReloadTick] = useState(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -123,16 +144,70 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
     return () => { mountedRef.current = false; };
   }, []);
 
-  // Load messages when session changes
+  // Load messages when session changes (or retry button is hit).
+  //
+  // Three behaviors the previous version was missing:
+  //   1. Cancel any in-flight previous fetch via AbortController so a
+  //      late response from session A can't clobber session B's state.
+  //   2. Clear messages + set loadingHistory=true synchronously so the
+  //      user sees a skeleton instead of the previous session's bubbles
+  //      while the new history is in transit ("Message Bleed" fix).
+  //   3. Distinguish failures from genuinely empty sessions — silent
+  //      catch -> setMessages([]) made auth/network errors look identical
+  //      to a session with zero messages.
   useEffect(() => {
     if (!sessionId) return;
-    getAuthHeaders().then(headers => {
-      fetch(`${API_URL}/api/ceo/chat/${sessionId}/history`, { headers })
-        .then((r) => r.json())
-        .then((d) => { if (mountedRef.current) setMessages(d.messages || []); })
-        .catch(() => { if (mountedRef.current) setMessages([]); });
-    });
-  }, [sessionId]);
+
+    // Step 1 — cancel previous fetch + start a new one
+    historyAbortRef.current?.abort();
+    const controller = new AbortController();
+    historyAbortRef.current = controller;
+
+    // Step 2 — clear bleed-over + show skeleton
+    setMessages([]);
+    setLoadingHistory(true);
+    setHistoryError(null);
+
+    (async () => {
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(
+          `${API_URL}/api/ceo/chat/${sessionId}/history`,
+          { headers, signal: controller.signal },
+        );
+        if (!res.ok) {
+          // Distinguish auth from generic server errors so the retry
+          // hint can tell the user something useful.
+          let detail = `HTTP ${res.status}`;
+          try {
+            const body = await res.json();
+            if (body?.detail) detail = String(body.detail);
+          } catch {}
+          throw new Error(detail);
+        }
+        const data = await res.json();
+        if (controller.signal.aborted || !mountedRef.current) return;
+        setMessages(Array.isArray(data?.messages) ? data.messages : []);
+      } catch (err: any) {
+        if (controller.signal.aborted || !mountedRef.current) return;
+        // AbortError already handled above. Anything else is a real
+        // failure worth surfacing.
+        if (err?.name === "AbortError") return;
+        setMessages([]);
+        setHistoryError(err?.message || "Couldn't load chat history");
+      } finally {
+        if (!controller.signal.aborted && mountedRef.current) {
+          setLoadingHistory(false);
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, [sessionId, historyReloadTick]);
+
+  const reloadHistory = useCallback(() => {
+    setHistoryReloadTick((t) => t + 1);
+  }, []);
 
   const refreshSessions = useCallback(() => {
     const tid = getTenantId();
@@ -335,7 +410,25 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
     }
   }, [sessions, sessionId]);
 
-  const value: CeoChatState = { messages, sessions, sessionId, sending, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat, refreshSessions, deleteSession, deleteSessions };
+  const value: CeoChatState = {
+    messages,
+    sessions,
+    sessionId,
+    sending,
+    loadingHistory,
+    historyError,
+    pendingConfirmation,
+    send,
+    cancel,
+    confirmAction,
+    cancelAction,
+    switchSession,
+    startNewChat,
+    refreshSessions,
+    reloadHistory,
+    deleteSession,
+    deleteSessions,
+  };
 
   return React.createElement(CeoChatContext.Provider, { value }, children);
 }

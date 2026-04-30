@@ -24,7 +24,7 @@ export default function FloatingChat() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const seenCount = useRef(0); // tracks how many messages the user has seen
 
-  const { messages, sessions, sessionId, sending, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat, deleteSession, deleteSessions } = useCeoChat();
+  const { messages, sessions, sessionId, sending, loadingHistory, historyError, pendingConfirmation, send, cancel, confirmAction, cancelAction, switchSession, startNewChat, reloadHistory, deleteSession, deleteSessions } = useCeoChat();
   const { confirm } = useConfirm();
 
   // Bulk-select state for the history dropdown. Cleared whenever the
@@ -565,9 +565,45 @@ export default function FloatingChat() {
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
-              {messages.length === 0 && !sending && (
+              {/* Three-state empty area:
+                  1. loadingHistory  -> skeleton bubbles (user knows fetch is in-flight)
+                  2. historyError    -> error + retry button (silent failures bred bug reports)
+                  3. !loading && 0 messages && !sending -> the genuine empty state
+                  Order matters: skeleton wins over error text wins over empty copy. */}
+              {loadingHistory ? (
+                <div className="space-y-3 py-2">
+                  {[...Array(3)].map((_, i) => (
+                    <div
+                      key={i}
+                      className={`flex ${i % 2 === 0 ? "justify-start" : "justify-end"}`}
+                    >
+                      <div
+                        className={`max-w-[70%] rounded-xl px-3 py-2 animate-pulse ${
+                          i % 2 === 0
+                            ? "bg-[#F0F0EE] border border-[#E0DED8] rounded-bl-sm"
+                            : "bg-[#534AB7]/30 rounded-br-sm"
+                        }`}
+                      >
+                        <div className="h-2 w-32 bg-current opacity-30 rounded mb-1.5" />
+                        <div className="h-2 w-20 bg-current opacity-30 rounded" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : historyError ? (
+                <div className="text-center py-8 px-4">
+                  <p className="text-xs text-[#D85A30] mb-2">Couldn't load chat history</p>
+                  <p className="text-[10px] text-[#9E9C95] mb-3">{historyError}</p>
+                  <button
+                    onClick={reloadHistory}
+                    className="text-xs font-medium px-3 py-1.5 rounded-lg border border-[#E0DED8] text-[#534AB7] hover:bg-[#FAFAFF] transition-colors"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : messages.length === 0 && !sending ? (
                 <p className="text-xs text-[#B0AFA8] text-center py-8">Ask the CEO anything about your marketing.</p>
-              )}
+              ) : null}
               {messages.map((m, i) => (
                 <div key={i}>
                   <div className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
