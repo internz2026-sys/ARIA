@@ -6832,6 +6832,25 @@ Channels: {', '.join(tc.channels)}
                 "[ceo-chat] recent_activity fetch failed for %s: %s", tenant_id, e,
             )
 
+    # ── Stagnation Monitor: stale items awaiting user action ──────────
+    # Drafts that have been sitting in needs_review / draft_pending_approval
+    # / ready for >24h and aren't currently snoozed. The CEO references
+    # these on the first message of a session ("Hey, your LinkedIn draft
+    # from yesterday is still waiting...") so buried tasks don't get
+    # forgotten when newer work piles on top. Per spec we only nudge when
+    # the user is already active in the app — this injection only fires
+    # when they actually open a chat session.
+    stale_items_block = ""
+    if tenant_id and is_first_message:
+        try:
+            from backend.services.projects import find_stale_items, format_stale_for_ceo_prompt
+            _stale_rows = await asyncio.to_thread(find_stale_items, tenant_id, limit=8)
+            stale_items_block = format_stale_for_ceo_prompt(_stale_rows)
+        except Exception as e:
+            logging.getLogger("aria.ceo_chat").debug(
+                "[ceo-chat] stale_items fetch failed for %s: %s", tenant_id, e,
+            )
+
     # ── CRM context injection (only when message references contacts/deals/companies) ──
     crm_context = ""
     # Tightened heuristic: only inject CRM context when the message clearly
@@ -6874,7 +6893,7 @@ Channels: {', '.join(tc.channels)}
     _now_iso = _now.isoformat()
 
     system_prompt = f"""{_CEO_MD}
-{business_context}{crm_context}{recent_activity}
+{business_context}{crm_context}{recent_activity}{stale_items_block}
 ## Current Date & Time
 Today is {_today_str}. Current UTC time: {_now_iso}.
 When the user says "tomorrow", "next Monday", "in 2 hours", "April 18", etc., compute the absolute ISO 8601 timestamp from this reference point and use it verbatim in `scheduled_at` fields.
@@ -7539,6 +7558,49 @@ async def list_tasks(tenant_id: str):
         return {"tasks": result.data}
     except Exception as e:
         return {"tasks": [], "error": str(e)}
+
+
+# ─── Stagnation Monitor / "Buried Task" API ───
+@app.get("/api/projects/stale/{tenant_id}")
+async def list_stale_projects(tenant_id: str, hours: int = 24, limit: int = 20):
+    """Return inbox drafts that have been waiting on the user for more
+    than `hours` (default 24h), excluding rows that are currently
+    snoozed. Powers the Priority Actions section on the Projects page
+    and the sidebar pulse badge.
+
+    Also returns `recent_count` (items created in the last 24h) so the
+    frontend can decide whether the stale items are "buried" (per spec:
+    when there are 5+ newer items, the sidebar should pulse harder)."""
+    from backend.services.projects import find_stale_items, count_recent_items
+
+    rows = await asyncio.to_thread(
+        find_stale_items, tenant_id, hours_old=max(1, hours), limit=min(max(1, limit), 50),
+    )
+    recent_count = await asyncio.to_thread(count_recent_items, tenant_id, hours=24)
+    return {
+        "stale_items": rows,
+        "stale_count": len(rows),
+        "recent_count": recent_count,
+        "is_buried": len(rows) > 0 and recent_count >= 5,
+        "hours_threshold": hours,
+    }
+
+
+@app.post("/api/projects/{tenant_id}/snooze/{item_id}")
+async def snooze_stale_project(tenant_id: str, item_id: str, payload: dict = Body(default={})):
+    """Snooze a stale row for `hours` (default 24, capped at 168 = 1
+    week so the user can't accidentally hide a draft forever). The row
+    isn't marked done — just hidden from the stagnation feed until the
+    snooze expires. Per spec: 'they must remain Incomplete until the
+    user explicitly acts.'"""
+    from backend.services.projects import snooze_item
+
+    hours = int((payload or {}).get("hours", 24))
+    hours = max(1, min(hours, 168))
+    result = await asyncio.to_thread(snooze_item, tenant_id, item_id, hours=hours)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Snooze failed")
+    return result
 
 
 class TaskUpdate(BaseModel):

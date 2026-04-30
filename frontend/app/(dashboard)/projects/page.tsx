@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import KanbanBoard from "@/components/shared/KanbanBoard";
+import PriorityActionsSection from "@/components/shared/PriorityActionsSection";
 import {
   type Task,
   STATUS_COLUMNS,
@@ -107,6 +108,11 @@ export default function ProjectsPage() {
 
   return (
     <div>
+      {/* Stagnation Monitor — pinned at the very top so buried drafts
+          aren't lost behind the Kanban / table when newer work piles
+          on. Self-hides when there are zero stale items. */}
+      <PriorityActionsSection />
+
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>

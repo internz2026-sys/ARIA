@@ -28,6 +28,11 @@ export interface BadgeCounts {
   inbox: number;
   conversations: number;
   system: number;
+  // Number of inbox drafts >24h old in needs_review / draft_pending_approval
+  // / ready that aren't snoozed. Drives the sidebar "Projects" pulse so
+  // buried tasks surface even when the user is scrolling through newer
+  // work elsewhere.
+  projects: number;
   total: number;
 }
 
@@ -57,7 +62,7 @@ interface NotificationContextValue {
 
 const NotificationContext = createContext<NotificationContextValue>({
   notifications: [],
-  badges: { inbox: 0, conversations: 0, system: 0, total: 0 },
+  badges: { inbox: 0, conversations: 0, system: 0, projects: 0, total: 0 },
   toasts: [],
   markAsRead: () => {},
   dismissToast: () => {},
@@ -82,7 +87,7 @@ const CATEGORY_TO_ROUTE: Record<string, string> = {
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [badges, setBadges] = useState<BadgeCounts>({ inbox: 0, conversations: 0, system: 0, total: 0 });
+  const [badges, setBadges] = useState<BadgeCounts>({ inbox: 0, conversations: 0, system: 0, projects: 0, total: 0 });
   const [toasts, setToasts] = useState<Notification[]>([]);
   const toastTimers = useRef<Map<string, NodeJS.Timeout>>(new Map());
 
@@ -90,15 +95,32 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   const fetchCounts = useCallback(async () => {
     if (!tenantId) return;
-    try {
-      const data = await notificationsApi.counts(tenantId);
+    // Two calls in parallel — notifications counts (existing) and the
+    // Stagnation Monitor stale count (new). The stale call is best-
+    // effort: if /api/projects/stale 404s on a not-yet-deployed backend
+    // we silently fall back to projects:0 so the sidebar still works.
+    const [notifResult, staleResult] = await Promise.all([
+      notificationsApi.counts(tenantId).catch(() => null),
+      (async () => {
+        try {
+          const { authFetch, API_URL } = require("@/lib/api");
+          const res = await authFetch(`${API_URL}/api/projects/stale/${tenantId}`);
+          if (!res.ok) return null;
+          return (await res.json()) as { stale_count?: number };
+        } catch {
+          return null;
+        }
+      })(),
+    ]);
+    if (notifResult || staleResult) {
       setBadges({
-        inbox: data.inbox_unread || 0,
-        conversations: data.conversations_unread || 0,
-        system: data.system_unread || 0,
-        total: data.total_unread || 0,
+        inbox: notifResult?.inbox_unread || 0,
+        conversations: notifResult?.conversations_unread || 0,
+        system: notifResult?.system_unread || 0,
+        projects: staleResult?.stale_count || 0,
+        total: notifResult?.total_unread || 0,
       });
-    } catch {}
+    }
   }, [tenantId]);
 
   const fetchNotifications = useCallback(async () => {
@@ -135,6 +157,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           inbox: prev.inbox,
           conversations: prev.conversations + (n.category === "conversation" ? 1 : 0),
           system: prev.system + (n.category === "system" ? 1 : 0),
+          projects: prev.projects,
           total: prev.total + (n.category !== "inbox" ? 1 : 0),
         }));
 
