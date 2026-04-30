@@ -444,17 +444,43 @@ export default function InboxPage() {
       scroller.scrollTo({ top: 0, behavior: "smooth" });
     }
   }, [selected?.id]);
+  // Tracks the last `urlItemId` we successfully resolved (or attempted
+  // and toasted as missing). Two purposes:
+  //   1. Prevents the resolution from re-running every time the items
+  //      array gets a new reference (socket refetches) — items.length
+  //      is stable but the dep still re-fires when an item is added or
+  //      removed; without this guard the toast would re-fire too.
+  //   2. Lets us add `items.length` to the dep array safely so the
+  //      effect re-runs when items load for the FIRST time — fixing
+  //      the cold-start deep-link race where router.push("/inbox?id=X")
+  //      from another page arrives before fetchItems() resolves.
+  const lastResolvedUrlIdRef = useRef<string | null>(null);
+
   useEffect(() => {
+    // Reset the resolution tracker whenever the URL id itself changes
+    // so re-navigating to the same id from a different surface
+    // re-resolves rather than no-op'ing.
+    if (lastResolvedUrlIdRef.current !== urlItemId) {
+      lastResolvedUrlIdRef.current = null;
+    }
     if (!urlItemId) return;
-    const list = itemsRef.current;
-    if (list.length === 0) return;
+    if (lastResolvedUrlIdRef.current === urlItemId) return;
+    // Wait for the first items fetch to land. Adding `items.length` to
+    // deps (instead of `items`) means we re-fire only when the count
+    // changes — typically once on cold start (0 → N). Subsequent
+    // socket refetches that don't change the count don't re-fire.
+    if (items.length === 0) return;
+
     // Deferred to next tick so we read the latest `selected` without
     // stale-closure surprises and let the state→URL sync settle first.
     const t = setTimeout(() => {
       let toastedMissing = false;
-      // Read fresh state via refs so we don't need to subscribe here
+      let resolved = false;
       setSelected((prev) => {
-        if (prev?.id === urlItemId) return prev;
+        if (prev?.id === urlItemId) {
+          resolved = true;
+          return prev;
+        }
         const found = itemsRef.current.find((i) => i.id === urlItemId);
         if (!found) {
           toastedMissing = true;
@@ -463,17 +489,19 @@ export default function InboxPage() {
         const idx = itemsRef.current.findIndex((i) => i.id === found.id);
         if (idx >= 0) setKeyboardIndex(idx);
         setMobileShowDetail(true);
-        // Brief highlight so the user sees which row the notification
-        // referenced. Cleared after 1.8s so it doesn't stay visually
-        // "hot" once the user starts interacting.
+        // Brief highlight so the user sees which row the deep link
+        // referenced. The separate scroll-into-view effect (below)
+        // picks this up and pulls the row into the viewport.
         setHighlightedId(found.id);
+        resolved = true;
         return found;
       });
-      // Graceful fallback: the user was deep-linked to a row that
-      // doesn't exist (deleted, belongs to a different tenant, or
-      // the id is stale from an old notification). Show a toast so
-      // they know why the expected item isn't open — don't crash
-      // and don't silently ignore.
+      // Mark as resolved (or attempted) so we don't re-run on every
+      // subsequent items.length change. Setting this in both the
+      // success and the toast paths keeps stale ids from re-toasting.
+      if (resolved || toastedMissing) {
+        lastResolvedUrlIdRef.current = urlItemId;
+      }
       if (toastedMissing) {
         showToast({
           title: "This item is no longer available",
@@ -483,7 +511,7 @@ export default function InboxPage() {
       }
     }, 0);
     return () => clearTimeout(t);
-  }, [urlItemId]);
+  }, [urlItemId, items.length]);
 
   // Clear the highlight after 1.8s so it pulses briefly then fades.
   // Also scroll the highlighted row into view so users landing on a
