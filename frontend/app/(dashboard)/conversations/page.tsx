@@ -48,6 +48,13 @@ function extractName(emailStr: string): string {
 export default function ConversationsPage() {
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [selected, setSelected] = useState<EmailThread | null>(null);
+  // Mobile master-detail toggle. Mirrors the Inbox page: tapping a
+  // thread sets this to true so the list pane hides and the thread
+  // takes 100% width; the Back button clears this to false WITHOUT
+  // dropping `selected` (so on desktop the same selection stays
+  // visible alongside the list). Container-query driven via
+  // `@3xl/threads:flex` overrides on the panes themselves.
+  const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const [messages, setMessages] = useState<EmailMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [threadLoading, setThreadLoading] = useState(false);
@@ -151,6 +158,7 @@ export default function ConversationsPage() {
 
   const selectThread = async (thread: EmailThread) => {
     setSelected(thread);
+    setMobileShowDetail(true);
     setThreadLoading(true);
     // Switching threads resets the inline composer so the reply text
     // from thread A doesn't carry over into thread B.
@@ -298,7 +306,7 @@ export default function ConversationsPage() {
         {filterTabs.map(tab => (
           <button
             key={tab.key}
-            onClick={() => { setStatusFilter(tab.key); setSelected(null); }}
+            onClick={() => { setStatusFilter(tab.key); setSelected(null); setMobileShowDetail(false); }}
             className={`px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
               statusFilter === tab.key
                 ? "bg-[#EEEDFE] text-[#534AB7]"
@@ -340,13 +348,30 @@ export default function ConversationsPage() {
           </div>
         </div>
       ) : (
-        <div className="@container/threads flex flex-col @3xl/threads:flex-row gap-4 @3xl/threads:min-h-[600px]">
+        <div className="@container/threads">
+        <div className="flex flex-col @3xl/threads:flex-row gap-4 @3xl/threads:min-h-[500px] @3xl/threads:h-[calc(100dvh-220px)]">
           {/* Thread list — switches stacked vs. side-by-side based on
               the *container's* width (via `@container/threads`) instead
-              of the viewport. Matches the Inbox page so both pages
-              behave consistently when the dashboard sidebar collapses
-              or the window is split. */}
-          <div className={`${selected ? "hidden @3xl/threads:block" : "block"} w-full @3xl/threads:w-[380px] shrink-0 space-y-2`}>
+              of the viewport. Matches the Inbox page exactly:
+                1. `@container/threads` lives on a SEPARATE WRAPPER div
+                   above this flex row. Self-referential container
+                   queries (declaring + consuming on the same element)
+                   are technically legal CSS but silently fail in
+                   `@tailwindcss/container-queries@0.1.1` — the layout
+                   stays flex-col on wide desktop. Hard-won lesson from
+                   the Inbox refactor; same fix applied here.
+                2. The conditional uses bare `hidden`/`flex` plus
+                   `@3xl/threads:flex` as the wide-width override —
+                   `@max-3xl/threads:hidden` doesn't exist in our
+                   plugin version (would compile to nothing → both
+                   panes render on mobile and stack). The cascade
+                   order has plugin variants emitted AFTER core
+                   utilities, so `@3xl/threads:flex` wins.
+                3. `mobileShowDetail` is a separate state from
+                   `selected` so the Back button can collapse the
+                   detail-only mobile view WITHOUT dropping the
+                   thread selection on desktop. */}
+          <div className={`${mobileShowDetail ? "hidden" : "flex"} @3xl/threads:flex w-full @3xl/threads:w-[380px] shrink-0 flex-col gap-2 overflow-hidden @3xl/threads:overflow-y-auto`}>
             {threads.map(thread => {
               const sc = STATUS_COLORS[thread.status] || STATUS_COLORS.open;
               return (
@@ -376,10 +401,16 @@ export default function ConversationsPage() {
             })}
           </div>
 
-          {/* Thread detail — on mobile, takes the whole row when a
-              thread is selected; on desktop always visible alongside
-              the list. */}
-          <div className={`${selected ? "flex" : "hidden"} @3xl/threads:flex flex-1 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}>
+          {/* Thread detail — on mobile (mobileShowDetail=true),
+              takes the whole row at 100% width; on desktop always
+              visible alongside the list. `min-w-0` is critical: a
+              flex child's default `min-width: auto` lets it grow to
+              fit its content (long subject lines, wide HTML email
+              iframes), which pushes the page wider than the viewport
+              on mobile. With `min-w-0` the column shrinks below
+              content size and the inner iframes / pre tags actually
+              clip + scroll inside their own bounds. */}
+          <div className={`${mobileShowDetail ? "flex" : "hidden"} @3xl/threads:flex flex-1 min-w-0 bg-white rounded-xl border border-[#E0DED8] overflow-hidden flex-col`}>
             {selected ? (
               threadLoading ? (
                 <div className="flex items-center justify-center flex-1">
@@ -387,11 +418,16 @@ export default function ConversationsPage() {
                 </div>
               ) : (
                 <>
-                  {/* Mobile-only "Back" button — hides on md:+ since
-                      the list pane is visible there. */}
-                  <div className="md:hidden flex items-center gap-2 px-4 py-3 border-b border-[#E0DED8] bg-white">
+                  {/* Mobile-only "Back" button. Hides via the same
+                      container query that drives the master-detail
+                      toggle, so it disappears the instant the
+                      container is wide enough for the side-by-side
+                      layout. Clears mobileShowDetail (NOT selected)
+                      so jumping back to the list keeps the desktop
+                      selection intact when the viewport widens. */}
+                  <div className="@3xl/threads:hidden flex items-center gap-2 px-4 py-3 border-b border-[#E0DED8] bg-white">
                     <button
-                      onClick={() => setSelected(null)}
+                      onClick={() => setMobileShowDetail(false)}
                       className="flex items-center gap-1.5 text-sm font-medium text-[#534AB7] hover:text-[#433AA0]"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -447,7 +483,7 @@ export default function ConversationsPage() {
                   </div>
 
                   {/* Messages */}
-                  <div className="flex-1 overflow-auto p-5 space-y-4">
+                  <div className="flex-1 overflow-auto overflow-x-hidden p-4 sm:p-5 space-y-4 min-w-0">
                     {messages.length === 0 ? (
                       <div className="text-sm text-[#9E9C95] text-center py-8">No messages in this thread</div>
                     ) : messages.map(msg => {
@@ -501,7 +537,7 @@ export default function ConversationsPage() {
                               <iframe
                                 srcDoc={msg.html_body}
                                 title={`Message ${msg.id}`}
-                                className="w-full min-h-[120px] border-0"
+                                className="w-full max-w-full min-h-[120px] border-0"
                                 sandbox="allow-same-origin"
                                 onLoad={(e) => {
                                   const frame = e.target as HTMLIFrameElement;
@@ -512,7 +548,7 @@ export default function ConversationsPage() {
                                 }}
                               />
                             ) : (
-                              <div className="text-sm text-[#2C2C2A] whitespace-pre-wrap">
+                              <div className="text-sm text-[#2C2C2A] whitespace-pre-wrap break-words">
                                 {msg.text_body || msg.preview_snippet}
                               </div>
                             )}
@@ -620,6 +656,7 @@ export default function ConversationsPage() {
               </div>
             )}
           </div>
+        </div>
         </div>
       )}
     </div>
