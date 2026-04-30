@@ -644,8 +644,10 @@ async def _ceo_chat_impl(body: CEOChatMessage):
         sio,
         _CEO_MD,
         _CEO_ACTION_DESCRIPTIONS,
+        _AGENT_MDS,
         _CRM_NOUN_RE,
         _CRM_VERB_RE,
+        _CRM_TRIGGER_PHRASES,
         _DELEGATE_BLOCK_RE,
         _ACTION_BLOCK_RE,
         _safe_background,
@@ -654,6 +656,7 @@ async def _ceo_chat_impl(body: CEOChatMessage):
         _get_supabase,
         _auto_title,
         _execute_delegation,
+        _watch_and_fire_pending_schedule,
     )
     # Pull through the chat-state + chat-helpers aliases that server.py
     # also re-exports for its own backwards compatibility.
