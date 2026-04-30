@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { emailThreads, inbox } from "@/lib/api";
 import { formatDateAgo } from "@/lib/utils";
+import { useViewToggle } from "@/lib/use-view-toggle";
 
 interface EmailMessage {
   id: string;
@@ -48,13 +49,12 @@ function extractName(emailStr: string): string {
 export default function ConversationsPage() {
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [selected, setSelected] = useState<EmailThread | null>(null);
-  // Mobile master-detail toggle. Mirrors the Inbox page: tapping a
-  // thread sets this to true so the list pane hides and the thread
-  // takes 100% width; the Back button clears this to false WITHOUT
-  // dropping `selected` (so on desktop the same selection stays
-  // visible alongside the list). Container-query driven via
-  // `@3xl/threads:flex` overrides on the panes themselves.
-  const [mobileShowDetail, setMobileShowDetail] = useState(false);
+  // Mobile master-detail toggle. Shared hook so Inbox + Conversations
+  // (and future master-detail pages) stay in lockstep — see
+  // `lib/use-view-toggle.tsx` for the contract. `selected` is kept
+  // separate because the Back button only collapses the mobile view
+  // without dropping the desktop selection.
+  const { mobileShowDetail, showDetail, hideDetail } = useViewToggle();
   const [messages, setMessages] = useState<EmailMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [threadLoading, setThreadLoading] = useState(false);
@@ -158,7 +158,7 @@ export default function ConversationsPage() {
 
   const selectThread = async (thread: EmailThread) => {
     setSelected(thread);
-    setMobileShowDetail(true);
+    showDetail();
     setThreadLoading(true);
     // Switching threads resets the inline composer so the reply text
     // from thread A doesn't carry over into thread B.
@@ -306,7 +306,7 @@ export default function ConversationsPage() {
         {filterTabs.map(tab => (
           <button
             key={tab.key}
-            onClick={() => { setStatusFilter(tab.key); setSelected(null); setMobileShowDetail(false); }}
+            onClick={() => { setStatusFilter(tab.key); setSelected(null); hideDetail(); }}
             className={`px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
               statusFilter === tab.key
                 ? "bg-[#EEEDFE] text-[#534AB7]"
@@ -427,7 +427,7 @@ export default function ConversationsPage() {
                       selection intact when the viewport widens. */}
                   <div className="@3xl/threads:hidden flex items-center gap-2 px-4 py-3 border-b border-[#E0DED8] bg-white">
                     <button
-                      onClick={() => setMobileShowDetail(false)}
+                      onClick={hideDetail}
                       className="flex items-center gap-1.5 text-sm font-medium text-[#534AB7] hover:text-[#433AA0]"
                     >
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">

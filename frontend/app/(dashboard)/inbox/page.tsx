@@ -9,6 +9,7 @@ import { formatDateAgo } from "@/lib/utils";
 import { renderMarkdown } from "@/lib/render-markdown";
 import { useNotifications } from "@/lib/use-notifications";
 import { useConfirm } from "@/lib/use-confirm";
+import { useViewToggle } from "@/lib/use-view-toggle";
 
 interface EmailDraft {
   to: string;
@@ -342,7 +343,12 @@ export default function InboxPage() {
   // detail pane and a "Back to inbox" header. The previous design rendered
   // the detail pane as `hidden md:flex`, so on mobile users could tap items
   // but never read or approve them.
-  const [mobileShowDetail, setMobileShowDetail] = useState(false);
+  // Shared with Conversations + future master-detail pages via
+  // `lib/use-view-toggle.tsx`. Keeps the toggle behavior in lockstep
+  // so a fix to one place (e.g. safe-area padding adjustments) propagates
+  // automatically. Existing setMobileShowDetail callsites still work
+  // via the raw setter the hook exposes.
+  const { mobileShowDetail, setMobileShowDetail } = useViewToggle();
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
