@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authFetch, API_URL } from "@/lib/api";
 import { useNotifications } from "@/lib/use-notifications";
+import { Panel } from "@/components/ui/panel";
 
 // Priority Actions — pinned section at the top of the Projects page that
 // surfaces inbox drafts older than 24h that the user hasn't acted on.
@@ -143,7 +144,7 @@ export default function PriorityActionsSection() {
   const isBuried = data.is_buried;
 
   return (
-    <div className={`mb-6 rounded-xl border ${isBuried ? "border-[#D85A30]/40 bg-[#FDF3EE]" : "border-[#D4B24C]/40 bg-[#FFFAEC]"}`}>
+    <Panel tone={isBuried ? "danger" : "warning"} className="mb-6">
       <div className="flex items-start gap-3 px-4 py-3 border-b border-[#E0DED8]/40">
         <div className={`mt-0.5 ${isBuried ? "text-[#B8491F]" : "text-[#8A6D00]"}`}>
           {/* Stale-task icon — clock with an exclamation */}
@@ -214,6 +215,6 @@ export default function PriorityActionsSection() {
           </div>
         ))}
       </div>
-    </div>
+    </Panel>
   );
 }

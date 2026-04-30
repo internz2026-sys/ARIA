@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { authFetch, API_URL } from "@/lib/api";
 import { useConfirm } from "@/lib/use-confirm";
+import { Panel } from "@/components/ui/panel";
 
 // Role-based admin dashboard. Acts as its own guard: on mount, hits
 // /api/admin/me — backend middleware short-circuits non-admins with
@@ -306,15 +307,15 @@ export default function AdminPage() {
           { label: "Agent Runs", value: stats?.agent_runs_total ?? "—" },
           { label: "Inbox Items", value: stats?.inbox_items_total ?? "—" },
         ].map((s) => (
-          <div key={s.label} className="bg-white rounded-xl border border-[#E0DED8] p-4">
+          <Panel key={s.label} className="p-4">
             <p className="text-[10px] font-bold uppercase tracking-wide text-[#9E9C95]">{s.label}</p>
             <p className="text-xl font-bold text-[#2C2C2A] mt-1">{s.value}</p>
-          </div>
+          </Panel>
         ))}
       </div>
 
       {/* Users table */}
-      <div className="bg-white rounded-xl border border-[#E0DED8]">
+      <Panel>
         <div className="flex items-center gap-2 p-4 border-b border-[#E0DED8] flex-wrap">
           <h2 className="text-base font-semibold text-[#2C2C2A]">Users</h2>
           <span className="text-xs text-[#9E9C95]">{users.length} loaded</span>
@@ -464,7 +465,7 @@ export default function AdminPage() {
             </tbody>
           </table>
         </div>
-      </div>
+      </Panel>
     </div>
   );
 }
