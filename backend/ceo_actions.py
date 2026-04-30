@@ -705,8 +705,17 @@ async def _dispatch_action(tenant_id: str, action_name: str, action_def: dict, p
         elif operation == "delete":
             return crm_service.delete_deal(tenant_id, params["id"])
 
-    # ── Inbox ──
-    elif entity == "inbox_item":
+    # ── Inbox: write operations ──
+    # NOTE: this branch matches update/delete ONLY. The read branch at
+    # the bottom of this function (entity == "inbox_item" and operation
+    # == "read") was dead code for months because an earlier
+    # `elif entity == "inbox_item":` here caught EVERY inbox operation,
+    # including read — falling out the bottom with no return. The CEO
+    # then formatted the empty result as "I'm having a little trouble
+    # pulling up the latest drafts right now" even when 100+ inbox rows
+    # were in the DB. Narrowing this elif lets `read` fall through to
+    # the dedicated branch below.
+    elif entity == "inbox_item" and operation in ("update", "delete"):
         if operation == "update":
             return inbox_service.update_status(tenant_id, params["id"], params["status"])
         elif operation == "delete":
