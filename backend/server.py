@@ -716,6 +716,34 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
         from starlette.responses import JSONResponse
         return JSONResponse(status_code=401, content={"detail": "Invalid or expired token"}, headers=cors_headers)
 
+    # Pause gate — soft-lock for users whose profiles.status is
+    # 'paused' or 'suspended'. Only blocks "expensive" actions (CEO
+    # chat, agent runs). Reads (dashboard, inbox history, settings)
+    # stay open so the user still sees their data + the banner.
+    #
+    # The exact match for /api/ceo/chat is intentional — we want to
+    # block POST /api/ceo/chat (the message send) while leaving the
+    # session-history reads (/api/ceo/chat/{session_id}/history etc)
+    # open for read.
+    method = request.method
+    is_expensive = (
+        method == "POST" and (
+            path == "/api/ceo/chat"
+            or (path.startswith("/api/agents/") and path.endswith("/run"))
+        )
+    )
+    if is_expensive:
+        from backend.services.profiles import get_user_status, is_paused
+        user_id = (user.get("sub") or "")
+        status = get_user_status(user_id)
+        if is_paused(status):
+            from starlette.responses import JSONResponse
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "ACCOUNT_PAUSED", "status": status},
+                headers=cors_headers,
+            )
+
     # RBAC gate for /api/admin/* — every admin endpoint requires the
     # caller's profiles.role to be 'admin' or 'super_admin'. The role
     # is also stamped onto request.state so individual handlers can
@@ -866,6 +894,29 @@ VIRTUAL_OFFICE_AGENTS = [
 @app.get("/health")
 async def health():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+# ─── Current user profile snapshot (role + status) ───
+@app.get("/api/profile/me")
+async def profile_me(request: Request):
+    """Return the calling user's role + status. Used by the dashboard
+    layout to decide whether to show the "account paused" banner.
+
+    The auth middleware has already verified the JWT and stamped
+    request.state.user; this just adds the profiles row lookup.
+    """
+    user = getattr(request.state, "user", None) or {}
+    user_id = (user.get("sub") if isinstance(user, dict) else "") or ""
+    if not user_id or user_id == "dev-user":
+        # Dev mode or unauthenticated — return active so the frontend
+        # doesn't render a phantom paused banner during local dev.
+        return {"user_id": user_id, "role": "user", "status": "active"}
+    from backend.services.profiles import get_user_role, get_user_status
+    return {
+        "user_id": user_id,
+        "role": get_user_role(user_id),
+        "status": get_user_status(user_id),
+    }
 
 
 # ─── Twitter / X OAuth 2.0 ───

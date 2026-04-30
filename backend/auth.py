@@ -162,6 +162,38 @@ async def get_current_user(request: Request) -> dict:
     return verify_jwt(token)
 
 
+async def check_user_active(request: Request) -> dict:
+    """FastAPI dependency: ensure the caller's account isn't paused/suspended.
+
+    Use this on per-route handlers where the middleware-level pause gate
+    (server.py auth_and_rate_limit_middleware) doesn't apply — e.g. routes
+    added by future routers that aren't covered by the prefix-based gate.
+
+    The middleware is the canonical enforcer; this dep is a defense-in-depth
+    layer for explicit per-route gating. Returns the JWT user payload on
+    success, raises 403 with detail "ACCOUNT_PAUSED" on failure so the
+    frontend can detect it and show the banner without a generic 403 toast.
+    """
+    user = await get_current_user(request)
+
+    # Dev mode — no profiles table to query, allow through
+    if user.get("sub") == "dev-user":
+        return user
+
+    # Lazy-import to avoid a circular import at module load time
+    # (services.profiles indirectly imports services.supabase which is heavy).
+    from backend.services.profiles import get_user_status, is_paused
+
+    user_id = user.get("sub") or ""
+    status = get_user_status(user_id)
+    if is_paused(status):
+        raise HTTPException(
+            status_code=403,
+            detail="ACCOUNT_PAUSED",
+        )
+    return user
+
+
 async def get_verified_tenant(request: Request, tenant_id: str) -> dict:
     """Verify the authenticated user owns the given tenant_id.
 

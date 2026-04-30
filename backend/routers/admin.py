@@ -94,6 +94,38 @@ async def admin_set_role(target_user_id: str, request: Request):
     return result
 
 
+@router.put("/users/{target_user_id}/status")
+async def admin_set_status(target_user_id: str, request: Request):
+    """Pause / resume / suspend a user's account.
+    Body: { "status": "active" | "paused" | "suspended", "reason": "..." (optional) }.
+
+    A 'paused' user is blocked from POST /api/ceo/chat and POST
+    /api/agents/.../run by the auth middleware (server.py), but can
+    still read their dashboard / inbox / history. 'suspended' uses the
+    same gate today; the separation is reserved for future automated
+    enforcement (billing, abuse) where we'll want different messaging.
+
+    Server-side guards (also in profiles_service.set_user_status):
+      - Only super_admin can pause/resume another admin
+      - Users can never change their own status (anti-lockout)
+    """
+    actor_id, actor_role = _actor_from_request(request)
+    body = await request.json() or {}
+    new_status = (body.get("status") or "").strip()
+    reason = (body.get("reason") or "").strip()
+
+    result = profiles_service.set_user_status(
+        target_user_id=target_user_id,
+        new_status=new_status,
+        actor_role=actor_role,
+        actor_id=actor_id,
+        reason=reason,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=403, detail=result.get("error") or "Forbidden")
+    return result
+
+
 @router.post("/users/{target_user_id}/reset-password")
 async def admin_reset_password(target_user_id: str, request: Request):
     """Trigger a password recovery email for the target user. Supabase

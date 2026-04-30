@@ -15,10 +15,13 @@ import { NotificationProvider } from "@/lib/use-notifications";
 import { OfficeAgentsProvider } from "@/lib/use-office-agents";
 import { ConfirmProvider } from "@/lib/use-confirm";
 
+type AccountStatus = "active" | "paused" | "suspended";
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  const [accountStatus, setAccountStatus] = useState<AccountStatus>("active");
 
   // Swipe-to-close gesture state. Tracks the starting touch point so
   // we can compute horizontal delta on touchend. We only act on
@@ -128,6 +131,34 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => subscription.unsubscribe();
   }, [router]);
 
+  // Poll the user's account status so the banner reflects pauses
+  // applied while the dashboard is open. 60s cadence matches the
+  // backend's profile-status cache TTL — anything faster just hits
+  // the cache anyway.
+  useEffect(() => {
+    if (!authChecked) return;
+    let cancelled = false;
+    const fetchStatus = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) return;
+        const res = await fetch(`${API_URL}/api/profile/me`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data?.status) {
+          setAccountStatus(data.status as AccountStatus);
+        }
+      } catch {
+        // Silent fail — banner stays in its last-known state
+      }
+    };
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 60_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [authChecked]);
+
   if (!authChecked) {
     return (
       <div className="min-h-[100dvh] bg-[#F8F8F6] flex items-center justify-center">
@@ -219,6 +250,37 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="hidden lg:flex sticky top-0 z-30 bg-[#F8F8F6] h-14 items-center justify-end px-8 border-b border-[#E0DED8]/50">
             <NotificationBell />
           </div>
+
+          {/* Account-paused banner — persistent until the admin
+              flips status back to active. Shown for both 'paused' and
+              'suspended' so the user always understands why agent
+              actions are disabled, with copy that escalates for
+              suspension. */}
+          {accountStatus !== "active" && (
+            <div className={`px-6 lg:px-8 py-3 border-b ${
+              accountStatus === "suspended"
+                ? "bg-[#FDEEE8] border-[#D85A30]/30 text-[#B8491F]"
+                : "bg-[#FFF4D6] border-[#D4B24C]/40 text-[#8A6D00]"
+            }`}>
+              <div className="flex items-start gap-3 max-w-screen-2xl mx-auto">
+                <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <div className="text-sm">
+                  <p className="font-semibold">
+                    {accountStatus === "suspended"
+                      ? "Your account is suspended."
+                      : "Your account is currently paused due to high usage."}
+                  </p>
+                  <p className="opacity-90 mt-0.5">
+                    {accountStatus === "suspended"
+                      ? "New agent tasks are disabled. Please contact support to restore access."
+                      : "New agent tasks are temporarily disabled. You can still view your existing inbox and history."}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Page content. pb-20 on mobile keeps the final row out
               from under the bottom-tab nav; lg:pb-8 removes the extra

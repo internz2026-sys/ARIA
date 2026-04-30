@@ -31,12 +31,21 @@ logger = logging.getLogger("aria.services.profiles")
 
 _VALID_ROLES = ("user", "admin", "super_admin")
 _ADMIN_ROLES = ("admin", "super_admin")
+_VALID_STATUSES = ("active", "paused", "suspended")
+_BLOCKED_STATUSES = ("paused", "suspended")
 
 # Tiny TTL cache so the middleware doesn't query Supabase on every
 # admin request. 60s is plenty — role changes are rare and the
 # super_admin protection kicks in at write time anyway.
 _role_cache: dict[str, tuple[float, str]] = {}
 _ROLE_CACHE_TTL = 60.0
+
+# Status cache mirrors the role cache. Same 60s TTL — when an admin
+# pauses a user, set_user_status() invalidates this cache immediately
+# so the next request from the paused user sees the new status without
+# waiting for TTL expiry.
+_status_cache: dict[str, tuple[float, str]] = {}
+_STATUS_CACHE_TTL = 60.0
 
 
 def _now() -> float:
@@ -92,6 +101,97 @@ def is_super_admin(role: str) -> bool:
     return role == "super_admin"
 
 
+def is_paused(status: str) -> bool:
+    """True for any status that should block expensive actions (paused or
+    suspended). The pause-gate middleware uses this — keeping a single
+    helper means a future status like 'billing_hold' can be added in one
+    place."""
+    return status in _BLOCKED_STATUSES
+
+
+def get_user_status(user_id: str) -> str:
+    """Return the account status for a Supabase auth user. Defaults to
+    'active'. Same failure semantics as get_user_role — a transient DB
+    error returns 'active' so we never accidentally lock a user out."""
+    if not user_id:
+        return "active"
+    cached = _status_cache.get(user_id)
+    if cached and cached[0] > _now():
+        return cached[1]
+    try:
+        sb = get_db()
+        res = (
+            sb.table("profiles")
+            .select("status")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        status = (rows[0].get("status") if rows else "active") or "active"
+        if status not in _VALID_STATUSES:
+            status = "active"
+    except Exception as e:
+        logger.warning("[profiles] status lookup failed for %s: %s — defaulting to 'active'", user_id, e)
+        status = "active"
+    _status_cache[user_id] = (_now() + _STATUS_CACHE_TTL, status)
+    return status
+
+
+def invalidate_status_cache(user_id: str | None = None) -> None:
+    """Drop cached status(es) — called after a status change so the
+    next request sees the new value without waiting for TTL expiry."""
+    if user_id:
+        _status_cache.pop(user_id, None)
+    else:
+        _status_cache.clear()
+
+
+def set_user_status(*, target_user_id: str, new_status: str, actor_role: str, actor_id: str, reason: str = "") -> dict:
+    """Pause / resume / suspend a user. Returns {ok, error?}.
+
+    Guards (server-enforced — UI hints are advisory):
+      - new_status must be a valid status
+      - actor must be admin or super_admin
+      - admin can only pause/resume role='user' targets
+      - super_admin can act on anyone except themselves (anti-lockout —
+        if you accidentally paused yourself you couldn't unpause)
+      - users can never set their own status (handled by the actor=target check)
+    """
+    if new_status not in _VALID_STATUSES:
+        return {"ok": False, "error": f"Invalid status: {new_status}"}
+    if not target_user_id:
+        return {"ok": False, "error": "target_user_id required"}
+    if not is_admin(actor_role):
+        return {"ok": False, "error": "Forbidden"}
+    if target_user_id == actor_id:
+        return {"ok": False, "error": "You can't change your own account status"}
+
+    target_role = get_user_role(target_user_id)
+    if not is_super_admin(actor_role) and target_role != "user":
+        return {"ok": False, "error": "Only a super_admin can pause another admin"}
+
+    try:
+        sb = get_db()
+        # Upsert keeps this working even if a profiles row is missing
+        # (auth.users older than the profiles table). The role isn't
+        # touched — only the status column.
+        sb.table("profiles").upsert(
+            {"user_id": target_user_id, "status": new_status},
+            on_conflict="user_id",
+        ).execute()
+        invalidate_status_cache(target_user_id)
+        logger.warning(
+            "[admin] %s (%s) set status=%s on user %s%s",
+            actor_id, actor_role, new_status, target_user_id,
+            f" (reason: {reason})" if reason else "",
+        )
+        return {"ok": True, "status": new_status}
+    except Exception as e:
+        logger.error("[profiles] set_user_status failed: %s", e)
+        return {"ok": False, "error": "Database update failed"}
+
+
 def ensure_profile(user_id: str, *, email: str = "", full_name: str = "") -> None:
     """Idempotent upsert that creates a default 'user' profile row.
 
@@ -128,7 +228,7 @@ def list_profiles(
         sb = get_db()
         q = (
             sb.table("profiles")
-            .select("user_id, email, full_name, role, created_at, updated_at")
+            .select("user_id, email, full_name, role, status, created_at, updated_at")
             .order("created_at", desc=True)
             .range(offset, offset + max(0, limit - 1))
         )

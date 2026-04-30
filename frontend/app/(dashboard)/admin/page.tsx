@@ -13,12 +13,14 @@ import { useConfirm } from "@/lib/use-confirm";
 // can't be read server-side without migrating to cookie auth.
 
 type Role = "user" | "admin" | "super_admin";
+type Status = "active" | "paused" | "suspended";
 
 type AdminUser = {
   user_id: string;
   email: string | null;
   full_name: string | null;
   role: Role;
+  status: Status;
   created_at: string;
   updated_at: string;
 };
@@ -41,6 +43,18 @@ const ROLE_BADGE: Record<Role, string> = {
   user: "bg-[#F0F0EE] text-[#5F5E5A] border-[#E0DED8]",
   admin: "bg-[#EEEDFE] text-[#534AB7] border-[#534AB7]/30",
   super_admin: "bg-[#FFF4D6] text-[#8A6D00] border-[#D4B24C]/40",
+};
+
+const STATUS_BADGE: Record<Status, string> = {
+  active: "bg-[#E6F5ED] text-[#157A5A] border-[#1D9E75]/30",
+  paused: "bg-[#FFF4D6] text-[#8A6D00] border-[#D4B24C]/40",
+  suspended: "bg-[#FDEEE8] text-[#B8491F] border-[#D85A30]/30",
+};
+
+const STATUS_LABELS: Record<Status, string> = {
+  active: "Active",
+  paused: "Paused",
+  suspended: "Suspended",
 };
 
 export default function AdminPage() {
@@ -137,6 +151,47 @@ export default function AdminPage() {
       loadStats();
     } catch (e: any) {
       setErrorMsg(e?.message || "Couldn't change role");
+    }
+    setPendingChange(null);
+  };
+
+  const handleStatusChange = async (target: AdminUser, newStatus: Status) => {
+    if (newStatus === target.status) return;
+    // Confirm only when moving INTO a blocked status — restoring is one click.
+    if (newStatus === "paused" || newStatus === "suspended") {
+      const ok = await confirm({
+        title: newStatus === "paused" ? "Pause this account?" : "Suspend this account?",
+        message:
+          `${target.email || target.user_id} will be blocked from sending messages to the CEO and running agents. They can still view their dashboard and inbox. ${newStatus === "suspended" ? "Suspended is harder than paused — reserved for abuse / billing holds." : "You can resume access at any time."}`,
+        confirmLabel: newStatus === "paused" ? "Pause" : "Suspend",
+        cancelLabel: "Cancel",
+        destructive: newStatus === "suspended",
+      });
+      if (!ok) return;
+    }
+    setPendingChange(target.user_id);
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const res = await authFetch(`${API_URL}/api/admin/users/${target.user_id}/status`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `Failed (${res.status})`);
+      }
+      setUsers((prev) => prev.map((u) =>
+        u.user_id === target.user_id ? { ...u, status: newStatus } : u,
+      ));
+      setSuccessMsg(
+        newStatus === "active"
+          ? `Resumed ${target.email || "user"}.`
+          : `${newStatus === "paused" ? "Paused" : "Suspended"} ${target.email || "user"}.`,
+      );
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Couldn't change status");
     }
     setPendingChange(null);
   };
@@ -301,6 +356,7 @@ export default function AdminPage() {
                 <th className="px-4 py-2 font-semibold">Email</th>
                 <th className="px-4 py-2 font-semibold">Name</th>
                 <th className="px-4 py-2 font-semibold">Role</th>
+                <th className="px-4 py-2 font-semibold">Status</th>
                 <th className="px-4 py-2 font-semibold">Joined</th>
                 <th className="px-4 py-2 font-semibold">Last change</th>
                 <th className="px-4 py-2 font-semibold">Set role</th>
@@ -309,9 +365,9 @@ export default function AdminPage() {
             </thead>
             <tbody>
               {loading && users.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-[#9E9C95]">Loading...</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9E9C95]">Loading...</td></tr>
               ) : users.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-[#9E9C95]">No users match.</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9E9C95]">No users match.</td></tr>
               ) : users.map((u) => {
                 const isSelf = me?.user_id === u.user_id;
                 const isTargetSuper = u.role === "super_admin";
@@ -328,6 +384,11 @@ export default function AdminPage() {
                     <td className="px-4 py-3">
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${ROLE_BADGE[u.role]}`}>
                         {ROLE_LABELS[u.role].toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${STATUS_BADGE[u.status || "active"]}`}>
+                        {STATUS_LABELS[u.status || "active"].toUpperCase()}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-[#9E9C95] text-xs">
@@ -356,6 +417,29 @@ export default function AdminPage() {
                           targets the actor can't manage (admins can't
                           touch other admins / super_admins). */}
                       <div className="inline-flex items-center gap-1.5">
+                        {/* Pause/Resume — toggles status between
+                            active and paused. Suspended is admin-only
+                            via the table (not exposed on the toggle)
+                            for now. */}
+                        {(u.status || "active") === "active" ? (
+                          <button
+                            onClick={() => handleStatusChange(u, "paused")}
+                            disabled={!canEdit || pendingChange === u.user_id}
+                            className="text-xs px-2 py-1 rounded-md border border-[#D4B24C]/40 text-[#8A6D00] bg-white hover:bg-[#FFF4D6] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={!canEdit ? (isSelf ? "Can't pause your own account" : "Only a super admin can pause another admin") : "Block agent runs for this user"}
+                          >
+                            {pendingChange === u.user_id ? "Pausing..." : "Pause"}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleStatusChange(u, "active")}
+                            disabled={!canEdit || pendingChange === u.user_id}
+                            className="text-xs px-2 py-1 rounded-md border border-[#1D9E75]/30 text-[#157A5A] bg-white hover:bg-[#E6F5ED] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={!canEdit ? (isSelf ? "Can't change your own status" : "Only a super admin can resume another admin") : "Restore agent access for this user"}
+                          >
+                            {pendingChange === u.user_id ? "Resuming..." : "Resume"}
+                          </button>
+                        )}
                         <button
                           onClick={() => handleResetPassword(u)}
                           disabled={!canEdit || pendingAction?.user_id === u.user_id}
