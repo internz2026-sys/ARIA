@@ -3806,49 +3806,9 @@ async def cron_trigger():
 
 
 # ─── Inbox helpers ───
-
-def _parse_codeblock_json(block: str, kind: str) -> dict | None:
-    """Parse a ```delegate or ```action JSON block, with recovery for the
-    most common LLM mistakes.
-
-    Returns the parsed dict, or None if parsing fails after recovery.
-    Logs the failure with the original block for debugging. Was previously
-    a bare json.loads in two places that silently dropped malformed
-    delegations -- the CEO would promise delegation in prose but nothing
-    fired, and the user saw text but no inbox row.
-    """
-    import json as _json_inner
-    import re as _re_inner
-    raw = block.strip()
-    if not raw:
-        return None
-    # First attempt: literal parse
-    try:
-        return _json_inner.loads(raw)
-    except _json_inner.JSONDecodeError:
-        pass
-    # Recovery: strip JS-style comments and trailing commas (Haiku
-    # occasionally hallucinates these from training-data drift).
-    cleaned = _re_inner.sub(r"//[^\n]*", "", raw)
-    cleaned = _re_inner.sub(r"/\*.*?\*/", "", cleaned, flags=_re_inner.DOTALL)
-    cleaned = _re_inner.sub(r",(\s*[}\]])", r"\1", cleaned)  # trailing commas
-    try:
-        return _json_inner.loads(cleaned)
-    except _json_inner.JSONDecodeError:
-        pass
-    # Recovery: try extracting just the {...} substring in case the model
-    # padded the block with extra prose
-    match = _re_inner.search(r"\{.*\}", cleaned, _re_inner.DOTALL)
-    if match:
-        try:
-            return _json_inner.loads(match.group(0))
-        except _json_inner.JSONDecodeError:
-            pass
-    logging.getLogger("aria.ceo_chat").warning(
-        "[%s-parse] all recovery attempts failed for block: %s",
-        kind, raw[:300],
-    )
-    return None
+# _parse_codeblock_json moved to backend/services/chat.py (slice 4b).
+# Aliased back to the original name below so call sites keep working.
+from backend.services.chat import parse_codeblock_json as _parse_codeblock_json
 
 
 def _safe_background(coro, *, label: str = "background"):
@@ -6561,25 +6521,9 @@ def _task_type_for_agent(agent: str) -> str:
 # _chat_sessions.
 
 
-def _save_chat_message(session_id: str, tenant_id: str, role: str, content: str, delegations: list | None = None):
-    """Persist a single chat message to Supabase."""
-    try:
-        sb = _get_supabase()
-        # Ensure session row exists
-        sb.table("chat_sessions").upsert({
-            "id": session_id,
-            "tenant_id": tenant_id or None,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }, on_conflict="id").execute()
-        # Insert message
-        sb.table("chat_messages").insert({
-            "session_id": session_id,
-            "role": role,
-            "content": content,
-            "delegations": delegations or [],
-        }).execute()
-    except Exception:
-        pass
+# _save_chat_message moved to backend/services/chat.py (slice 4b).
+# Aliased back to the original name below so call sites keep working.
+from backend.services.chat import save_message as _save_chat_message
 
 
 def _auto_title(session_id: str, first_message: str):
