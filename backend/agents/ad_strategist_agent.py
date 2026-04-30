@@ -78,6 +78,26 @@ Output in clean markdown (NOT JSON). Structure your response like this:
 ## Budget Recommendations
 - [Budget breakdown and optimization tips]
 
+## Charts (optional — use ONLY when a visual makes the strategy clearer)
+When a chart would help the user grasp the plan (budget split, audience tier weights, funnel projections), emit a [GRAPH_DATA] block with valid JSON. ARIA renders these as branded PNG charts automatically — DO NOT use ASCII art, markdown tables, or describe charts in prose.
+
+Supported chart types:
+- `pie` — budget allocation across campaign tiers (Awareness/Retargeting/Conversion), channel mix, audience tier splits
+- `bar` — demographic breakdowns, interest weights, projected metric comparisons
+- `funnel` — conversion projections (Impressions → Clicks → Leads → Customers)
+
+Format strictly:
+[GRAPH_DATA]
+{{"type": "pie", "title": "Monthly Budget Allocation", "data": {{"Awareness": 50, "Retargeting": 30, "Conversion": 20}}}}
+[/GRAPH_DATA]
+
+Rules:
+- Numbers only in `data` values (no "$50" — use 50)
+- Cap at 3 charts per campaign plan
+- Title under 50 chars
+- DO NOT emit a chart for every section — only when it actually adds clarity
+- DO NOT describe what the chart will show in prose; the rendered image speaks for itself
+
 Keep it actionable, copy-paste ready, and beginner-friendly."""
 
 
@@ -96,8 +116,26 @@ async def run(tenant_id: str, context: dict | None = None) -> dict:
     or pastes a URL, attach the latest Media Agent image so the ad draft
     ships with a visual. The image URL rides on the result dict as
     `image_url` — the frontend's ad editor picks it up next to the copy.
+
+    Also renders any [GRAPH_DATA] blocks the agent emitted into branded
+    PNG charts via backend/services/visualizer.py and replaces them
+    with markdown image references inline. Failures are silent — the
+    text falls through unchanged so the campaign plan still ships.
     """
     result = await _get().run(tenant_id, context)
+
+    # Chart rendering — runs first so the campaign-plan text in
+    # `result["result"]` already has the rendered chart URLs by the
+    # time the inbox finalization path picks it up. Wrapped in
+    # try/except per spec: malformed data must NOT crash the run.
+    try:
+        from backend.services.visualizer import process_ad_strategist_text
+        if isinstance(result.get("result"), str) and tenant_id:
+            transformed = process_ad_strategist_text(tenant_id, result["result"])
+            if transformed != result["result"]:
+                result["result"] = transformed
+    except Exception as e:
+        logger.warning("[ad_strategist] chart rendering skipped: %s", e)
 
     action = (context or {}).get("action", "") or ""
     image_url: str | None = None

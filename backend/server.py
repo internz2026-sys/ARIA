@@ -5142,6 +5142,20 @@ async def _dispatch_paperclip_and_watch_to_inbox(
         except Exception as e:
             _logger.debug("[paperclip-watch] agent-row dedupe lookup failed: %s", e)
 
+    # Ad Strategist [GRAPH_DATA] -> branded PNG charts. Same hook as
+    # in create_inbox_item — covers the watcher-path output (Paperclip
+    # comments scraped by pick_agent_output) so charts render
+    # regardless of whether the agent took the skill-curl direct-write
+    # path or fell through to the safety-net poller.
+    if agent_id == "ad_strategist" and isinstance(output, str) and "[GRAPH_DATA]" in output.upper():
+        try:
+            from backend.services.visualizer import process_ad_strategist_text
+            transformed = process_ad_strategist_text(tenant_id, output)
+            if transformed != output:
+                output = transformed
+        except Exception as e:
+            _logger.debug("[paperclip-watch] ad_strategist chart render skipped: %s", e)
+
     content_type = _infer_content_type(agent_id, output)
     title = _extract_title(agent_id, task_desc, output)
     email_draft: dict | None = None
@@ -5669,6 +5683,22 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
             if subject_is_clean:
                 if not title or title.lower().startswith(("draft", "marketing email", "email", "untitled")):
                     title = f"Email: {parsed_subject}"
+
+    # Ad Strategist [GRAPH_DATA] block rendering — runs whether the
+    # agent output arrived via the skill-curl path (this handler) or
+    # the watcher path (parallel branch in _dispatch_paperclip_and_
+    # watch_to_inbox). Failures are silent: malformed JSON / missing
+    # storage bucket / matplotlib hiccup all leave the original text
+    # block in place per the spec ("if the data is malformed, it
+    # defaults to the standard text-only strategy without crashing").
+    if body.agent == "ad_strategist" and isinstance(body.content, str) and "[GRAPH_DATA]" in body.content.upper():
+        try:
+            from backend.services.visualizer import process_ad_strategist_text
+            transformed = process_ad_strategist_text(tenant_id, body.content)
+            if transformed != body.content:
+                body.content = transformed
+        except Exception as e:
+            logger.debug("[create_inbox_item] ad_strategist chart render skipped: %s", e)
 
     if body.agent in ("content_writer", "social_manager"):
         social = _parse_social_drafts_from_text(body.content)

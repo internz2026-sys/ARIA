@@ -16,5 +16,9 @@ qdrant-client>=1.9.0
 sentence-transformers>=3.0.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+# matplotlib renders branded chart PNGs for Ad Strategist [GRAPH_DATA]
+# blocks. Agg backend (server.py forces it before any pyplot import) so
+# Docker doesn't need X11 / a display.
+matplotlib>=3.8.0
 # Paperclip AI orchestration is a local Node.js server (localhost:3100)
 # integrated via REST API using httpx — no Python package needed
