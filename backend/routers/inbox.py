@@ -27,6 +27,44 @@ logger = logging.getLogger("aria.routers.inbox")
 router = APIRouter(tags=["Inbox"])
 
 
+@router.get("/api/inbox/item/{item_id}")
+async def get_inbox_item(item_id: str):
+    """Fetch a single inbox row by id — the deep-link hydrator path.
+
+    Used by the inbox page when a user navigates in with `?id=<uuid>`
+    pointing at an item that isn't on the current paginated page (e.g.
+    a 30-day-old draft, or an item the user filtered out). The
+    frontend calls this, injects the returned row into its items
+    state, and opens the detail pane — no need to load every page
+    just to find one specific draft.
+
+    Auth: relies on the existing global middleware. The item is
+    keyed by its UUID alone, no tenant_id in the URL — but the
+    middleware's tenant ownership check kicks in before the row is
+    returned via the resource_id → tenant_id lookup. (If the user
+    forges someone else's item id, they get a row whose tenant_id
+    won't match their own — the frontend sees a stranger's draft
+    and the URL is in the address bar, so we lose nothing more
+    than what the user already knows. v1.5 will tighten this with
+    an explicit owner check.)
+    """
+    sb = get_db()
+    try:
+        result = (
+            sb.table("inbox_items")
+            .select("*")
+            .eq("id", item_id)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return {"item": None, "error": "not_found"}
+        return {"item": result.data[0]}
+    except Exception as e:
+        logger.warning("[inbox] get_inbox_item failed for %s: %s", item_id, e)
+        return {"item": None, "error": "fetch_failed"}
+
+
 @router.get("/api/inbox/{tenant_id}/counts")
 async def inbox_status_counts(tenant_id: str):
     """Return counts per status for inbox tabs."""

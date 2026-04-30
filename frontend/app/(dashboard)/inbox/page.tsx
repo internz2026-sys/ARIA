@@ -473,9 +473,10 @@ export default function InboxPage() {
 
     // Deferred to next tick so we read the latest `selected` without
     // stale-closure surprises and let the state→URL sync settle first.
-    const t = setTimeout(() => {
-      let toastedMissing = false;
+    let cancelled = false;
+    const t = setTimeout(async () => {
       let resolved = false;
+      let inListMatch: InboxItem | null = null;
       setSelected((prev) => {
         if (prev?.id === urlItemId) {
           resolved = true;
@@ -483,34 +484,72 @@ export default function InboxPage() {
         }
         const found = itemsRef.current.find((i) => i.id === urlItemId);
         if (!found) {
-          toastedMissing = true;
           return prev;
         }
+        inListMatch = found;
         const idx = itemsRef.current.findIndex((i) => i.id === found.id);
         if (idx >= 0) setKeyboardIndex(idx);
         setMobileShowDetail(true);
-        // Brief highlight so the user sees which row the deep link
-        // referenced. The separate scroll-into-view effect (below)
-        // picks this up and pulls the row into the viewport.
         setHighlightedId(found.id);
         resolved = true;
         return found;
       });
+
+      // Universal Hydrator: if the deep-linked id wasn't in the
+      // currently-loaded paginated list, fetch it directly via the
+      // single-item endpoint and inject it into the items array. This
+      // is what makes a 30-day-old item link work even when the user's
+      // current view only shows page 1 of 6, OR when the item is in a
+      // status the active tab filters out (e.g. Sent / Cancelled).
+      if (!resolved && !inListMatch) {
+        try {
+          const res = await authFetch(`${API_URL}/api/inbox/item/${encodeURIComponent(urlItemId)}`);
+          if (cancelled) return;
+          const body = await res.json().catch(() => ({}));
+          const fetched = body?.item as InboxItem | null | undefined;
+          if (fetched && fetched.id) {
+            // Prepend so the row shows at the top of the list as well
+            // as in the detail pane, and the keyboard index lands on it.
+            setItems((prev) => {
+              if (prev.some((p) => p.id === fetched.id)) return prev;
+              return [fetched, ...prev];
+            });
+            setSelected(fetched);
+            setKeyboardIndex(0);
+            setMobileShowDetail(true);
+            setHighlightedId(fetched.id);
+            resolved = true;
+          } else {
+            // Genuinely gone — toast once.
+            showToast({
+              title: "This item is no longer available",
+              body: "It may have been deleted, cancelled, or you may not have access to it.",
+              variant: "warning",
+            });
+          }
+        } catch (e) {
+          if (!cancelled) {
+            showToast({
+              title: "Couldn't load that item",
+              body: "Network error — try again in a moment.",
+              variant: "error",
+            });
+          }
+        }
+      }
+
       // Mark as resolved (or attempted) so we don't re-run on every
-      // subsequent items.length change. Setting this in both the
-      // success and the toast paths keeps stale ids from re-toasting.
-      if (resolved || toastedMissing) {
+      // subsequent items.length change. Setting this for any terminal
+      // outcome (match in list, hydrator success, hydrator 404, network
+      // error) keeps a stale id from re-toasting on every refetch.
+      if (!cancelled) {
         lastResolvedUrlIdRef.current = urlItemId;
       }
-      if (toastedMissing) {
-        showToast({
-          title: "This item is no longer available",
-          body: "It may have been deleted, cancelled, or moved out of your current view.",
-          variant: "warning",
-        });
-      }
     }, 0);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [urlItemId, items.length]);
 
   // Clear the highlight after 1.8s so it pulses briefly then fades.
@@ -529,10 +568,28 @@ export default function InboxPage() {
   }, [highlightedId]);
 
   // Sync URL query params whenever tab / page / selected id change.
-  // Uses replaceState (not pushState) so back-button doesn't get
+  // Uses replaceState (not pushState) so the back-button doesn't get
   // polluted with every selection change.
+  //
+  // CRITICAL: skip the very first invocation so the URL we navigated
+  // in with stays intact. Without this, the cold-start deep-link case
+  // (`/inbox?id=<uuid>` from a Priority Action click, a notification
+  // tap, or a CEO chat link) would have the `?id=` stripped on mount
+  // because `selected` is null until the URL → selection effect at
+  // line 447 has a chance to resolve it. The strip happens before
+  // items even finish loading, so by the time we try to find the
+  // deep-linked item, the URL no longer carries it.
+  //
+  // After the first render, this effect takes over URL ownership and
+  // syncs normally — selecting/deselecting in the UI updates the URL,
+  // so deep-linking and shareable URLs both work.
+  const didFirstUrlSyncRef = useRef(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!didFirstUrlSyncRef.current) {
+      didFirstUrlSyncRef.current = true;
+      return;
+    }
     const sp = new URLSearchParams();
     if (activeTab) sp.set("tab", activeTab);
     if (page > 1) sp.set("page", String(page));
