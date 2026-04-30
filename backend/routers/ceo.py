@@ -33,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from backend.config.loader import get_tenant_config
 from backend.services.chat_state import chat_sessions, session_locks
 from backend.services.supabase import get_db
 
