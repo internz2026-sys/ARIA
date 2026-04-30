@@ -49,3 +49,31 @@ body {
 .animate-slide-in-right {
   animation: slide-in-right 0.25s ease-out;
 }
+
+/* Themed thin scrollbar — replaces the chunky OS default with a track
+   that fits the dashboard's neutral palette. Used on horizontally
+   scrolling surfaces (CRM Deals Kanban, etc.) where a heavy gray
+   scrollbar visually fights with the rest of the UI. Firefox uses
+   the standard scrollbar-* properties; WebKit / Chromium needs the
+   pseudo-element selectors. */
+.aria-scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.aria-scroll-thin::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.aria-scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.aria-scroll-thin::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.aria-scroll-thin::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-secondary);
+  background-clip: padding-box;
+}

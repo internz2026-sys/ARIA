@@ -614,7 +614,11 @@ export default function CRMPage() {
           {dealLoading ? (
             <div className="p-8 text-center text-sm text-[#9E9C95]">Loading deals...</div>
           ) : (
-            <div className="flex flex-col md:flex-row gap-3 md:overflow-x-auto pb-4">
+            // Kanban scroll container. The themed thin-scrollbar utility
+            // class (defined in globals.css) replaces the chunky default
+            // scrollbar with a low-contrast track that matches the
+            // dashboard's neutral palette.
+            <div className="flex flex-col md:flex-row gap-3 md:overflow-x-auto pb-4 aria-scroll-thin">
               {DEAL_STAGES.map(stage => {
                 const stageDeals = deals.filter(d => d.stage === stage.key);
                 return (
