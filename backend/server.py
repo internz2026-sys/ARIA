@@ -625,6 +625,7 @@ from backend.routers.inbox import router as inbox_router
 from backend.routers.campaigns import router as campaigns_router
 from backend.routers.email import router as email_router
 from backend.routers.admin import router as admin_router
+from backend.routers.tasks import router as tasks_router
 # NOTE: backend/routers/paperclip.py was a webhook receiver for the HTTP
 # adapter experiment — we reverted to claude_local, so Paperclip never
 # calls our webhook anymore. The agents now POST results back to ARIA via
@@ -635,6 +636,7 @@ app.include_router(inbox_router)
 app.include_router(campaigns_router)
 app.include_router(email_router)
 app.include_router(admin_router)
+app.include_router(tasks_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -7579,15 +7581,7 @@ async def delete_chat_session(tenant_id: str, session_id: str):
 
 
 # ─── Project Tasks API ───
-@app.get("/api/tasks/{tenant_id}")
-async def list_tasks(tenant_id: str):
-    """List all tasks for a tenant, ordered by creation date."""
-    try:
-        sb = _get_supabase()
-        result = sb.table("tasks").select("*").eq("tenant_id", tenant_id).order("created_at", desc=True).execute()
-        return {"tasks": result.data}
-    except Exception as e:
-        return {"tasks": [], "error": str(e)}
+# Moved to backend/routers/tasks.py — see app.include_router(tasks_router) above.
 
 
 # ─── Stagnation Monitor / "Buried Task" API ───
@@ -7633,75 +7627,8 @@ async def snooze_stale_project(tenant_id: str, item_id: str, payload: dict = Bod
     return result
 
 
-class TaskUpdate(BaseModel):
-    status: str | None = None
-    priority: str | None = None
-
-
-@app.patch("/api/tasks/{task_id}")
-async def update_task(task_id: str, body: TaskUpdate):
-    """Update a task's status or priority. Syncs agent visual status in Virtual Office."""
-    sb = _get_supabase()
-    updates = {}
-    if body.status:
-        updates["status"] = body.status
-    if body.priority:
-        updates["priority"] = body.priority
-    if not updates:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-    # Fetch task details before updating (for status sync)
-    task_result = sb.table("tasks").select("agent,tenant_id,task").eq("id", task_id).execute()
-
-    sb.table("tasks").update(updates).eq("id", task_id).execute()
-
-    # Sync agent visual status with task status change
-    if body.status and task_result.data:
-        task = task_result.data[0]
-        agent_id = task["agent"]
-        tid = task["tenant_id"]
-        if body.status == "in_progress":
-            await _emit_agent_status(tid, agent_id, "working",
-                                     current_task=task.get("task", ""),
-                                     action="task_started")
-        elif body.status in ("done", "to_do", "backlog"):
-            # Only go idle if agent has no OTHER in_progress tasks
-            other = sb.table("tasks").select("id").eq(
-                "tenant_id", tid
-            ).eq("agent", agent_id).eq("status", "in_progress").neq(
-                "id", task_id
-            ).limit(1).execute()
-            if not other.data:
-                await _emit_agent_status(tid, agent_id, "idle",
-                                         action="task_status_changed")
-
-    return {"ok": True}
-
-
-@app.delete("/api/tasks/{task_id}")
-async def delete_task(task_id: str):
-    """Delete a task. If it was in_progress, sync agent back to idle."""
-    sb = _get_supabase()
-
-    # Fetch before deleting for status sync
-    task_result = sb.table("tasks").select("agent,tenant_id,status").eq("id", task_id).execute()
-
-    sb.table("tasks").delete().eq("id", task_id).execute()
-
-    # If deleted task was in_progress, check if agent has other active tasks
-    if task_result.data and task_result.data[0].get("status") == "in_progress":
-        task = task_result.data[0]
-        agent_id = task["agent"]
-        tid = task["tenant_id"]
-        other = sb.table("tasks").select("id").eq(
-            "tenant_id", tid
-        ).eq("agent", agent_id).eq("status", "in_progress").limit(1).execute()
-        if not other.data:
-            await _emit_agent_status(tid, agent_id, "idle",
-                                     action="task_deleted")
-
-    return {"ok": True}
+# PATCH /api/tasks/{task_id} + DELETE /api/tasks/{task_id} +
+# the TaskUpdate model moved to backend/routers/tasks.py.
 
 
 # ─── WebSocket for real-time chat ───
