@@ -3787,29 +3787,9 @@ async def cron_trigger():
 from backend.services.chat import parse_codeblock_json as _parse_codeblock_json
 
 
-def _safe_background(coro, *, label: str = "background"):
-    """Spawn an asyncio task with an error callback so silent crashes show
-    up in logs. Without this, exceptions raised inside _aio.create_task(...)
-    coroutines only surface at GC time as 'Task exception was never
-    retrieved' -- the user sees the chat reply but the inbox row never
-    arrives and there's no error in any log you'd think to check.
-    """
-    import asyncio as _aio
-    task = _aio.create_task(coro)
-
-    def _on_done(t: _aio.Task) -> None:
-        if t.cancelled():
-            return
-        exc = t.exception()
-        if exc is not None:
-            import traceback
-            logging.getLogger("aria.background").error(
-                "[%s] task crashed: %s\n%s",
-                label, exc, "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
-            )
-
-    task.add_done_callback(_on_done)
-    return task
+# _safe_background moved to backend/services/async_utils.py.
+# Aliased back so existing call sites keep working.
+from backend.services.async_utils import safe_background as _safe_background
 
 
 # Email parser helpers live in backend/services/email_parser.py. Aliases

@@ -34,6 +34,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.config.loader import get_tenant_config
+from backend.services.async_utils import safe_background as _safe_background
 from backend.services.chat_state import chat_sessions, session_locks
 from backend.services.supabase import get_db
 
@@ -656,7 +657,6 @@ async def _ceo_chat_impl(body: CEOChatMessage):
         _CRM_TRIGGER_PHRASES,
         _DELEGATE_BLOCK_RE,
         _ACTION_BLOCK_RE,
-        _safe_background,
         _emit_agent_status,
         _emit_scheduled_task_created,
         _get_supabase,
