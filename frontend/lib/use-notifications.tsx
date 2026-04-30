@@ -174,17 +174,92 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         fetchCounts();
       };
 
+      // Sub-agent finished work and dropped a draft into the inbox.
+      // High-signal "Social Manager finished" toast with click-through
+      // to the specific row (?highlight=<id> deep-links + flashes the
+      // row on the inbox page). Refetch counts so the sidebar action
+      // badge stays accurate.
+      const handleTaskCompleted = (payload: {
+        inbox_item_id: string;
+        agent: string;
+        agent_display_name?: string;
+        title: string;
+        type?: string;
+        status?: string;
+      }) => {
+        if (!payload?.inbox_item_id) return;
+        const agentLabel = payload.agent_display_name || payload.agent || "Agent";
+        const title = payload.title || "Draft ready";
+        const synthetic: Notification = {
+          id: `task-completed-${payload.inbox_item_id}`,
+          tenant_id: tenantId,
+          type: "task_completed",
+          category: "conversation",  // green left-border = success
+          title: `${agentLabel} finished`,
+          body: title,
+          // Reuse the existing ?id= URL param (notification bell uses
+          // the same one) — it auto-selects the row + opens the detail
+          // pane so the user effectively sees a highlighted draft.
+          href: `/inbox?id=${encodeURIComponent(payload.inbox_item_id)}`,
+          priority: "high",
+          is_read: true,
+          is_seen: true,
+          created_at: new Date().toISOString(),
+        };
+        addToast(synthetic);
+        fetchCounts();
+        if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+          new Notification(synthetic.title, {
+            body: synthetic.body || undefined,
+            icon: "/favicon.ico",
+            tag: synthetic.id,
+          });
+        }
+      };
+
+      // Long-running task heartbeat — fires once per stalled issue
+      // when it's been in todo/in_progress for >3min. Reassures the
+      // user without a loud high-priority bell ring.
+      const handleTaskStalled = (payload: {
+        agent?: string;
+        title?: string;
+        stalled_seconds?: number;
+      }) => {
+        const agentLabel = payload.agent
+          ? payload.agent.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
+          : "Agent";
+        const minutes = Math.max(3, Math.round((payload.stalled_seconds || 180) / 60));
+        const synthetic: Notification = {
+          id: `task-stalled-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          tenant_id: tenantId,
+          type: "task_stalled",
+          category: "status",  // grey left-border = neutral / informational
+          title: `${agentLabel} is still working`,
+          body: `Refining your draft — ${minutes} min in. Hang tight.`,
+          href: "",
+          priority: "low",
+          is_read: true,
+          is_seen: true,
+          created_at: new Date().toISOString(),
+        };
+        addToast(synthetic);
+      };
+
       socket.on("notification", handleNotification);
       socket.on("notifications_read", handleNotificationsRead);
       socket.on("inbox_new_item", handleInboxMutation);
       socket.on("inbox_item_updated", handleInboxMutation);
       socket.on("inbox_item_deleted", handleInboxMutation);
+      socket.on("task_completed", handleTaskCompleted);
+      socket.on("task_stalled", handleTaskStalled);
       return () => {
         socket.off("notification", handleNotification);
         socket.off("notifications_read", handleNotificationsRead);
         socket.off("inbox_new_item", handleInboxMutation);
         socket.off("inbox_item_updated", handleInboxMutation);
         socket.off("inbox_item_deleted", handleInboxMutation);
+        socket.off("task_completed", handleTaskCompleted);
+        socket.off("task_stalled", handleTaskStalled);
       };
     } catch {}
   }, [tenantId, fetchCounts]);

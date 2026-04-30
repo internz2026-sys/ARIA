@@ -410,7 +410,7 @@ async def _paperclip_office_sync_loop():
                 interval = FAST_INTERVAL  # always fast when reconnecting
                 empty_streak = 0
                 continue
-            imported = await poll_completed_issues()
+            imported = await poll_completed_issues(sio)
             status_changed = await sync_agent_statuses(sio)
             did_work = bool(imported) or bool(status_changed)
             if did_work:
@@ -1801,6 +1801,69 @@ async def _emit_scheduled_task_created(tenant_id: str, task: dict | None) -> Non
         pass
 
 
+# ── Agent-finished signal ─────────────────────────────────────────────────
+#
+# Emitted whenever a sub-agent's output finalizes into an inbox row
+# (transition from `processing` placeholder → `ready` / `needs_review` /
+# `draft_pending_approval`). Distinct from `inbox_new_item` / `inbox_item_
+# updated` — those are low-level CRUD events the inbox page uses to refresh
+# its list. `task_completed` is a higher-signal event the dashboard
+# layout subscribes to for the success toast ("Social Manager finished —
+# View Draft"), so we want exactly ONE emission per agent finish, not the
+# 2-3 inbox_item_updated emissions that fire during a placeholder upsert.
+#
+# The agent display name and item id give the toast everything it needs
+# to render + deep-link without a follow-up fetch.
+_AGENT_DISPLAY_NAMES: dict[str, str] = {
+    "ceo": "ARIA CEO",
+    "content_writer": "Content Writer",
+    "email_marketer": "Email Marketer",
+    "social_manager": "Social Manager",
+    "ad_strategist": "Ad Strategist",
+    "media": "Media Designer",
+}
+
+
+def _agent_display_name(slug: str) -> str:
+    if not slug:
+        return "Agent"
+    return _AGENT_DISPLAY_NAMES.get(slug) or slug.replace("_", " ").title()
+
+
+async def _emit_task_completed(
+    tenant_id: str,
+    *,
+    inbox_item_id: str,
+    agent_id: str,
+    title: str,
+    content_type: str,
+    status: str,
+) -> None:
+    """Emit a task_completed Socket.IO event so the dashboard can show
+    a "Social Manager finished — View Draft" toast and the Kanban widget
+    can move the row out of In Progress.
+
+    Best-effort — a socket hiccup never fails the underlying inbox
+    save. Skip emission for placeholders (status='processing') and for
+    media drafts, which use their own inbox_new_item emission flow."""
+    if not tenant_id or not inbox_item_id or not agent_id:
+        return
+    if status == "processing":
+        return  # placeholders are NOT completions
+    try:
+        await sio.emit("task_completed", {
+            "inbox_item_id": inbox_item_id,
+            "tenant_id": tenant_id,
+            "agent": agent_id,
+            "agent_display_name": _agent_display_name(agent_id),
+            "title": title or "Draft ready",
+            "type": content_type,
+            "status": status,
+        }, room=tenant_id)
+    except Exception as e:
+        logger.debug("[task_completed] socket emit failed: %s", e)
+
+
 @app.get("/api/schedule/{tenant_id}/tasks")
 async def list_scheduled_tasks(
     tenant_id: str,
@@ -3078,6 +3141,14 @@ async def run_agent(tenant_id: str, agent_name: str):
                 "status": "ready",
                 "created_at": saved.get("created_at", ""),
             }, room=tenant_id)
+            await _emit_task_completed(
+                tenant_id,
+                inbox_item_id=saved["id"],
+                agent_id=agent_name,
+                title=title,
+                content_type=content_type,
+                status="ready",
+            )
 
     return result
 
@@ -3142,6 +3213,14 @@ async def generate_media_image(tenant_id: str, payload: dict = Body(default={}))
                 "priority": inbox_row.get("priority", "medium"),
                 "created_at": inbox_row.get("created_at", ""),
             }, room=tenant_id)
+            await _emit_task_completed(
+                tenant_id,
+                inbox_item_id=inbox_row.get("id") or "",
+                agent_id="media",
+                title=inbox_row.get("title", ""),
+                content_type=inbox_row.get("type", "image"),
+                status=inbox_row.get("status", "ready"),
+            )
         except Exception:
             pass
 
@@ -4422,6 +4501,14 @@ async def _run_agent_to_inbox(
                 "status": item_status,
                 "priority": priority,
             }, room=tenant_id)
+            await _emit_task_completed(
+                tenant_id,
+                inbox_item_id=placeholder_id,
+                agent_id=agent_id,
+                title=title,
+                content_type=content_type,
+                status=item_status,
+            )
             n_type = "approval_needed" if item_status == "draft_pending_approval" else "inbox_new_item"
             # Deep-link the notification directly to this inbox row.
             # resource_type + resource_id is the universal shape; href
@@ -5264,6 +5351,14 @@ async def _dispatch_paperclip_and_watch_to_inbox(
                 "status": inbox_status,
                 "priority": priority,
             }, room=tenant_id)
+            await _emit_task_completed(
+                tenant_id,
+                inbox_item_id=placeholder_id,
+                agent_id=agent_id,
+                title=title,
+                content_type=content_type,
+                status=inbox_status,
+            )
             await _notify(
                 tenant_id, "inbox_new_item", title,
                 body=output[:200],

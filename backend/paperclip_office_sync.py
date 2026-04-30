@@ -68,6 +68,30 @@ _processed_issues: set[str] = set()
 _PROCESSED_ISSUES_MAX = 5000
 
 
+# ─── Stall detection ────────────────────────────────────────────────────────
+# Tracks the first time we saw each unfinished issue + which issues we've
+# already alerted about being stalled. Both are bounded — issues that hit
+# `_processed_issues` get cleaned up on next stall pass.
+_issue_first_seen_at: dict[str, float] = {}
+_stalled_alerted: set[str] = set()
+_STALL_THRESHOLD_SECONDS = 180  # 3 minutes per spec
+
+
+# Statuses where the agent is still working / not yet finished. Used by
+# stall detection — we only alert on issues stuck in these states. Tied
+# to Paperclip's status vocabulary; updated alongside _UNFINISHED if
+# new states are added.
+_IN_PROGRESS_STATUSES = ("backlog", "todo", "to_do", "in_progress", "in-progress", "running")
+
+
+def _drop_from_stall_tracking(issue_id: str) -> None:
+    """Drop an issue from the stall-tracking dicts. Called when an issue
+    finishes or otherwise leaves the in_progress states so the dicts
+    don't grow unbounded over the process lifetime."""
+    _issue_first_seen_at.pop(issue_id, None)
+    _stalled_alerted.discard(issue_id)
+
+
 def _add_processed(issue_id: str) -> None:
     """Add an issue id to the processed set, evicting if over cap."""
     if len(_processed_issues) >= _PROCESSED_ISSUES_MAX:
@@ -86,6 +110,9 @@ def _add_processed(issue_id: str) -> None:
     # this line too and turned it into infinite recursion. Easy mistake
     # to repeat. Don't.
     _processed_issues.add(issue_id)
+    # Issue is finalized -> drop it from stall tracking so the dicts
+    # stay bounded over the process lifetime.
+    _drop_from_stall_tracking(issue_id)
 
 
 # Statuses Paperclip uses to mean "the agent finished its work"
@@ -223,7 +250,7 @@ def _load_processed_ids_from_db():
         logger.debug(f"Could not seed processed IDs (column may not exist): {e}")
 
 
-async def poll_completed_issues() -> int:
+async def poll_completed_issues(sio=None) -> int:
     """Check Paperclip for completed agent issues and import results to ARIA inbox.
 
     Hot path: this runs every 5 seconds (or 30s in idle mode). The in-memory
@@ -231,10 +258,18 @@ async def poll_completed_issues() -> int:
     cycle for known IDs); the DB existence check is the cold-start safety
     net for restarts.
 
+    `sio` (optional) — if provided, this function also emits `task_stalled`
+    Socket.IO events for issues that have been stuck in todo / in_progress
+    for more than _STALL_THRESHOLD_SECONDS (3min). Each issue is alerted
+    at most once per process lifetime. Without sio the stall detection is
+    skipped (legacy callers).
+
     Returns the number of new inbox rows imported on this tick. The
     background loop uses this to decide whether to back off the polling
     interval (no work for N consecutive cycles -> 30s).
     """
+    import time as _time
+
     company_id = get_company_id()
     if not company_id:
         return 0
@@ -251,6 +286,7 @@ async def poll_completed_issues() -> int:
 
     # Diagnostic counters so silent skips show up in summary log lines
     finished = imported = skipped_no_tenant = skipped_no_output = 0
+    now_ts = _time.time()
 
     for issue in issue_list:
         issue_id = issue.get("id", "")
@@ -261,6 +297,36 @@ async def poll_completed_issues() -> int:
 
         if _is_finished(status):
             finished += 1
+            # Cleanup: a finished issue can't be stalled. Drop its
+            # first-seen entry so the dict stays bounded over time.
+            _issue_first_seen_at.pop(issue_id, None)
+
+        # Stall detection — runs BEFORE the processed/finished short-
+        # circuits below so a stalled-but-still-running issue surfaces
+        # even when the processed set is large.
+        if sio is not None and issue_id and not _is_finished(status) and not _is_failed(status):
+            if (status or "").lower() in _IN_PROGRESS_STATUSES:
+                first_seen = _issue_first_seen_at.setdefault(issue_id, now_ts)
+                age = now_ts - first_seen
+                if age >= _STALL_THRESHOLD_SECONDS and issue_id not in _stalled_alerted:
+                    tenant_id = _extract_tenant_id(issue)
+                    if tenant_id:
+                        agent_name = _extract_agent_name(issue)
+                        try:
+                            await sio.emit("task_stalled", {
+                                "paperclip_issue_id": issue_id,
+                                "tenant_id": tenant_id,
+                                "agent": agent_name,
+                                "title": title[:200],
+                                "stalled_seconds": int(age),
+                            }, room=tenant_id)
+                            _stalled_alerted.add(issue_id)
+                            logger.warning(
+                                "[poller] stall alert: agent=%s tenant=%s age=%ds title=%s",
+                                agent_name, tenant_id, int(age), title[:60],
+                            )
+                        except Exception as e:
+                            logger.debug("[poller] task_stalled emit failed: %s", e)
 
         if issue_id in _processed_issues:
             continue
