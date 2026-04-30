@@ -626,6 +626,7 @@ from backend.routers.campaigns import router as campaigns_router
 from backend.routers.email import router as email_router
 from backend.routers.admin import router as admin_router
 from backend.routers.tasks import router as tasks_router
+from backend.routers.ceo import router as ceo_router
 # NOTE: backend/routers/paperclip.py was a webhook receiver for the HTTP
 # adapter experiment — we reverted to claude_local, so Paperclip never
 # calls our webhook anymore. The agents now POST results back to ARIA via
@@ -637,6 +638,7 @@ app.include_router(campaigns_router)
 app.include_router(email_router)
 app.include_router(admin_router)
 app.include_router(tasks_router)
+app.include_router(ceo_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -7382,130 +7384,13 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     return response_data
 
 
-@app.get("/api/ceo/chat/{session_id}/history")
-async def ceo_chat_history(session_id: str):
-    """Get chat history for a session — loads from DB."""
-    # Check in-memory cache first
-    if session_id in _chat_sessions and _chat_sessions[session_id]:
-        return {"session_id": session_id, "messages": _chat_sessions[session_id]}
-    # Load from DB
-    try:
-        sb = _get_supabase()
-        result = sb.table("chat_messages").select("role,content,delegations").eq("session_id", session_id).order("created_at").execute()
-        messages = [{"role": r["role"], "content": r["content"], "delegations": r.get("delegations", [])} for r in result.data]
-        if messages:
-            _chat_sessions[session_id] = messages
-        return {"session_id": session_id, "messages": messages}
-    except Exception:
-        return {"session_id": session_id, "messages": []}
-
-
-@app.get("/api/ceo/chat/sessions/{tenant_id}")
-async def list_chat_sessions(tenant_id: str):
-    """List all chat sessions for a tenant, newest first."""
-    try:
-        sb = _get_supabase()
-        result = sb.table("chat_sessions").select("id,title,created_at,updated_at").eq("tenant_id", tenant_id).order("updated_at", desc=True).execute()
-        return {"sessions": result.data}
-    except Exception:
-        return {"sessions": []}
-
-
-class BulkDeleteSessionsRequest(BaseModel):
-    session_ids: list[str]
-
-
-@app.post("/api/ceo/chat/sessions/{tenant_id}/bulk-delete")
-async def bulk_delete_chat_sessions(tenant_id: str, body: BulkDeleteSessionsRequest):
-    """Bulk-delete multiple chat sessions in a single Supabase round-trip.
-
-    Uses `.in_("id", session_ids)` so the whole operation is one DELETE
-    regardless of how many rows are being removed. chat_messages cascade
-    via the existing ON DELETE CASCADE FK.
-
-    Tenant-scoped: the query filters by tenant_id so a caller can't
-    delete sessions that don't belong to them even if they guessed the
-    ids. Idempotent on "already gone" — the response reports the count
-    of rows that actually matched at delete-time so the UI can show
-    accurate feedback.
-    """
-    sb = _get_supabase()
-    ids = [sid for sid in (body.session_ids or []) if isinstance(sid, str) and sid]
-    if not ids:
-        return {"ok": True, "deleted": 0}
-
-    # Verify every id we're about to delete belongs to this tenant.
-    # Filter the incoming ids down to the ones that actually match,
-    # then run the DELETE against that safe list. That way a forged id
-    # for another tenant is silently dropped (not 403'd) so a bulk
-    # request with one bad id still processes the good ones.
-    owned = (
-        sb.table("chat_sessions")
-        .select("id")
-        .eq("tenant_id", tenant_id)
-        .in_("id", ids)
-        .execute()
-    )
-    safe_ids = [r["id"] for r in (owned.data or [])]
-    if not safe_ids:
-        return {"ok": True, "deleted": 0}
-
-    sb.table("chat_sessions").delete().in_("id", safe_ids).execute()
-
-    # Drop in-memory session state for deleted sessions.
-    for sid in safe_ids:
-        try:
-            _chat_sessions.pop(sid, None)
-            _chat_session_locks.pop(sid, None)
-        except Exception:
-            pass
-
-    return {"ok": True, "deleted": len(safe_ids), "deleted_ids": safe_ids}
-
-
-@app.delete("/api/ceo/chat/sessions/{tenant_id}/{session_id}")
-async def delete_chat_session(tenant_id: str, session_id: str):
-    """Hard-delete a CEO chat session.
-
-    The chat_messages table has ON DELETE CASCADE on its session_id
-    foreign key (see backend/sql/create_chat_tables.sql), so dropping
-    the session row also drops every message attached to it. No
-    orphan messages are left behind.
-
-    Scoped by tenant_id so a caller can't delete another tenant's
-    session even if they guessed the session_id. Also clears any
-    in-process chat lock for that session_id so the next fresh
-    session can take its slot without a stale mutex.
-    """
-    sb = _get_supabase()
-
-    # Verify tenant ownership before deleting — session_ids are tenant-
-    # prefixed (`chat_{tenant_id}_{ts}`) but we still double-check.
-    row = (
-        sb.table("chat_sessions")
-        .select("id,tenant_id")
-        .eq("id", session_id)
-        .limit(1)
-        .execute()
-    )
-    if not row.data:
-        # Idempotent: if the row is already gone, treat as success so
-        # double-clicks from the UI don't surface a 404.
-        return {"ok": True, "deleted": 0}
-    if row.data[0].get("tenant_id") != tenant_id:
-        raise HTTPException(status_code=403, detail="Tenant mismatch")
-
-    sb.table("chat_sessions").delete().eq("id", session_id).execute()
-
-    # Drop the in-memory session lock + history for this session so the
-    # backend doesn't keep stale state around after the DB row is gone.
-    try:
-        _chat_sessions.pop(session_id, None)
-        _chat_session_locks.pop(session_id, None)
-    except Exception:
-        pass
-
-    return {"ok": True, "deleted": 1}
+# GET /api/ceo/chat/{session_id}/history
+# GET /api/ceo/chat/sessions/{tenant_id}
+# POST /api/ceo/chat/sessions/{tenant_id}/bulk-delete
+# DELETE /api/ceo/chat/sessions/{tenant_id}/{session_id}
+# All moved to backend/routers/ceo.py — see app.include_router(ceo_router) above.
+# (POST /api/ceo/chat — the chat handler itself — still lives in this file
+#  pending slice 4c which will move it alongside the read endpoints.)
 
 
 # ─── Project Tasks API ───
