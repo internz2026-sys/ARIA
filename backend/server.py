@@ -5415,50 +5415,20 @@ async def ceo_execute_action(tenant_id: str, body: CEOActionRequest):
 
 
 # ─── CEO Chat ───
-import pathlib as _pathlib
-
-_AGENTS_DIR = _pathlib.Path(__file__).resolve().parent.parent / "docs" / "agents"
-_CEO_MD_FULL = (_AGENTS_DIR / "ceo.md").read_text(encoding="utf-8")
-_CEO_MD = _CEO_MD_FULL[:4000]  # Need enough to include all delegation rules + sub-agent list. Prompt caching keeps cost low on repeat calls.
-# Sub-agent role MDs — used by the CEO chat handler to build a one-line
-# capabilities cheat sheet on the FIRST chat turn only (see _build_sub_agent_context).
-# Skill MDs are NOT loaded here — BaseAgent.run() loads them per-agent at
-# runtime via backend.agents.base._load_agent_skill().
-_AGENT_MDS = {}
-for _f in _AGENTS_DIR.glob("*.md"):
-    if _f.stem != "ceo":
-        _AGENT_MDS[_f.stem] = _f.read_text(encoding="utf-8")
-
-# Shared `re` alias for all module-level compiled patterns below. Imported
-# once under a short name so the pre-compiled regex blocks don't each need
-# their own import line. Kept at module scope because these patterns run on
-# every CEO chat call.
-import re as _re_crm
-
-# Pre-compiled regex patterns for CEO chat delegate/action block parsing.
-# Compiling these per-request is cheap but not free, and the chat handler
-# is the hottest non-streaming endpoint. Module-level wins about 50us per
-# call without changing semantics.
-_DELEGATE_BLOCK_RE = _re_crm.compile(r"```delegate\s*\n(.*?)\n```", _re_crm.DOTALL)
-_ACTION_BLOCK_RE = _re_crm.compile(r"```action\s*\n(.*?)\n```", _re_crm.DOTALL)
-
-# CRM context heuristic — module-level regexes (compiled once, not per request)
-# so the CEO chat handler can decide in O(1) whether to inject the CRM block.
-# Word-boundary matching avoids substring false positives ("ideal"→"deal",
-# "leader"→"lead", "calling"→"call").
-_CRM_TRIGGER_PHRASES = (
-    "send email to", "reach out to", "follow up with",
-    "the contact", "this contact", "all contacts", "my contacts",
-    "the company", "this company", "all companies", "my companies",
-    "the deal", "this deal", "all deals", "my deals",
-    "the lead", "this lead", "all leads", "my leads",
-    "crm",
-)
-_CRM_NOUN_RE = _re_crm.compile(
-    r"\b(contacts?|compan(?:y|ies)|deals?|leads?|prospects?|pipelines?)\b"
-)
-_CRM_VERB_RE = _re_crm.compile(
-    r"\b(create|add|update|delete|remove|find|show|list|search|email|call)\b"
+# CEO prompt-time constants moved to backend/services/ceo_prompt.py so
+# routers/ceo.py can import them directly without the lazy-import dance.
+# Aliased back to underscore-prefixed names so existing in-file references
+# (build_sub_agent_context, the chat handler's CRM heuristic, etc.) keep
+# working unchanged.
+from backend.services.ceo_prompt import (
+    CEO_MD as _CEO_MD,
+    CEO_MD_FULL as _CEO_MD_FULL,
+    AGENT_MDS as _AGENT_MDS,
+    DELEGATE_BLOCK_RE as _DELEGATE_BLOCK_RE,
+    ACTION_BLOCK_RE as _ACTION_BLOCK_RE,
+    CRM_TRIGGER_PHRASES as _CRM_TRIGGER_PHRASES,
+    CRM_NOUN_RE as _CRM_NOUN_RE,
+    CRM_VERB_RE as _CRM_VERB_RE,
 )
 
 # Chat session state — cache + per-session locks + eviction live in

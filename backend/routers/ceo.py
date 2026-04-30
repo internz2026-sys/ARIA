@@ -35,6 +35,15 @@ from pydantic import BaseModel
 
 from backend.config.loader import get_tenant_config
 from backend.services.async_utils import safe_background as _safe_background
+from backend.services.ceo_prompt import (
+    CEO_MD as _CEO_MD,
+    AGENT_MDS as _AGENT_MDS,
+    DELEGATE_BLOCK_RE as _DELEGATE_BLOCK_RE,
+    ACTION_BLOCK_RE as _ACTION_BLOCK_RE,
+    CRM_TRIGGER_PHRASES as _CRM_TRIGGER_PHRASES,
+    CRM_NOUN_RE as _CRM_NOUN_RE,
+    CRM_VERB_RE as _CRM_VERB_RE,
+)
 from backend.services.chat_state import chat_sessions, session_locks
 from backend.services.supabase import get_db
 
@@ -649,14 +658,7 @@ async def _ceo_chat_impl(body: CEOChatMessage):
     # has fully loaded so the imports resolve.
     from backend.server import (
         sio,
-        _CEO_MD,
         _CEO_ACTION_DESCRIPTIONS,
-        _AGENT_MDS,
-        _CRM_NOUN_RE,
-        _CRM_VERB_RE,
-        _CRM_TRIGGER_PHRASES,
-        _DELEGATE_BLOCK_RE,
-        _ACTION_BLOCK_RE,
         _emit_agent_status,
         _emit_scheduled_task_created,
         _get_supabase,
