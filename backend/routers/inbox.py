@@ -19,6 +19,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from backend.services import inbox as inbox_service
+from backend.services.realtime import sio, emit_task_completed as _emit_task_completed
 from backend.services.supabase import get_db
 
 logger = logging.getLogger("aria.routers.inbox")
@@ -490,10 +491,6 @@ async def _cleanup_media_placeholder(tenant_id: str, keep_id: str | None) -> Non
     if not tenant_id:
         return
     try:
-        from backend.server import sio  # lazy — server.py owns sio
-    except Exception:
-        sio = None  # type: ignore[assignment]
-    try:
         sb = get_db()
         q = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).eq(
             "agent", "media"
@@ -509,11 +506,10 @@ async def _cleanup_media_placeholder(tenant_id: str, keep_id: str | None) -> Non
                 sb.table("inbox_items").delete().eq("id", pid).execute()
             except Exception:
                 continue
-            if sio is not None:
-                try:
-                    await sio.emit("inbox_item_deleted", {"id": pid}, room=tenant_id)
-                except Exception:
-                    pass
+            try:
+                await sio.emit("inbox_item_deleted", {"id": pid}, room=tenant_id)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -540,16 +536,14 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     currently send paperclip_issue_id, but we accept it for the future
     when the skill MD is updated.
     """
-    # Lazy imports — these helpers still live in server.py. Importing
-    # at module load time would create a circular import (server.py
-    # imports this router on startup).
+    # sio + _emit_task_completed already imported at module top from
+    # services/realtime.py. The remaining four still live in server.py
+    # pending future helper-extraction work.
     from backend.server import (
-        sio,
         _canon_agent_slug,
         _sanitize_social_post_text,
         _parse_email_draft_from_text,
         _parse_social_drafts_from_text,
-        _emit_task_completed,
     )
 
     sb = get_db()

@@ -70,8 +70,15 @@ _allowed_origins = [
     "https://aria-alpha-weld.vercel.app",
 ]
 
-# Socket.IO for real-time events
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+# Socket.IO singleton + the stateless emit helpers live in
+# backend/services/realtime.py so any router can import them normally
+# without circular-load workarounds. Re-exported under their original
+# names so existing in-file references keep working.
+from backend.services.realtime import (
+    sio,
+    emit_task_completed as _emit_task_completed,
+    agent_display_name as _agent_display_name,
+)
 
 
 def _require_confirmation(action: str, confirmed: bool, message: str) -> dict | None:
@@ -1779,67 +1786,9 @@ async def _emit_scheduled_task_created(tenant_id: str, task: dict | None) -> Non
         pass
 
 
-# ── Agent-finished signal ─────────────────────────────────────────────────
-#
-# Emitted whenever a sub-agent's output finalizes into an inbox row
-# (transition from `processing` placeholder → `ready` / `needs_review` /
-# `draft_pending_approval`). Distinct from `inbox_new_item` / `inbox_item_
-# updated` — those are low-level CRUD events the inbox page uses to refresh
-# its list. `task_completed` is a higher-signal event the dashboard
-# layout subscribes to for the success toast ("Social Manager finished —
-# View Draft"), so we want exactly ONE emission per agent finish, not the
-# 2-3 inbox_item_updated emissions that fire during a placeholder upsert.
-#
-# The agent display name and item id give the toast everything it needs
-# to render + deep-link without a follow-up fetch.
-_AGENT_DISPLAY_NAMES: dict[str, str] = {
-    "ceo": "ARIA CEO",
-    "content_writer": "Content Writer",
-    "email_marketer": "Email Marketer",
-    "social_manager": "Social Manager",
-    "ad_strategist": "Ad Strategist",
-    "media": "Media Designer",
-}
-
-
-def _agent_display_name(slug: str) -> str:
-    if not slug:
-        return "Agent"
-    return _AGENT_DISPLAY_NAMES.get(slug) or slug.replace("_", " ").title()
-
-
-async def _emit_task_completed(
-    tenant_id: str,
-    *,
-    inbox_item_id: str,
-    agent_id: str,
-    title: str,
-    content_type: str,
-    status: str,
-) -> None:
-    """Emit a task_completed Socket.IO event so the dashboard can show
-    a "Social Manager finished — View Draft" toast and the Kanban widget
-    can move the row out of In Progress.
-
-    Best-effort — a socket hiccup never fails the underlying inbox
-    save. Skip emission for placeholders (status='processing') and for
-    media drafts, which use their own inbox_new_item emission flow."""
-    if not tenant_id or not inbox_item_id or not agent_id:
-        return
-    if status == "processing":
-        return  # placeholders are NOT completions
-    try:
-        await sio.emit("task_completed", {
-            "inbox_item_id": inbox_item_id,
-            "tenant_id": tenant_id,
-            "agent": agent_id,
-            "agent_display_name": _agent_display_name(agent_id),
-            "title": title or "Draft ready",
-            "type": content_type,
-            "status": status,
-        }, room=tenant_id)
-    except Exception as e:
-        logger.debug("[task_completed] socket emit failed: %s", e)
+# _AGENT_DISPLAY_NAMES, _agent_display_name, _emit_task_completed all
+# moved to backend/services/realtime.py. Aliased above so call sites
+# in this file keep working.
 
 
 @app.get("/api/schedule/{tenant_id}/tasks")

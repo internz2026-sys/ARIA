@@ -35,6 +35,7 @@ from pydantic import BaseModel
 
 from backend.config.loader import get_tenant_config
 from backend.services.async_utils import safe_background as _safe_background
+from backend.services.realtime import sio
 from backend.services.ceo_prompt import (
     CEO_MD as _CEO_MD,
     AGENT_MDS as _AGENT_MDS,
@@ -657,7 +658,6 @@ async def _ceo_chat_impl(body: CEOChatMessage):
     # router on app startup). By the time this handler runs, server.py
     # has fully loaded so the imports resolve.
     from backend.server import (
-        sio,
         _CEO_ACTION_DESCRIPTIONS,
         _emit_agent_status,
         _emit_scheduled_task_created,
