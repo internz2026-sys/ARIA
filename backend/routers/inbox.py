@@ -1,10 +1,27 @@
-"""Inbox Router — inbox items listing, updates, deletion."""
+"""Inbox Router — inbox items listing, updates, deletion + the
+agent-skill curl create endpoint.
+
+Slice 5 of the multi-batch refactor (2026-04-30): consolidated the
+inline POST /api/inbox/{tenant_id}/items handler from server.py into
+this router along with its three companion helpers
+(_looks_like_confirmation_message, _is_duplicate_media_write,
+_merge_into_recent_social_row, _cleanup_media_placeholder). server.py
+shrinks by ~500 lines; behavior is unchanged.
+"""
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Request
+from pydantic import BaseModel
 
 from backend.services import inbox as inbox_service
 from backend.services.supabase import get_db
+
+logger = logging.getLogger("aria.routers.inbox")
 
 router = APIRouter(tags=["Inbox"])
 
@@ -263,3 +280,529 @@ async def restore_inbox_item(item_id: str):
         "metadata": new_md,
     }).eq("id", item_id).execute()
     return {"restored": item_id, "status": restored_to}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# POST /api/inbox/{tenant_id}/items — agent skill-curl create endpoint
+# ──────────────────────────────────────────────────────────────────────────
+#
+# Migrated from server.py in slice 5 (2026-04-30) along with its companion
+# helpers below. All logic behavior is preserved verbatim — only the file
+# location moved.
+#
+# Cross-module touchpoints (lazy-imported inside handler/helpers to avoid
+# circular imports at module load time):
+#   - sio (Socket.IO instance) lives in server.py
+#   - _canon_agent_slug, _sanitize_social_post_text,
+#     _parse_email_draft_from_text, _parse_social_drafts_from_text
+#     all live in server.py and stay there pending future helper-extraction
+#     slices
+
+class CreateInboxItem(BaseModel):
+    title: str
+    content: str
+    type: str = "blog"
+    agent: str = "content_writer"
+    priority: str = "medium"
+    status: str = "needs_review"
+    email_draft: dict | None = None
+    paperclip_issue_id: str | None = None
+
+
+def _looks_like_confirmation_message(content: str) -> bool:
+    """True if the incoming content is an agent's "saved!" status message.
+
+    These show up as SECOND inbox writes right after the agent's real
+    content — rejecting them prevents duplicate rows with text like
+    "✅ Email draft saved to ARIA Inbox" cluttering the inbox next to
+    the actual email they're confirming.
+    """
+    text = (content or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "saved to aria inbox" in text
+        or "saved to inbox" in text
+        or "successfully saved" in text
+        or "draft created and saved" in text
+        or "draft id:" in text
+        or text.startswith((
+            "✅",
+            ":white_check_mark:",
+            "[saved]",
+            "[done]",
+            "## task complete",
+            "## email draft complete",
+            "email draft created",
+        ))
+    )
+
+
+def _is_duplicate_media_write(tenant_id: str, body: "CreateInboxItem") -> bool:
+    """Reject duplicate media writes from the legacy aria-backend-api skill.
+
+    When the Media Designer agent has both the new instructions AND the old
+    aria-backend-api skill enabled, it hits TWO endpoints per image request:
+    /api/media/.../generate (creates the canonical row with the rendered PNG)
+    and /api/inbox/.../items (creates a text summary). The second is noise.
+
+    If a media row for this tenant was created in the last 60s, treat any
+    new media POST to /api/inbox/ as a duplicate. The 60s window is wide
+    enough to cover Pollinations latency + agent reply lag, narrow enough
+    that legitimate back-to-back requests still go through.
+    """
+    if body.agent != "media":
+        return False
+    try:
+        sb = get_db()
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        existing = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).eq(
+            "agent", "media"
+        ).neq("status", "processing").gte("created_at", cutoff).limit(1).execute()
+        return bool(existing.data)
+    except Exception:
+        return False
+
+
+def _merge_into_recent_social_row(tenant_id: str, body: "CreateInboxItem") -> dict | None:
+    """Merge a new social_post into a recent social_post row for the
+    same tenant+agent, if one exists within the last 90 seconds.
+
+    Agents sometimes split platforms into multiple POSTs (one for X,
+    one for LinkedIn, one for Facebook). The frontend's platform-card
+    UI only renders when all platforms live in one row's `content`
+    JSON posts array. This helper finds the existing row and appends
+    the incoming platforms to its posts array — no duplicate rows,
+    all platforms render as cards inside a single inbox entry.
+
+    Returns the updated row dict on successful merge, or None when
+    no recent row exists and the caller should proceed with a normal
+    insert.
+    """
+    try:
+        sb = get_db()
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+        recent = (
+            sb.table("inbox_items")
+            .select("id, content, title, status")
+            .eq("tenant_id", tenant_id)
+            .eq("agent", "social_manager")
+            .eq("type", "social_post")
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not recent.data:
+            return None
+        existing = recent.data[0]
+    except Exception as e:
+        logger.debug("[social-merge] recent-row lookup failed: %s", e)
+        return None
+
+    def _extract_posts(text: str) -> list[dict]:
+        if not text:
+            return []
+        try:
+            s = text.find("{")
+            e = text.rfind("}") + 1
+            if s >= 0 and e > s:
+                data = json.loads(text[s:e])
+                posts = data.get("posts") or []
+                if isinstance(posts, list):
+                    return [p for p in posts if isinstance(p, dict)]
+        except Exception:
+            pass
+        try:
+            s = text.find("[")
+            e = text.rfind("]") + 1
+            if s >= 0 and e > s:
+                parsed = json.loads(text[s:e])
+                if isinstance(parsed, list):
+                    return [p for p in parsed if isinstance(p, dict)]
+        except Exception:
+            pass
+        return []
+
+    existing_posts = _extract_posts(existing.get("content") or "")
+    new_posts = _extract_posts(body.content or "")
+    if not new_posts:
+        return None
+
+    # Merge by platform (case-insensitive). New platform text wins
+    # when both rows have the same platform (latest data is freshest).
+    by_platform: dict[str, dict] = {}
+    for p in existing_posts:
+        plat = (p.get("platform") or "").lower() or "unknown"
+        by_platform[plat] = p
+    for p in new_posts:
+        plat = (p.get("platform") or "").lower() or "unknown"
+        by_platform[plat] = p
+    merged_posts = list(by_platform.values())
+
+    merged_content = json.dumps({
+        "action": "adapt_content",
+        "posts": merged_posts,
+    })
+
+    title = existing.get("title") or body.title
+    if title and any(t in title.lower() for t in (
+        "linkedin post:", "twitter post:", "x post:", "facebook post:",
+    )):
+        for prefix in ("LinkedIn Post:", "Twitter Post:", "X Post:", "Facebook Post:"):
+            if title.lower().startswith(prefix.lower()):
+                title = "Social posts:" + title[len(prefix):]
+                break
+
+    try:
+        sb = get_db()
+        updated = (
+            sb.table("inbox_items")
+            .update({
+                "content": merged_content,
+                "title": title,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            .eq("id", existing["id"])
+            .execute()
+        )
+        logger.info(
+            "[social-merge] merged %d new platforms into row %s (total platforms: %d)",
+            len(new_posts), existing["id"], len(merged_posts),
+        )
+        if updated.data:
+            return updated.data[0]
+        return existing
+    except Exception as e:
+        logger.warning("[social-merge] merge update failed: %s", e)
+        return None
+
+
+async def _cleanup_media_placeholder(tenant_id: str, keep_id: str | None) -> None:
+    """Delete any 'processing' media inbox row for this tenant other than keep_id.
+
+    Called whenever a finished media row is written via either path
+    (/api/media/.../generate or /api/inbox/.../items) so the user doesn't
+    see a stale 'Media is working on...' placeholder lingering after the
+    real image arrives. Emits inbox_item_deleted so the frontend updates
+    in real time.
+    """
+    if not tenant_id:
+        return
+    try:
+        from backend.server import sio  # lazy — server.py owns sio
+    except Exception:
+        sio = None  # type: ignore[assignment]
+    try:
+        sb = get_db()
+        q = sb.table("inbox_items").select("id").eq("tenant_id", tenant_id).eq(
+            "agent", "media"
+        ).eq("status", "processing")
+        if keep_id:
+            q = q.neq("id", keep_id)
+        rows = q.execute().data or []
+        for r in rows:
+            pid = r.get("id")
+            if not pid:
+                continue
+            try:
+                sb.table("inbox_items").delete().eq("id", pid).execute()
+            except Exception:
+                continue
+            if sio is not None:
+                try:
+                    await sio.emit("inbox_item_deleted", {"id": pid}, room=tenant_id)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+@router.post("/api/inbox/{tenant_id}/items")
+async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
+    """Create an inbox item — used by Paperclip agents to store their output.
+
+    Two paths can hit this endpoint:
+      1. The agent's aria-backend-api skill curl from inside Paperclip
+         (the agent's own POST after generating content)
+      2. The watcher's _save_inbox_item fallback when its placeholder
+         update fails
+
+    For path 1, the agent rarely populates email_draft itself, so we
+    parse the content here for the same email/social structured fields
+    the watcher extracts. This is what makes the Approve & Send /
+    Publish to X / Publish to LinkedIn buttons render in the inbox
+    regardless of which write path created the row.
+
+    Dedupe: if paperclip_issue_id is provided AND a row already exists
+    for that issue (created by the watcher's placeholder), we UPDATE
+    that row instead of creating a duplicate. The agent doesn't
+    currently send paperclip_issue_id, but we accept it for the future
+    when the skill MD is updated.
+    """
+    # Lazy imports — these helpers still live in server.py. Importing
+    # at module load time would create a circular import (server.py
+    # imports this router on startup).
+    from backend.server import (
+        sio,
+        _canon_agent_slug,
+        _sanitize_social_post_text,
+        _parse_email_draft_from_text,
+        _parse_social_drafts_from_text,
+        _emit_task_completed,
+    )
+
+    sb = get_db()
+
+    # ── Pre-insert gates ──────────────────────────────────────────────
+    if _looks_like_confirmation_message(body.content):
+        logger.info(
+            "[inbox-create] rejecting confirmation/status message from %s "
+            "(content=%r)", body.agent, (body.content or "")[:120],
+        )
+        return {"item": None, "skipped": "confirmation_message"}
+
+    if _is_duplicate_media_write(tenant_id, body):
+        return {"item": None, "skipped": "duplicate_media_write"}
+
+    # Normalize agent slug
+    body.agent = _canon_agent_slug(body.agent) or body.agent
+
+    # Strip agent meta-commentary
+    sanitized = _sanitize_social_post_text(body.content or "")
+    if sanitized and sanitized != body.content:
+        body.content = sanitized
+
+    # Social-post merge-window dedup
+    if body.agent == "social_manager" and body.type == "social_post":
+        merged = _merge_into_recent_social_row(tenant_id, body)
+        if merged:
+            return {"item": merged, "merged": True}
+
+    title = body.title
+    content_type = body.type
+    status = body.status
+    email_draft = body.email_draft
+
+    if body.agent == "email_marketer":
+        parsed = _parse_email_draft_from_text(body.content)
+        if parsed:
+            if email_draft:
+                merged = dict(parsed)
+                for k, v in email_draft.items():
+                    if not v:
+                        continue
+                    if k == "subject" and isinstance(v, str) and v.lstrip().startswith("<"):
+                        continue
+                    if k == "to" and isinstance(v, str) and (v.startswith("<") or "font" in v.lower()):
+                        continue
+                    merged[k] = v
+                email_draft = merged
+            else:
+                email_draft = parsed
+            content_type = "email_sequence"
+            status = "draft_pending_approval"
+            parsed_subject = email_draft.get("subject", "") if email_draft else ""
+            subject_is_clean = (
+                parsed_subject
+                and parsed_subject != "Untitled email"
+                and not parsed_subject.lstrip().startswith("<")
+            )
+            if subject_is_clean:
+                if not title or title.lower().startswith(("draft", "marketing email", "email", "untitled")):
+                    title = f"Email: {parsed_subject}"
+
+    # Ad Strategist [GRAPH_DATA] block rendering — same hook the watcher
+    # path runs. Failures are silent: malformed JSON / missing storage
+    # bucket / matplotlib hiccup all leave the original block in place.
+    if body.agent == "ad_strategist" and isinstance(body.content, str) and "[GRAPH_DATA]" in body.content.upper():
+        try:
+            from backend.services.visualizer import process_ad_strategist_text
+            transformed = process_ad_strategist_text(tenant_id, body.content)
+            if transformed != body.content:
+                body.content = transformed
+        except Exception as e:
+            logger.debug("[create_inbox_item] ad_strategist chart render skipped: %s", e)
+
+    if body.agent in ("content_writer", "social_manager"):
+        social = _parse_social_drafts_from_text(body.content)
+        if social or any(k in body.content.lower()[:500] for k in ("**twitter:**", "**linkedin:**", "**x:**", "**x/twitter:**")):
+            content_type = "social_post"
+        if content_type == "social_post":
+            try:
+                from backend.agents.social_manager_agent import (
+                    _parse_posts as _sm_parse,
+                    _sanitize_social_text as _sm_sanitize,
+                )
+                parsed_posts = _sm_parse(body.content)
+                if parsed_posts:
+                    body.content = json.dumps({
+                        "action": "adapt_content",
+                        "posts": parsed_posts,
+                    })
+                else:
+                    cleaned = _sm_sanitize(body.content)
+                    if cleaned:
+                        body.content = cleaned
+            except Exception:
+                pass
+
+    # ── Best-effort dedupe based on recent activity ────────────────────
+    try:
+        recent_window = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+        recent = (
+            sb.table("inbox_items")
+            .select("id,content,type,status,title")
+            .eq("tenant_id", tenant_id)
+            .eq("agent", body.agent)
+            .gte("created_at", recent_window)
+            .order("created_at", desc=True)
+            .limit(8)
+            .execute()
+        )
+        rows = list(recent.data or [])
+
+        # Strategy 1: processing placeholder — always upgrade it.
+        for r in rows:
+            r_title = (r.get("title") or "").lower()
+            is_placeholder = (
+                r.get("status") == "processing"
+                or " is working on" in r_title
+            )
+            if not is_placeholder:
+                continue
+            update_data = {
+                "title": title,
+                "content": body.content,
+                "type": content_type,
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if email_draft:
+                update_data["email_draft"] = email_draft
+            sb.table("inbox_items").update(update_data).eq("id", r["id"]).execute()
+            logger.info(
+                "[inbox-create] upgraded processing placeholder %s "
+                "(agent=%s) with real agent output",
+                r["id"], body.agent,
+            )
+            item_data = {"id": r["id"], "tenant_id": tenant_id, **update_data}
+            if tenant_id:
+                try:
+                    await sio.emit("inbox_updated", {"action": "updated", "item": item_data}, room=tenant_id)
+                except Exception:
+                    pass
+            return {"item": item_data, "deduped": True, "merged_placeholder": True}
+
+        # Strategy 2: content-prefix match for double-POSTs of the same draft.
+        for r in rows:
+            r_content = (r.get("content") or "")[:300]
+            new_prefix = (body.content or "")[:300]
+            if r_content and new_prefix and len(r_content) > 50 and r_content[:100] == new_prefix[:100]:
+                update_data = {
+                    "title": title,
+                    "content": body.content,
+                    "type": content_type,
+                    "status": status,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if email_draft:
+                    update_data["email_draft"] = email_draft
+                sb.table("inbox_items").update(update_data).eq("id", r["id"]).execute()
+                logger.info(
+                    "[inbox-create] merged duplicate POST into existing row %s "
+                    "(agent=%s, same content prefix)", r["id"], body.agent,
+                )
+                item_data = {"id": r["id"], "tenant_id": tenant_id, **update_data}
+                if tenant_id:
+                    try:
+                        await sio.emit("inbox_updated", {"action": "updated", "item": item_data}, room=tenant_id)
+                    except Exception:
+                        pass
+                return {"item": item_data, "deduped": True}
+    except Exception as e:
+        logger.debug("[inbox-create] recent-row dedupe lookup failed: %s", e)
+
+    row = {
+        "tenant_id": tenant_id,
+        "title": title,
+        "content": body.content,
+        "type": content_type,
+        "agent": body.agent,
+        "priority": body.priority,
+        "status": status,
+    }
+    if email_draft:
+        row["email_draft"] = email_draft
+    if body.paperclip_issue_id:
+        row["paperclip_issue_id"] = body.paperclip_issue_id
+
+    # Dedupe with the watcher's placeholder when we have an issue id
+    item = None
+    if body.paperclip_issue_id:
+        try:
+            existing = (
+                sb.table("inbox_items")
+                .select("id")
+                .eq("tenant_id", tenant_id)
+                .eq("paperclip_issue_id", body.paperclip_issue_id)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                placeholder_id = existing.data[0]["id"]
+                update_data = {k: v for k, v in row.items() if k not in ("tenant_id",)}
+                update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+                sb.table("inbox_items").update(update_data).eq("id", placeholder_id).execute()
+                item = {"id": placeholder_id, **row}
+                logger.info(
+                    "[inbox-create] updated existing placeholder %s for paperclip_issue_id=%s",
+                    placeholder_id, body.paperclip_issue_id,
+                )
+        except Exception as e:
+            logger.warning(
+                "[inbox-create] dedupe lookup failed: %s -- inserting fresh row", e,
+            )
+
+    if item is None:
+        result = sb.table("inbox_items").insert(row).execute()
+        item = result.data[0] if result.data else None
+
+    # Emit real-time notification
+    if item and tenant_id:
+        await sio.emit("inbox_updated", {"action": "created", "item": item}, room=tenant_id)
+        try:
+            sb.table("notifications").insert({
+                "tenant_id": tenant_id,
+                "title": f"New from {body.agent}: {title}",
+                "body": body.content[:200],
+                "category": "inbox",
+                "href": "/inbox",
+            }).execute()
+        except Exception:
+            pass
+
+    # Cleanup any leftover media placeholder for this tenant
+    if body.agent == "media" and item:
+        await _cleanup_media_placeholder(tenant_id, item.get("id"))
+
+    # Completion log so Virtual Office Recent Activity shows "task done"
+    if body.agent and item:
+        try:
+            from backend.orchestrator import log_agent_action as _log_agent_action
+            await _log_agent_action(
+                tenant_id, body.agent, "paperclip_completed",
+                {"task": (item.get("title") or "")[:200], "inbox_item_id": item.get("id")},
+            )
+        except Exception:
+            pass
+
+    # Index the finalized row for cross-session recall
+    if item:
+        try:
+            from backend.services.content_index import index_inbox_row
+            await asyncio.to_thread(index_inbox_row, {**item, "tenant_id": tenant_id})
+        except Exception:
+            pass
+
+    return {"item": item}
