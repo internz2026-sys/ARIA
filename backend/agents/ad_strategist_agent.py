@@ -28,7 +28,11 @@ class AdStrategistAgent(BaseAgent):
     CONTEXT_KEY = "action"
     DEFAULT_CONTEXT = "campaign_plan"
     MODEL = MODEL_HAIKU
-    MAX_TOKENS = 1500
+    # Bumped from 1500 → 2500 on 2026-05-01 to leave room for at least one
+    # mandatory [GRAPH_DATA] block in the campaign brief. Production sample
+    # of 4 recent runs showed 0/4 emitted graphs because the brief itself
+    # consumed ~1400 tokens, leaving no headroom for a JSON chart payload.
+    MAX_TOKENS = 2500
     CONTEXT_FIELDS = {"business", "product", "differentiators", "audience", "pain_points"}
 
     @staticmethod
@@ -161,8 +165,9 @@ The title is mandatory and must be specific, descriptive, and unique to this cam
 ## Budget Recommendations
 - [Budget breakdown and optimization tips]
 
-## Charts (optional — use ONLY when a visual makes the strategy clearer)
-When a chart would help the user grasp the plan (budget split, audience tier weights, funnel projections), emit a [GRAPH_DATA] block with valid JSON. ARIA renders these as branded PNG charts automatically — DO NOT use ASCII art, markdown tables, or describe charts in prose.
+## Charts (REQUIRED — every campaign brief must include at least one chart)
+
+You MUST emit at least ONE [GRAPH_DATA] block in every campaign plan. The default mandatory chart is a `pie` chart for budget allocation across the three campaign tiers (Awareness / Retargeting / Conversion). Add up to 2 more charts if they make additional sections clearer (e.g. `funnel` for conversion projections, `bar` for audience tier weights). ARIA renders these as branded PNG charts automatically — DO NOT use ASCII art, markdown tables, or describe charts in prose.
 
 Supported chart types:
 - `pie` — budget allocation across campaign tiers (Awareness/Retargeting/Conversion), channel mix, audience tier splits
@@ -175,11 +180,12 @@ Format strictly:
 [/GRAPH_DATA]
 
 Rules:
-- Numbers only in `data` values (no "$50" — use 50)
-- Cap at 3 charts per campaign plan
-- Title under 50 chars
-- DO NOT emit a chart for every section — only when it actually adds clarity
-- DO NOT describe what the chart will show in prose; the rendered image speaks for itself
+- At least 1 chart per brief is REQUIRED — not optional. Default to a budget-allocation pie chart.
+- Cap at 3 charts per campaign plan (don't spam them).
+- Numbers only in `data` values (no "$50" — use 50).
+- Title under 50 chars.
+- DO NOT describe what the chart will show in prose; the rendered image speaks for itself.
+- Place the chart block INSIDE the section it visualizes (e.g. budget pie inside "## Budget Recommendations").
 
 Keep it actionable, copy-paste ready, and beginner-friendly."""
 

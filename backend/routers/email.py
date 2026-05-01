@@ -705,6 +705,16 @@ async def get_email_settings_status(tenant_id: str):
     return _email_status_payload(tenant_id)
 
 
+# Tenant-scoped path alias — frontend's email.getStatus uses
+# /api/settings/{tenant_id}/email/status (tenant in path) instead of
+# /api/settings/email/status?tenant_id=...&. Both routes call the same
+# handler so the path-style + querystring-style callers both work.
+@router.get("/api/settings/{tenant_id}/email/status")
+async def get_email_settings_status_path(tenant_id: str):
+    """Tenant-in-path alias for get_email_settings_status."""
+    return _email_status_payload(tenant_id)
+
+
 @router.patch("/api/settings/email")
 async def update_email_settings(body: EmailSettingsPatch):
     """Update display name and/or sender local-part.
@@ -712,13 +722,33 @@ async def update_email_settings(body: EmailSettingsPatch):
     Returns the same payload as GET /api/settings/email/status so
     the frontend can sync state without a follow-up fetch.
     """
+    return _apply_email_settings_patch(body.tenant_id, body)
+
+
+# Tenant-in-path alias matching the frontend's PATCH path. Reuses the
+# same logic as the body-tenant variant so both calling conventions
+# stay in lockstep.
+@router.patch("/api/settings/{tenant_id}/email")
+async def update_email_settings_path(tenant_id: str, body: EmailSettingsPatch):
+    """Tenant-in-path alias for update_email_settings.
+
+    Path tenant_id wins if body also carries one — explicit URL
+    parameter overrides any stale body value.
+    """
+    return _apply_email_settings_patch(tenant_id, body)
+
+
+def _apply_email_settings_patch(tenant_id: str, body: "EmailSettingsPatch") -> dict:
+    """Shared logic for the two PATCH variants. Validates tenant_id +
+    sender_local, mutates the tenant integrations dict, returns the
+    fresh status payload."""
     from backend.config.loader import update_tenant_integrations
 
-    tenant_id = body.tenant_id.strip()
-    if not tenant_id:
+    tid = (tenant_id or "").strip()
+    if not tid:
         raise HTTPException(status_code=400, detail="tenant_id is required")
 
-    cfg = get_tenant_config(tenant_id)
+    cfg = get_tenant_config(tid)
 
     if body.sender_local is not None:
         local = body.sender_local.strip().lower()
@@ -736,7 +766,7 @@ async def update_email_settings(body: EmailSettingsPatch):
         cfg.integrations.email_sender_display_name = body.display_name.strip()[:80]
 
     update_tenant_integrations(cfg)
-    return _email_status_payload(tenant_id)
+    return _email_status_payload(tid)
 
 
 # ─── Inbound webhook (Postmark / Resend / SendGrid) ──────────────────
