@@ -39,10 +39,20 @@ export default function TaskCard({
             ? "text-xs mb-1.5 truncate"
             : "text-sm mb-2 leading-relaxed"
         }`}
-        title={compact ? task.task : undefined}
+        title={compact ? (task.title || task.task) : undefined}
       >
-        {task.task}
+        {task.title || task.task}
       </p>
+      {task.inbox_item_id ? (
+        <a
+          href={`/inbox?id=${task.inbox_item_id}`}
+          onClick={(e) => e.stopPropagation()}
+          className="inline-block mb-2 text-[10px] font-semibold px-2 py-0.5 rounded-md border border-[#534AB7]/30 text-[#534AB7] bg-[#EEEDFE] hover:bg-[#534AB7] hover:text-white transition-colors"
+          title="Open the copy-paste instructions in the Inbox"
+        >
+          Review
+        </a>
+      ) : null}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5 flex-wrap">
           <span

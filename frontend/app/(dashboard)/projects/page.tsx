@@ -439,7 +439,36 @@ function TableView({
                   </td>
                 )}
                 <td className="px-4 py-3">
-                  <p className="text-sm text-[#2C2C2A] leading-relaxed">{task.task}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-[#2C2C2A] leading-relaxed">
+                        {task.title || task.task}
+                      </p>
+                      {task.metadata && typeof task.metadata === "object" ? (
+                        <div className="mt-1 flex items-center gap-2 flex-wrap">
+                          {(task.metadata as any).campaign_objective ? (
+                            <span className="text-[10px] font-medium text-[#5F5E5A] bg-[#F8F8F6] border border-[#E0DED8] rounded-full px-2 py-0.5">
+                              {String((task.metadata as any).campaign_objective)}
+                            </span>
+                          ) : null}
+                          {(task.metadata as any).projected_budget ? (
+                            <span className="text-[10px] font-medium text-[#1D9E75] bg-[#E6F7F0] rounded-full px-2 py-0.5">
+                              {String((task.metadata as any).projected_budget)}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                    {task.inbox_item_id ? (
+                      <a
+                        href={`/inbox?id=${task.inbox_item_id}`}
+                        className="shrink-0 text-[11px] font-semibold px-2.5 py-1 rounded-md border border-[#534AB7]/30 text-[#534AB7] bg-[#EEEDFE] hover:bg-[#534AB7] hover:text-white transition-colors"
+                        title="Open the copy-paste instructions in the Inbox"
+                      >
+                        Review
+                      </a>
+                    ) : null}
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full" style={{ backgroundColor: agent.color + "15", color: agent.color }}>

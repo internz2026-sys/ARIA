@@ -704,6 +704,11 @@ export default function InboxPage() {
       }
       showToast({ title: "Moved to Cancelled", body: "Find it in the Cancelled tab.", variant: "success" });
       fetchCounts();
+      // Re-fetch the current tab so the just-deleted row clears immediately
+      // and the Cancelled tab (when the user switches) shows fresh data
+      // including the row we just soft-deleted. Without this, statusCounts
+      // can lag and the count badge for Cancelled stays hidden.
+      await fetchItems();
     } catch (err: any) {
       showToast({
         title: "Couldn't cancel item",
@@ -729,6 +734,10 @@ export default function InboxPage() {
         variant: "success",
       });
       fetchCounts();
+      // Re-pull current tab — keeps the Cancelled list in sync (we just
+      // pulled a row out of it) and pre-warms whichever tab the user
+      // switches to next.
+      await fetchItems();
     } catch (err: any) {
       showToast({
         title: "Couldn't restore item",
@@ -757,6 +766,10 @@ export default function InboxPage() {
       }
       showToast({ title: "Deleted forever", variant: "success" });
       fetchCounts();
+      // Re-pull current tab so the row disappears from Cancelled list
+      // immediately (the optimistic filter above already removed it,
+      // but a refetch keeps state authoritative against pagination).
+      await fetchItems();
     } catch (err: any) {
       showToast({
         title: "Couldn't delete",
@@ -776,6 +789,11 @@ export default function InboxPage() {
         setMobileShowDetail(false);
       }
       showToast({ title: "Cancelled", variant: "info" });
+      // Refresh badges + items so the Cancelled tab reflects the new row
+      // immediately and the count badge appears (statusCounts otherwise
+      // lags until the next fetchItems / socket event).
+      fetchCounts();
+      await fetchItems();
     } catch (err: any) {
       showToast({ title: "Couldn't cancel", body: err?.message || "Network error.", variant: "error" });
     }
@@ -1154,6 +1172,10 @@ export default function InboxPage() {
       if (selected && checkedIds.has(selected.id)) setSelected(null);
       setCheckedIds(new Set());
       showToast({ title: `Deleted ${count} item${count === 1 ? "" : "s"}`, variant: "success" });
+      // Refresh counts + current tab so the Cancelled badge updates
+      // immediately and switching tabs shows fresh data.
+      fetchCounts();
+      await fetchItems();
     } catch (err: any) {
       showToast({
         title: "Some deletions failed",
@@ -1256,6 +1278,22 @@ export default function InboxPage() {
       if (Object.keys(updates).length === 0) {
         cancelEdit();
         return;
+      }
+      // Belt-and-braces image survival: include the existing metadata
+      // and email_draft in the PATCH so the JSONB sidecars (image_url,
+      // image_urls, etc.) are preserved even if the backend ever
+      // regresses to overwrite-semantics. The current backend MERGES
+      // these fields, but echoing existing values back is harmless and
+      // makes the save payload self-contained. We send `{}` (not
+      // `null`/`undefined`) when the originals are missing — null would
+      // clobber, undefined gets stripped by JSON.stringify but {} is
+      // explicit about "no change".
+      const originalMetadata = (item as any).metadata;
+      if (originalMetadata && typeof originalMetadata === "object") {
+        updates.metadata = { ...originalMetadata };
+      }
+      if (item.email_draft && typeof item.email_draft === "object") {
+        updates.email_draft = { ...item.email_draft };
       }
       await inbox.updateItem(item.id, updates);
       // Optimistically update local state so the user sees their edit

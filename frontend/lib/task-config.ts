@@ -10,6 +10,13 @@ export interface Task {
   status: string;
   created_at: string;
   updated_at: string;
+  // Optional — populated for tasks mirrored from an inbox deliverable
+  // (e.g. an Ad Strategist campaign). When set, the table shows a
+  // Review button that deep-links to /inbox?id={inbox_item_id} so the
+  // user lands directly on the copy-paste instructions.
+  title?: string | null;
+  inbox_item_id?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export const STATUS_COLUMNS = [

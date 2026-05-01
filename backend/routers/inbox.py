@@ -15,7 +15,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.services import inbox as inbox_service
@@ -82,6 +82,21 @@ async def list_inbox(tenant_id: str, status: str = "", page: int = 1, page_size:
 
 _EDITABLE_FIELDS = ("status", "title", "content", "metadata", "social_posts", "email_draft")
 
+# Canonical inbox status set. Anything outside this is rejected from PATCH so
+# typos / mis-cased strings (e.g. "Cancelled", "canceled") can't slip into the
+# DB and break the Cancelled tab's eq("status","cancelled") filter.
+_VALID_INBOX_STATUSES = frozenset({
+    "processing",
+    "ready",
+    "draft_pending_approval",
+    "needs_review",
+    "sending",
+    "sent",
+    "completed",
+    "failed",
+    "cancelled",
+})
+
 
 @router.patch("/api/inbox/{item_id}")
 async def update_inbox_item(item_id: str, request: Request):
@@ -109,11 +124,62 @@ async def update_inbox_item(item_id: str, request: Request):
         if key in body and body[key] is not None:
             updates[key] = body[key]
 
-    # Structured fields — JSONB columns in Supabase, pass dicts verbatim.
+    # Status normalization + validation. Lowercase + strip so "Cancelled"
+    # / "  cancelled  " all land as "cancelled". Reject anything outside
+    # the canonical set with a 400 so a buggy caller can't silently
+    # poison the row (e.g. "canceled" US-spelling -> Cancelled tab misses
+    # it forever).
+    if "status" in updates:
+        raw_status = updates["status"]
+        if isinstance(raw_status, str):
+            normalized = raw_status.strip().lower()
+            if normalized not in _VALID_INBOX_STATUSES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"invalid status {raw_status!r}; must be one of "
+                    f"{sorted(_VALID_INBOX_STATUSES)}",
+                )
+            updates["status"] = normalized
+        else:
+            raise HTTPException(status_code=400, detail="status must be a string")
+
+    # Capture the pre-edit row so we can diff for style memory below,
+    # carry tenant_id into the socket payload without a second query,
+    # AND merge metadata / email_draft instead of clobbering them
+    # (image_url + other JSONB sidecar keys must survive partial edits).
+    pre_row = None
+    try:
+        pre_row = (
+            sb.table("inbox_items")
+            .select("id, tenant_id, agent, content, email_draft, metadata")
+            .eq("id", item_id)
+            .single()
+            .execute()
+        ).data or None
+    except Exception:
+        pre_row = None
+
+    # Structured fields — JSONB columns in Supabase. MERGE into existing
+    # values instead of overwriting so the frontend's "send full row
+    # back" save pattern can't accidentally wipe metadata.image_url /
+    # email_draft.image_urls. Keys present in the incoming dict win;
+    # keys not mentioned are preserved from the pre-edit row.
     if "metadata" in body and isinstance(body["metadata"], dict):
-        updates["metadata"] = body["metadata"]
+        existing_md = (pre_row or {}).get("metadata") if pre_row else None
+        if isinstance(existing_md, dict):
+            merged = dict(existing_md)
+            merged.update(body["metadata"])
+            updates["metadata"] = merged
+        else:
+            updates["metadata"] = body["metadata"]
     if "email_draft" in body and isinstance(body["email_draft"], dict):
-        updates["email_draft"] = body["email_draft"]
+        existing_draft = (pre_row or {}).get("email_draft") if pre_row else None
+        if isinstance(existing_draft, dict):
+            merged_draft = dict(existing_draft)
+            merged_draft.update(body["email_draft"])
+            updates["email_draft"] = merged_draft
+        else:
+            updates["email_draft"] = body["email_draft"]
 
     # Social posts — the canonical storage path is the `content` column
     # as a JSON blob, which is what the existing parseSocialPosts in
@@ -124,20 +190,6 @@ async def update_inbox_item(item_id: str, request: Request):
 
     if not updates:
         return {"updated": item_id, "no_changes": True}
-
-    # Capture the pre-edit row so we can diff for style memory below and
-    # so the socket payload carries tenant_id without a second query.
-    pre_row = None
-    try:
-        pre_row = (
-            sb.table("inbox_items")
-            .select("id, tenant_id, agent, content, email_draft")
-            .eq("id", item_id)
-            .single()
-            .execute()
-        ).data or None
-    except Exception:
-        pre_row = None
 
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     sb.table("inbox_items").update(updates).eq("id", item_id).execute()
@@ -184,6 +236,23 @@ async def update_inbox_item(item_id: str, request: Request):
             await sio.emit("inbox_item_updated", {"id": item_id, **updates}, room=tenant_id)
     except Exception:
         pass
+
+    # Mirror inbox status -> Projects task status for ad_strategist
+    # rows. Only fires when status actually moved to a mapped value
+    # (approved/sent/needs_review/draft_pending_approval); the helper
+    # is a no-op for unmapped statuses, so we can call unconditionally
+    # for ad_strategist rows.
+    if "status" in updates and pre_row and pre_row.get("agent") == "ad_strategist":
+        try:
+            from backend.services.projects import sync_task_status_from_inbox
+            await asyncio.to_thread(
+                sync_task_status_from_inbox,
+                pre_row.get("tenant_id") or "",
+                item_id,
+                updates["status"],
+            )
+        except Exception as e:
+            logger.debug("[inbox-patch] task status sync skipped: %s", e)
 
     return {"updated": item_id, **updates}
 
@@ -836,5 +905,39 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
             await asyncio.to_thread(index_inbox_row, {**item, "tenant_id": tenant_id})
         except Exception:
             pass
+
+    # Project-task mirror — Ad Strategist deliverables get a tasks row
+    # so the Projects page can track the campaign as a Draft Ready /
+    # In Progress / Done item with a Review button that deep-links
+    # back to this inbox item. Narrow to ad_strategist for now; we'll
+    # generalize once the flow proves out.
+    if (
+        item
+        and body.agent == "ad_strategist"
+        and len(body.content or "") >= 200
+    ):
+        try:
+            from backend.services.projects import (
+                create_project_task,
+                extract_campaign_metadata,
+            )
+            meta = extract_campaign_metadata(body.content or "")
+            campaign_title = meta.pop("title", None) or (item.get("title") or "Ad Campaign")
+            project_meta: dict = {"source": "ad_strategist"}
+            if meta:
+                project_meta.update(meta)
+            await asyncio.to_thread(
+                create_project_task,
+                tenant_id,
+                agent="ad_strategist",
+                inbox_item_id=item.get("id"),
+                title=campaign_title,
+                task=campaign_title,
+                status="to_do",
+                priority=body.priority or "medium",
+                metadata=project_meta,
+            )
+        except Exception as e:
+            logger.warning("[inbox-create] project-task mirror skipped: %s", e)
 
     return {"item": item}

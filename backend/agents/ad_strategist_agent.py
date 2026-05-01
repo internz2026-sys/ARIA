@@ -42,7 +42,9 @@ Write for beginners who have never used ads before. Use clear, readable formatti
 
 Output in clean markdown (NOT JSON). Structure your response like this:
 
-# Campaign: [Campaign Name]
+# Campaign: <unique descriptive title — REQUIRED>
+
+The title is mandatory and must be specific, descriptive, and unique to this campaign — it becomes the row label in the user's Projects folder so they can find this campaign later. Examples of GOOD titles: "Q2 Lead Gen — SMAPS-SIS", "Back-to-School Promo — Aug 2026", "Free Trial Push — LinkedIn Devs". BAD titles to NEVER emit: "[Campaign Name]", "Campaign Name", "Untitled", "Facebook Ad Campaign", or anything with a bracketed placeholder. If the user's request hints at an objective ("lead gen", "free trial sign-ups"), reflect that in the title; otherwise build it from the product + audience + season/quarter.
 
 ## Overview
 - **Platform:** Facebook / LinkedIn / Google

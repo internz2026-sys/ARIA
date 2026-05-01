@@ -11,6 +11,7 @@ import { useResizablePanel, type ResizeCorner } from "@/lib/use-resizable-panel"
 import { useConfirm } from "@/lib/use-confirm";
 import { useKeyboardState } from "@/lib/use-keyboard";
 import { useBelowBreakpoint } from "@/lib/use-breakpoint";
+import { useUiOverlay } from "@/lib/use-ui-overlay";
 import ConfirmationDialog from "@/components/shared/ConfirmationDialog";
 
 export default function FloatingChat() {
@@ -125,6 +126,14 @@ export default function FloatingChat() {
   // override the right edge of the panel (and the send button) get
   // clipped off-screen.
   const isMobile = useBelowBreakpoint("sm");
+  // Cross-widget coordination: when the Notifications panel is open
+  // it occupies the right side of the screen at z-[90]. Without this,
+  // the FAB (z-[60]) sat on top of the panel's bottom-right corner
+  // and visually overlapped notification rows. We don't displace the
+  // FAB by 320px (its position is user-draggable / persisted, so
+  // shifting then restoring is jumpy); we hide it outright until the
+  // panel closes.
+  const { notificationsOpen } = useUiOverlay();
 
   // Mark all messages as seen when panel is open
   useEffect(() => {
@@ -319,7 +328,7 @@ export default function FloatingChat() {
   // own X close button is the way out — leaving the FAB visible would
   // just stack two purple circles in the same spot. Desktop keeps the
   // FAB visible so users can drag the whole chat assembly around.
-  const hideButton = isMobile && open;
+  const hideButton = (isMobile && open) || notificationsOpen;
 
   return (
     <>

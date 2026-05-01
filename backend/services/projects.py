@@ -22,11 +22,35 @@ the app, never via push notifications "every hour".
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 from backend.services.supabase import get_db
 
 logger = logging.getLogger("aria.services.projects")
+
+# Match the leading "# Campaign: <Title>" line emitted by the Ad
+# Strategist's markdown template. Tolerates extra whitespace and a
+# trailing "(Q2 2026)"-style parenthetical.
+_CAMPAIGN_TITLE_RE = re.compile(
+    r"^\s*#\s*Campaign\s*:\s*(?P<title>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Loose budget extraction — used as a metadata hint, not a hard
+# requirement. Covers "$50/day", "$1,500 total", "$300 per day", etc.
+_BUDGET_HINT_RE = re.compile(
+    r"\$\s*(?P<amount>[\d,]+(?:\.\d+)?)\s*(?:/\s*day|per\s*day|total)?",
+    re.IGNORECASE,
+)
+
+# Objective hint — pulls the value off the "**Objective:** X" markdown
+# bullet so the Projects page can show "Lead Gen" / "Brand Awareness"
+# next to the row without opening the full strategy.
+_OBJECTIVE_HINT_RE = re.compile(
+    r"^\s*[-*]\s*\*\*Objective:\*\*\s*(?P<objective>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 # Statuses that count as "waiting on the user". draft_pending_approval
 # is the email flow; needs_review is the catch-all for social posts /
@@ -209,3 +233,191 @@ def format_stale_for_ceo_prompt(rows: list[dict]) -> str:
             f"- id: `{r['id']}` · {title} · {age_str} · {status} · from {agent}"
         )
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Project task creation — Ad Strategist (and future agents) finalize a
+# campaign by inserting a tasks row that points back at the inbox item
+# carrying the copy-paste instructions. Lets the Projects page surface
+# the campaign as a tracked deliverable instead of leaving it buried in
+# the inbox.
+# ---------------------------------------------------------------------------
+
+
+def extract_campaign_metadata(content: str) -> dict:
+    """Pull the AI-generated campaign title + budget + objective hints
+    out of an Ad Strategist markdown reply. Returns a dict with at
+    least `{title}`; budget/objective are best-effort and may be
+    omitted. The parser is tolerant — agent output is variable, so a
+    miss here just yields a less-rich Projects row, never a crash.
+    """
+    out: dict = {}
+    if not content or not isinstance(content, str):
+        return out
+    m = _CAMPAIGN_TITLE_RE.search(content)
+    if m:
+        title = m.group("title").strip().strip("*").strip()
+        # Strip wrapping brackets the agent sometimes leaves behind
+        # when it forgets to fill in the placeholder.
+        if title.startswith("[") and title.endswith("]"):
+            title = title[1:-1].strip()
+        if title and title.lower() != "campaign name":
+            out["title"] = title[:200]
+    bm = _BUDGET_HINT_RE.search(content)
+    if bm:
+        out["projected_budget"] = bm.group(0).strip()
+    om = _OBJECTIVE_HINT_RE.search(content)
+    if om:
+        out["campaign_objective"] = om.group("objective").strip()[:120]
+    return out
+
+
+def create_project_task(
+    tenant_id: str,
+    *,
+    agent: str,
+    inbox_item_id: str | None,
+    title: str | None = None,
+    task: str | None = None,
+    status: str = "to_do",
+    priority: str = "medium",
+    metadata: dict | None = None,
+) -> dict | None:
+    """Insert a tasks row that tracks a finalized agent deliverable.
+
+    Idempotent: if a row already exists for `inbox_item_id` (and it
+    isn't trash) we return the existing row instead of inserting a
+    duplicate. The unique partial index in the migration is the
+    backstop, but we check first to avoid a noisy 23505 in the logs
+    when retries / dual-paths fire.
+
+    Returns the row dict, or None on DB error (logged, never raised —
+    the agent's deliverable is already in the inbox, so a Projects
+    insert failure must not break the user-visible flow).
+    """
+    if not tenant_id or not agent:
+        logger.warning("[projects] create_project_task: missing tenant_id or agent")
+        return None
+    try:
+        sb = get_db()
+        # Idempotency: skip if a live task already references this inbox item
+        if inbox_item_id:
+            try:
+                existing = (
+                    sb.table("tasks")
+                    .select("*")
+                    .eq("tenant_id", tenant_id)
+                    .eq("inbox_item_id", inbox_item_id)
+                    .is_("deleted_at", "null")
+                    .limit(1)
+                    .execute()
+                )
+                if existing.data:
+                    logger.info(
+                        "[projects] task already exists for inbox %s — skipping insert",
+                        inbox_item_id,
+                    )
+                    return existing.data[0]
+            except Exception as e:
+                # Column missing on unmigrated DB — fall through to
+                # insert; the unique index will reject duplicates if it
+                # exists, otherwise we accept the small dup risk.
+                logger.debug("[projects] idempotency lookup skipped: %s", e)
+
+        row = {
+            "tenant_id": tenant_id,
+            "agent": agent,
+            "task": (task or title or "")[:500],
+            "title": (title or "")[:200] or None,
+            "priority": priority,
+            "status": status,
+            "inbox_item_id": inbox_item_id,
+            "metadata": metadata or {},
+        }
+        result = sb.table("tasks").insert(row).execute()
+        created = result.data[0] if result.data else None
+        if created:
+            logger.info(
+                "[projects] task %s created for %s/%s (inbox=%s)",
+                created.get("id"), tenant_id, agent, inbox_item_id,
+            )
+        return created
+    except Exception as e:
+        # 23505 = duplicate key on the partial unique index — race
+        # with a concurrent path. Re-fetch and return the winner so
+        # the caller still gets a row back.
+        msg = str(e)
+        if "23505" in msg or "duplicate key" in msg.lower():
+            try:
+                sb = get_db()
+                row = (
+                    sb.table("tasks")
+                    .select("*")
+                    .eq("tenant_id", tenant_id)
+                    .eq("inbox_item_id", inbox_item_id)
+                    .limit(1)
+                    .execute()
+                )
+                if row.data:
+                    logger.info("[projects] task race resolved — returning existing row")
+                    return row.data[0]
+            except Exception:
+                pass
+        logger.error("[projects] create_project_task failed: %s", e)
+        return None
+
+
+# Inbox status -> task status mapping for the lightweight sync. We
+# only fire on transitions we're confident about; ambiguous statuses
+# (processing, ready) leave the task untouched so a human can drive.
+_INBOX_TO_TASK_STATUS = {
+    "approved": "done",
+    "sent": "done",
+    "completed": "done",
+    "draft_pending_approval": "in_progress",
+    "needs_review": "in_progress",
+}
+
+
+def sync_task_status_from_inbox(
+    tenant_id: str,
+    inbox_item_id: str,
+    inbox_status: str,
+) -> bool:
+    """Update the Projects task row that mirrors `inbox_item_id` to
+    reflect the latest inbox status. No-op when no task exists for
+    the inbox item, when the mapping is undefined, or when the task
+    is already in the target status. Returns True on a real write."""
+    if not tenant_id or not inbox_item_id or not inbox_status:
+        return False
+    target_status = _INBOX_TO_TASK_STATUS.get(inbox_status)
+    if not target_status:
+        return False
+    try:
+        sb = get_db()
+        existing = (
+            sb.table("tasks")
+            .select("id, status")
+            .eq("tenant_id", tenant_id)
+            .eq("inbox_item_id", inbox_item_id)
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
+        )
+        if not existing.data:
+            return False
+        task = existing.data[0]
+        if task.get("status") == target_status:
+            return False
+        sb.table("tasks").update({
+            "status": target_status,
+            "updated_at": _now().isoformat(),
+        }).eq("id", task["id"]).execute()
+        logger.info(
+            "[projects] synced task %s -> %s (inbox=%s, inbox_status=%s)",
+            task["id"], target_status, inbox_item_id, inbox_status,
+        )
+        return True
+    except Exception as e:
+        logger.debug("[projects] sync_task_status_from_inbox no-op: %s", e)
+        return False
