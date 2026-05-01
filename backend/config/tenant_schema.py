@@ -97,6 +97,15 @@ class IntegrationsConfig(BaseModel):
     whatsapp_business_account_id: Optional[str] = None
     # Payments
     stripe_customer_id: Optional[str] = None
+    # ── ARIA-managed email sender (Resend / SMTP) ──
+    # Stored INSIDE the integrations JSONB so we don't need a schema
+    # migration every time we add a field. The full From-line is
+    # composed at send time as
+    #   "{email_sender_display_name} <{email_sender_local}@send.{INBOUND_EMAIL_DOMAIN}>"
+    # so the domain stays swappable via env var.
+    email_provider: str = "resend"             # "resend" | "gmail" | "auto" | ""
+    email_sender_display_name: str = ""        # e.g. "SMAPS-SIS"
+    email_sender_local: str = ""               # local-part before @, e.g. "smaps-sis"
 
 
 class TenantConfig(BaseModel):

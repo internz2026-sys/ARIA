@@ -36,21 +36,65 @@ async def send_with_refresh(
     html_body: str,
     thread_id: str = "",
     in_reply_to: str = "",
+    inbound_thread_id: str = "",
+    inbox_item_id: str = "",
 ) -> dict:
-    """Send an email via Gmail with automatic access-token refresh.
+    """Send an email through the configured email provider.
 
-    Returns the raw `gmail_tool.send_email` result dict. Non-auth send
-    errors (5xx, bad request, etc.) are returned verbatim so the caller
-    can surface them appropriately. Raises HTTPException only when the
-    Gmail connection is unrecoverably broken (no tokens, refresh
-    explicitly denied) — that signals "ask the user to reconnect"
-    rather than "retry later".
+    Returns a dict with the same shape callers have always seen:
+        {message_id, thread_id, error?, detail?, status_code?}
+
+    When EMAIL_PROVIDER is "resend" (the default) or "auto" without
+    Gmail tokens, this routes through `email_provider.send_email` and
+    adapts the result. The Gmail-specific branch below stays as the
+    backward-compat path for tenants that still use OAuth.
+
+    Raises HTTPException only when the Gmail connection is
+    unrecoverably broken (no tokens, refresh explicitly denied).
+    Resend failures are returned in the result dict so the route can
+    decide how to surface them.
     """
+    import os as _os
     from backend.tools import gmail_tool
 
     config = get_tenant_config(tenant_id)
     access_token = config.integrations.google_access_token
     refresh_token = config.integrations.google_refresh_token
+
+    # Provider selection mirrors email_provider.send_email's logic:
+    # explicit per-tenant > env var > Gmail-if-tokens else Resend.
+    per_tenant = (config.integrations.email_provider or "").strip().lower()
+    env_choice = (_os.environ.get("EMAIL_PROVIDER") or "resend").strip().lower()
+    provider_choice = per_tenant or env_choice
+    if provider_choice == "auto":
+        provider_choice = "gmail" if (access_token or refresh_token) else "resend"
+
+    # Resend / abstraction path — wrap the new EmailSendResult to look
+    # like the legacy gmail_tool result so callers don't need rewrites.
+    if provider_choice in ("resend", "none"):
+        from backend.services import email_provider
+        send_result = await email_provider.send_email(
+            tenant_id,
+            to=to,
+            subject=subject,
+            html_body=html_body,
+            in_reply_to=in_reply_to,
+            inbound_thread_id=inbound_thread_id,
+            inbox_item_id=inbox_item_id,
+            reply_to_gmail_thread_id=thread_id,
+        )
+        if send_result.get("success"):
+            return {
+                "message_id": send_result.get("message_id") or "",
+                "thread_id": send_result.get("thread_id") or "",
+                "provider": send_result.get("provider", "resend"),
+            }
+        return {
+            "error": send_result.get("error") or "send_failed",
+            "detail": send_result.get("error") or "",
+            "provider": send_result.get("provider", "resend"),
+        }
+    # else: fall through to the legacy Gmail OAuth path below
 
     # Proactively refresh if we have a refresh token but no access token.
     if not access_token and refresh_token:

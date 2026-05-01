@@ -225,6 +225,35 @@ export const usage = {
   getDashboard: (tenantId: string) => fetchAPI(`/api/usage/${tenantId}`),
 };
 
+// ── Email sending config (Resend-managed sender identity) ──
+//
+// These endpoints are added by the backend Email coder. If they
+// don't exist yet, both calls reject and the Settings → Email tab
+// degrades gracefully (the UI stubs the save with a toast and shows
+// an "integration in progress" status panel).
+export interface EmailSettingsStatus {
+  provider: string;          // e.g. "resend"
+  domain: string;            // sending domain ("send.example.com") or ""
+  configured: boolean;       // true once domain is verified + provider key is set
+  display_name?: string;
+  sender_address?: string;   // {slug}@send.{domain}
+  reply_to_address?: string; // replies+{tenant_id}@inbound.{domain}
+}
+
+export interface EmailSettingsUpdate {
+  display_name?: string;
+}
+
+export const email = {
+  getStatus: (tenantId: string) =>
+    fetchAPI(`/api/settings/${tenantId}/email/status`) as Promise<EmailSettingsStatus>,
+  updateConfig: (tenantId: string, body: EmailSettingsUpdate) =>
+    fetchAPI(`/api/settings/${tenantId}/email`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }) as Promise<EmailSettingsStatus>,
+};
+
 export const campaigns = {
   list: (tenantId: string, status = "", platform = "") => {
     const p = new URLSearchParams();

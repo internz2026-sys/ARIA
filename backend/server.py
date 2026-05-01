@@ -737,6 +737,7 @@ _PUBLIC_PREFIXES = (
     "/api/inbox/",          # Inbox item creation (used by Paperclip agents)
     "/api/media/",          # Image generation (used by Paperclip Media Designer)
     "/api/tenant/by-email/", # Tenant lookup during login (returns only tenant_id)
+    "/api/email/inbound",   # Inbound mail webhook (Postmark/Resend/SendGrid → /api/email/inbound)
     "/docs",                # Swagger UI
     "/openapi.json",
 )

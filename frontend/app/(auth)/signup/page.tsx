@@ -20,6 +20,8 @@ export default function SignUpPage() {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [generalError, setGeneralError] = useState("");
   const [verifyMessage, setVerifyMessage] = useState("");
   const [emailLoading, setEmailLoading] = useState(false);
@@ -46,28 +48,35 @@ export default function SignUpPage() {
       setGeneralError("Password must be at least 8 characters.");
       return;
     }
+    if (password !== confirmPassword) {
+      setGeneralError("Passwords do not match.");
+      return;
+    }
     setEmailLoading(true);
+    const trimmedEmail = email.trim().toLowerCase();
     const { data, error } = await supabase.auth.signUp({
-      email: email.trim().toLowerCase(),
+      email: trimmedEmail,
       password,
       options: {
         // Stash full_name in user_metadata so the profiles backfill +
         // the admin user table can show a human-readable name later.
         // Supabase exposes this on the JWT as user_metadata.full_name.
         data: fullName.trim() ? { full_name: fullName.trim() } : undefined,
-        emailRedirectTo: `${window.location.origin}/auth/callback?mode=signup`,
+        emailRedirectTo: `${window.location.origin}/auth/confirm`,
       },
     });
     // Path 1: explicit error. Supabase returns "User already registered"
-    // when the project has email-confirmation disabled. Normalize the
-    // common substrings so a friendly message wins over the raw error.
+    // when the project has email-confirmation disabled. Route them back
+    // to the login page with a contextual error param the login page
+    // surfaces verbatim — instead of hiding them on signup with a
+    // banner.
     if (error) {
       const m = error.message.toLowerCase();
       if (m.includes("already registered") || m.includes("already exists") || m.includes("user already")) {
-        setGeneralError("This email is already registered. Try signing in instead.");
-      } else {
-        setGeneralError(error.message);
+        router.replace("/login?error=already_registered");
+        return;
       }
+      setGeneralError(error.message);
       setEmailLoading(false);
       return;
     }
@@ -76,24 +85,20 @@ export default function SignUpPage() {
     // `identities` array as a privacy-preserving "user enumeration"
     // mitigation — the attacker can't tell from the response whether
     // the address is registered. We explicitly want the legitimate
-    // user to know, so detect the empty-identities shape and surface
-    // a clear "already registered" message.
+    // user to know, so detect the empty-identities shape and route to
+    // login.
     if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
-      setGeneralError("This email is already registered. Try signing in instead.");
-      setEmailLoading(false);
+      router.replace("/login?error=already_registered");
       return;
     }
     // Path 3: real success. If a session came back the project has
     // email-confirmation off — go straight to onboarding. Otherwise
-    // tell the user to check their inbox for the confirmation link.
+    // route to the dedicated /auth/check-email page.
     if (data?.session) {
       router.replace("/welcome");
       return;
     }
-    setVerifyMessage(
-      "Check your email — we sent you a confirmation link. Click it to finish creating your account.",
-    );
-    setEmailLoading(false);
+    router.replace(`/check-email?email=${encodeURIComponent(trimmedEmail)}`);
   }
 
   async function handleGoogleSignUp() {
@@ -184,18 +189,60 @@ export default function SignUpPage() {
             <label htmlFor="password" className="block text-xs font-medium text-[#5F5E5A] mb-1">
               Password <span className="text-[#9E9C95] font-normal">(min 8 chars)</span>
             </label>
+            <div className="relative">
+              <input
+                id="password"
+                type={showPassword ? "text" : "password"}
+                autoComplete="new-password"
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={anyLoading}
+                placeholder="••••••••"
+                className="w-full h-12 px-3 pr-12 rounded-lg border border-[#E0DED8] bg-white text-[15px] text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7] disabled:opacity-60"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                disabled={anyLoading}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                className="absolute inset-y-0 right-0 flex items-center px-3 text-[#9E9C95] hover:text-[#534AB7] transition disabled:opacity-60"
+              >
+                {showPassword ? (
+                  <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.6">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18M10.5 10.5a2 2 0 002.83 2.83M9.88 5.09A10.94 10.94 0 0112 5c5 0 9.27 3.11 11 7-.46 1.04-1.13 2-1.97 2.84M6.61 6.61C4.6 7.96 3.06 9.84 2 12c1.73 3.89 6 7 11 7 1.49 0 2.92-.27 4.24-.76" />
+                  </svg>
+                ) : (
+                  <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.6">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                )}
+              </button>
+            </div>
+            {password.length > 0 && password.length < 8 && (
+              <p className="text-[11px] text-[#D85A30] mt-1">Password must be at least 8 characters.</p>
+            )}
+          </div>
+          <div>
+            <label htmlFor="confirm_password" className="block text-xs font-medium text-[#5F5E5A] mb-1">
+              Confirm password
+            </label>
             <input
-              id="password"
-              type="password"
+              id="confirm_password"
+              type={showPassword ? "text" : "password"}
               autoComplete="new-password"
               required
-              minLength={8}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
               disabled={anyLoading}
               placeholder="••••••••"
               className="w-full h-12 px-3 rounded-lg border border-[#E0DED8] bg-white text-[15px] text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7] disabled:opacity-60"
             />
+            {confirmPassword.length > 0 && confirmPassword !== password && (
+              <p className="text-[11px] text-[#D85A30] mt-1">Passwords do not match.</p>
+            )}
           </div>
           <button
             type="submit"
@@ -216,17 +263,19 @@ export default function SignUpPage() {
           <div className="flex-1 h-px bg-[#E0DED8]" />
         </div>
 
-        {/* Google OAuth */}
+        {/* Google OAuth — secondary, smaller. Kept for users still on
+            Google's Test-mode allowlist; primary signup is now email +
+            password. */}
         <button
           type="button"
           onClick={handleGoogleSignUp}
           disabled={anyLoading}
-          className="w-full flex items-center justify-center gap-2.5 border border-[#E0DED8] rounded-lg h-12 text-sm font-medium text-[#2C2C2A] hover:bg-[#F8F8F6] transition disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full flex items-center justify-center gap-2 border border-[#E0DED8] rounded-lg h-10 text-xs font-medium text-[#5F5E5A] hover:bg-[#F8F8F6] transition disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {googleLoading ? (
-            <div className="w-5 h-5 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
+            <div className="w-4 h-4 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
           ) : (
-            <GoogleIcon />
+            <span className="scale-[0.8] inline-flex"><GoogleIcon /></span>
           )}
           {googleLoading ? "Redirecting..." : "Continue with Google"}
         </button>

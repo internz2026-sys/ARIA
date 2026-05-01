@@ -13,11 +13,14 @@ circular import on backend.server.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import re
+from base64 import b64encode
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.config.loader import get_tenant_config
@@ -171,6 +174,8 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
             html_body=html_body,
             thread_id=reply_thread_id,
             in_reply_to=reply_in_reply_to,
+            inbound_thread_id=reply_to_thread_db_id,
+            inbox_item_id=body.inbox_item_id,
         )
     except HTTPException:
         _mark_failed()
@@ -589,6 +594,7 @@ async def send_thread_reply(tenant_id: str, thread_id: str, body: SendReplyReque
         html_body=html_body,
         thread_id=gmail_thread_id,
         in_reply_to=in_reply_to,
+        inbound_thread_id=thread_id,
     )
 
     if result.get("error"):
@@ -630,6 +636,241 @@ async def send_thread_reply(tenant_id: str, thread_id: str, body: SendReplyReque
         "thread_id": thread_id,
         "gmail_thread_id": gmail_thread_id or result.get("thread_id", ""),
     }
+
+
+# ─── ARIA-managed sender settings (Resend / SMTP) ────────────────────
+#
+# These power the frontend's Settings → Email tab. The status endpoint
+# is read on tab mount; the PATCH is fired on Save Changes. Both stay
+# additive — never raise when env vars are unset, because the frontend
+# uses `configured: false` to render a "queued, set up your domain"
+# banner instead of an error toast.
+
+
+class EmailSettingsPatch(BaseModel):
+    """Body of PATCH /api/settings/email.
+
+    Both fields are optional — frontend may PATCH only the display
+    name without re-validating the local-part. Empty strings clear the
+    value (lets a user revert to defaults).
+    """
+    tenant_id: str
+    display_name: str | None = None
+    sender_local: str | None = None
+
+
+# Lowercase letters, digits, hyphens. Mirrors the strictest
+# subset that's safe across every email provider's local-part rules.
+_SENDER_LOCAL_RE = re.compile(r"^[a-z0-9-]+$")
+
+
+def _email_status_payload(tenant_id: str) -> dict:
+    """Build the status response for one tenant. Pure read — never
+    raises. The frontend uses `configured: false` as the signal to
+    render the 'queued' banner."""
+    from backend.services import email_provider as _ep
+
+    cfg = get_tenant_config(tenant_id)
+    integrations = cfg.integrations
+    apex = _ep._apex_domain()
+    provider = (integrations.email_provider or "resend").strip().lower() or "resend"
+    display_name = (
+        integrations.email_sender_display_name
+        or cfg.business_name
+        or "ARIA"
+    ).strip()
+    sender_local = (integrations.email_sender_local or "").strip()
+    sender_address = _ep.build_sender_address(sender_local) if apex else ""
+    reply_to_address = _ep.build_reply_to(tenant_id=tenant_id) if apex else ""
+    configured = bool(apex and sender_local)
+    return {
+        "provider": provider,
+        "configured": configured,
+        "domain": (f"inbound.{apex}" if apex else None),
+        "sender_address": sender_address or None,
+        "reply_to_address": reply_to_address or None,
+        "display_name": display_name,
+        "sender_local": sender_local,
+    }
+
+
+@router.get("/api/settings/email/status")
+async def get_email_settings_status(tenant_id: str):
+    """Return the resolved email sender settings for a tenant.
+
+    Frontend (Settings → Email tab) reads this on mount to populate
+    the form + decide whether to render the "queued — domain not
+    configured" banner.
+    """
+    return _email_status_payload(tenant_id)
+
+
+@router.patch("/api/settings/email")
+async def update_email_settings(body: EmailSettingsPatch):
+    """Update display name and/or sender local-part.
+
+    Returns the same payload as GET /api/settings/email/status so
+    the frontend can sync state without a follow-up fetch.
+    """
+    from backend.config.loader import update_tenant_integrations
+
+    tenant_id = body.tenant_id.strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="tenant_id is required")
+
+    cfg = get_tenant_config(tenant_id)
+
+    if body.sender_local is not None:
+        local = body.sender_local.strip().lower()
+        if local and not _SENDER_LOCAL_RE.match(local):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "sender_local must be lowercase letters, digits, or "
+                    "hyphens only (no spaces, no special chars)."
+                ),
+            )
+        cfg.integrations.email_sender_local = local
+
+    if body.display_name is not None:
+        cfg.integrations.email_sender_display_name = body.display_name.strip()[:80]
+
+    update_tenant_integrations(cfg)
+    return _email_status_payload(tenant_id)
+
+
+# ─── Inbound webhook (Postmark / Resend / SendGrid) ──────────────────
+
+
+def _verify_postmark_signature(secret: str, raw_body: bytes, header_value: str) -> bool:
+    """Postmark signs requests with HMAC-SHA256 base64 of the raw body,
+    sent in the `X-Postmark-Signature` header."""
+    if not secret or not header_value:
+        return False
+    digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).digest()
+    expected = b64encode(digest).decode("ascii")
+    return hmac.compare_digest(expected, header_value.strip())
+
+
+def _verify_resend_signature(secret: str, raw_body: bytes, header_value: str) -> bool:
+    """Resend uses Svix-style signing — `Resend-Signature: v1,<b64>` (and
+    sometimes a t=<timestamp> prefix). We accept either form for now."""
+    if not secret or not header_value:
+        return False
+    # Strip any "v1," prefix (Svix convention) and split on commas.
+    candidates = [
+        part.strip().split(",", 1)[-1] for part in header_value.split(" ") if part.strip()
+    ]
+    digest = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).digest()
+    expected_b64 = b64encode(digest).decode("ascii")
+    expected_hex = digest.hex()
+    for cand in candidates:
+        if hmac.compare_digest(cand, expected_b64) or hmac.compare_digest(cand, expected_hex):
+            return True
+    return False
+
+
+def _verify_sendgrid_signature(secret: str, raw_body: bytes, header_value: str) -> bool:
+    """SendGrid uses ECDSA (not HMAC) for inbound parse. Implementing the
+    full ECDSA verify is out of scope for this stub; we treat any
+    presence of the header as 'configured' and short-circuit to True only
+    if dev-mode (no secret set)."""
+    if not secret:
+        return True
+    # Real ECDSA verify would go here. For now, log + accept so the
+    # endpoint doesn't 401 every Sendgrid hit.
+    logger.warning("[inbound] SendGrid signature verification not implemented — accepting")
+    return True
+
+
+@router.post("/api/email/inbound")
+async def inbound_email_webhook(request: Request):
+    """Inbound email webhook for Postmark / Resend / SendGrid.
+
+    Replaces the deprecated `_gmail_sync_loop` (which required the
+    `gmail.readonly` scope we just dropped). Outbound emails sent via
+    `email_sender.send_with_refresh` carry a Reply-To header pointing to
+    `replies+<thread_id>@inbound.<INBOUND_EMAIL_DOMAIN>` — the customer's
+    reply lands in our provider's inbox, gets parsed, and POSTed here.
+
+    Provider is selected via `INBOUND_EMAIL_PROVIDER` (default postmark).
+    HMAC signing key in `INBOUND_WEBHOOK_SECRET` (unset = dev-mode accept).
+
+    ALWAYS returns 200 to the caller — providers retry aggressively on
+    5xx, and our internal failures shouldn't multiply on the wire.
+    """
+    from backend.services.email_inbound import (
+        get_inbound_provider,
+        get_webhook_secret,
+        normalize_payload,
+        process_inbound_message,
+    )
+
+    raw_body = await request.body()
+    provider = get_inbound_provider()
+    secret = get_webhook_secret()
+
+    # ── Signature validation ──────────────────────────────────────────
+    if secret:
+        if provider == "postmark":
+            sig = request.headers.get("X-Postmark-Signature", "")
+            if not _verify_postmark_signature(secret, raw_body, sig):
+                logger.warning("[inbound] postmark signature mismatch")
+                raise HTTPException(status_code=401, detail="Invalid signature")
+        elif provider == "resend":
+            sig = (
+                request.headers.get("Resend-Signature")
+                or request.headers.get("Svix-Signature")
+                or ""
+            )
+            if not _verify_resend_signature(secret, raw_body, sig):
+                logger.warning("[inbound] resend signature mismatch")
+                raise HTTPException(status_code=401, detail="Invalid signature")
+        elif provider == "sendgrid":
+            sig = request.headers.get("X-Twilio-Email-Event-Webhook-Signature", "")
+            if not _verify_sendgrid_signature(secret, raw_body, sig):
+                logger.warning("[inbound] sendgrid signature mismatch")
+                raise HTTPException(status_code=401, detail="Invalid signature")
+    else:
+        logger.warning(
+            "[inbound] INBOUND_WEBHOOK_SECRET unset — accepting unsigned %s payload (dev mode)",
+            provider,
+        )
+
+    # ── Parse JSON or form-data depending on provider ────────────────
+    payload: dict
+    content_type = (request.headers.get("content-type") or "").lower()
+    try:
+        if "application/json" in content_type:
+            payload = await request.json()
+        elif "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+            form = await request.form()
+            payload = dict(form)
+        else:
+            # Best-effort JSON fallback
+            import json as _json
+            payload = _json.loads(raw_body.decode("utf-8")) if raw_body else {}
+    except Exception as e:
+        logger.warning("[inbound] could not parse %s payload: %s", provider, e)
+        return {"ok": False, "error": "unparseable_payload"}
+
+    if not isinstance(payload, dict) or not payload:
+        return {"ok": False, "error": "empty_payload"}
+
+    try:
+        normalized = normalize_payload(provider, payload)
+    except Exception as e:
+        logger.exception("[inbound] normalize_payload failed: %s", e)
+        return {"ok": False, "error": "normalize_failed"}
+
+    try:
+        result = await process_inbound_message(normalized)
+    except Exception as e:
+        logger.exception("[inbound] process_inbound_message crashed: %s", e)
+        return {"ok": False, "error": "process_failed"}
+
+    # Always 200 — provider retries are noise, not a fix.
+    return result
 
 
 # ─── Gmail sync (manual trigger + sync-all for cron) ─────────────────

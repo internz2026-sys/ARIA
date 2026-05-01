@@ -263,25 +263,13 @@ async def execute_task(task: dict) -> dict:
 # ─── Task Type Executors ─────────────────────────────────────────────────────
 
 async def _execute_send_email(tenant_id: str, payload: dict) -> dict:
-    """Execute a scheduled email send."""
-    from backend.tools import gmail_tool
-    from backend.config.loader import get_tenant_config, save_tenant_config
+    """Execute a scheduled email send via the configured provider.
 
-    config = get_tenant_config(tenant_id)
-    access_token = config.integrations.google_access_token
-    refresh_token = config.integrations.google_refresh_token
-
-    if not access_token and not refresh_token:
-        return {"error": "Gmail not connected"}
-
-    # Refresh if needed
-    if not access_token and refresh_token:
-        try:
-            access_token = await gmail_tool.refresh_access_token(refresh_token)
-            config.integrations.google_access_token = access_token
-            save_tenant_config(config)
-        except Exception as e:
-            return {"error": f"Token refresh failed: {e}"}
+    Routes through email_provider.send_email so the same env-var /
+    per-tenant choice as the realtime send path applies — no separate
+    Gmail-only code path.
+    """
+    from backend.services import email_provider
 
     to = payload.get("to", "")
     subject = payload.get("subject", "")
@@ -290,29 +278,25 @@ async def _execute_send_email(tenant_id: str, payload: dict) -> dict:
     if not to or not subject:
         return {"error": "Missing 'to' or 'subject' in payload"}
 
-    result = await gmail_tool.send_email(
-        access_token=access_token,
+    send_result = await email_provider.send_email(
+        tenant_id,
         to=to,
         subject=subject,
         html_body=html_body,
-        from_email=config.owner_email,
+        text_body=payload.get("text_body", ""),
+        inbox_item_id=payload.get("inbox_item_id", ""),
+        inbound_thread_id=payload.get("thread_id", ""),
     )
 
-    # Retry with refresh on token expired
-    if result.get("error") == "token_expired" and refresh_token:
-        try:
-            new_token = await gmail_tool.refresh_access_token(refresh_token)
-            config.integrations.google_access_token = new_token
-            save_tenant_config(config)
-            result = await gmail_tool.send_email(
-                access_token=new_token,
-                to=to,
-                subject=subject,
-                html_body=html_body,
-                from_email=config.owner_email,
-            )
-        except Exception:
-            return {"error": "Gmail token expired and refresh failed"}
+    if not send_result.get("success"):
+        return {"error": send_result.get("error") or "send_failed"}
+
+    # Adapt to the legacy result shape downstream code expects
+    # (message_id used by some callers, no error means "sent").
+    result: dict = {
+        "message_id": send_result.get("message_id") or "",
+        "provider": send_result.get("provider", ""),
+    }
 
     # Update related inbox item if linked
     if not result.get("error") and payload.get("inbox_item_id"):

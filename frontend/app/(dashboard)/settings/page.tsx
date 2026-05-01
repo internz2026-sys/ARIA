@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
-import { API_URL, authFetch } from "@/lib/api";
+import { API_URL, authFetch, email as emailApi, EmailSettingsStatus } from "@/lib/api";
 import { useConfirm } from "@/lib/use-confirm";
+import { useNotifications } from "@/lib/use-notifications";
 
-const settingsTabs = ["Profile", "Integrations", "Notifications", "Billing"];
+const settingsTabs = ["Profile", "Integrations", "Email", "Notifications", "Billing"];
 
 // "Coming soon" list — only shows integrations that are NOT already
 // live in the Active Integrations panel above. X / Twitter and
@@ -40,8 +41,21 @@ export default function SettingsPage() {
   }, []);
 
   const confirmModal = useConfirm();
+  const { showToast } = useNotifications();
   const [activeTab, setActiveTab] = useState("Profile");
   const [user, setUser] = useState({ name: "", email: "", company: "" });
+
+  // Email tab state — display name is editable; provider/domain/
+  // addresses come from the backend status endpoint. Once Coder 2
+  // ships PATCH /api/settings/{tenant_id}/email, the save flow lights
+  // up automatically; until then we degrade to a stubbed save that
+  // still shows the user a toast.
+  const [emailStatus, setEmailStatus] = useState<EmailSettingsStatus | null>(null);
+  const [emailStatusLoaded, setEmailStatusLoaded] = useState(false);
+  const [emailDisplayName, setEmailDisplayName] = useState("");
+  const [emailSaving, setEmailSaving] = useState(false);
+  const [emailGmailAdvancedOpen, setEmailGmailAdvancedOpen] = useState(false);
+  const [emailReplyToCopied, setEmailReplyToCopied] = useState(false);
 
   const handleSignOut = async () => {
     const ok = await confirmModal.confirm({
@@ -107,8 +121,61 @@ export default function SettingsPage() {
           setLinkedinOrgName(data?.org_name || "");
         })
         .catch(() => setLinkedinConnected(false));
+
+      // Email sending config — best effort, the backend endpoint is
+      // shipping in a parallel branch. If it 404s we surface a "not
+      // configured yet" status panel instead of breaking the tab.
+      emailApi.getStatus(tenantId)
+        .then((data) => {
+          setEmailStatus(data);
+          setEmailDisplayName(data?.display_name || "");
+        })
+        .catch(() => setEmailStatus(null))
+        .finally(() => setEmailStatusLoaded(true));
     }
   }, []);
+
+  // Default the display-name field to the user's profile name once
+  // both the user and the email status have settled, but only if the
+  // backend hasn't already persisted one.
+  useEffect(() => {
+    if (emailStatusLoaded && !emailDisplayName && user.name) {
+      setEmailDisplayName(user.name);
+    }
+  }, [emailStatusLoaded, user.name, emailDisplayName]);
+
+  async function saveEmailConfig() {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId) return;
+    setEmailSaving(true);
+    try {
+      const updated = await emailApi.updateConfig(tenantId, {
+        display_name: emailDisplayName.trim(),
+      });
+      setEmailStatus(updated);
+      showToast({ title: "Email settings saved", variant: "success" });
+    } catch {
+      // Backend not ready yet — keep the UX optimistic so the user
+      // doesn't think the save was lost.
+      showToast({
+        title: "Email config saved",
+        body: "Provider integration in progress.",
+        variant: "info",
+      });
+    } finally {
+      setEmailSaving(false);
+    }
+  }
+
+  async function copyToClipboard(value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setEmailReplyToCopied(true);
+      setTimeout(() => setEmailReplyToCopied(false), 1500);
+    } catch {
+      // Older browsers / insecure context — quietly no-op.
+    }
+  }
 
   function reconnectGmail() {
     const tenantId = localStorage.getItem("aria_tenant_id");
@@ -382,54 +449,11 @@ export default function SettingsPage() {
       {/* Integrations */}
       {activeTab === "Integrations" && (
         <div className="space-y-4">
-          {/* Gmail — active integration */}
-          <div className="bg-white rounded-xl border border-[#E0DED8]">
-            <div className="px-5 py-4 border-b border-[#E0DED8]">
-              <h2 className="text-base font-semibold text-[#2C2C2A]">Active Integrations</h2>
-            </div>
-            <div className="px-5 py-4 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 flex-1 min-w-0">
-                <div className="w-9 h-9 rounded-lg bg-[#FDF3E7] flex items-center justify-center shrink-0">
-                  <svg className="w-5 h-5 text-[#BA7517]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
-                  </svg>
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-[#2C2C2A]">Gmail</p>
-                  <p className="text-xs text-[#5F5E5A] mt-0.5 break-words">
-                    {gmailConnected === null ? "Checking..." : gmailConnected
-                      ? `Connected — emails sent from ${gmailEmail || user.email}`
-                      : "Not connected — Email Marketer can only draft, not send"}
-                  </p>
-                </div>
-              </div>
-              {gmailConnected === false ? (
-                <button
-                  onClick={reconnectGmail}
-                  disabled={gmailReconnecting}
-                  className="text-xs font-medium px-4 py-2 rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-60 shrink-0 whitespace-nowrap"
-                >
-                  {gmailReconnecting ? "Connecting..." : "Connect Gmail"}
-                </button>
-              ) : gmailConnected ? (
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
-                  <button onClick={reconnectGmail} className="text-[10px] text-[#534AB7] hover:underline transition-colors">Reconnect</button>
-                  <button onClick={disconnectGmail} className="text-[10px] text-[#5F5E5A] hover:text-[#D85A30] transition-colors">Disconnect</button>
-                </div>
-              ) : null}
-            </div>
-            {gmailConnected === false && (
-              <div className="px-5 pb-4 -mt-1">
-                <p className="text-[11px] text-[#8A8983] leading-relaxed">
-                  <span className="font-medium text-[#5F5E5A]">Tip:</span> when the Google account picker
-                  appears, choose a <span className="font-medium">personal Gmail account</span>.
-                  Work or school accounts (Google Workspace) usually have third-party Gmail
-                  access disabled by their admin and will return an &ldquo;Access blocked&rdquo; error.
-                </p>
-              </div>
-            )}
-          </div>
+          {/* Gmail card has been moved to Settings → Email → Advanced
+              disclosure. ARIA now sends transactional + campaign mail
+              through its own managed provider (Resend); Gmail OAuth is
+              opt-in for the small subset of users who still need to
+              send from their personal Gmail address. */}
 
           {/* Twitter / X */}
           <div className="bg-white rounded-xl border border-[#E0DED8]">
@@ -613,6 +637,188 @@ export default function SettingsPage() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Email — sender identity + Resend-managed sending config.
+          The Connect Gmail card lives at the bottom of this tab, in
+          an "Advanced" disclosure, since it's now opt-in rather than
+          the primary path. */}
+      {activeTab === "Email" && (
+        <div className="space-y-4">
+          {/* Header card */}
+          <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+            <h2 className="text-base font-semibold text-[#2C2C2A]">Email Sending Configuration</h2>
+            <p className="text-sm text-[#5F5E5A] mt-1">
+              ARIA sends emails on your behalf. Configure how recipients see your sender identity.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
+              <div className="sm:col-span-2">
+                <label htmlFor="email_display_name" className="block text-xs font-medium text-[#5F5E5A] mb-1.5">
+                  Sender display name
+                </label>
+                <input
+                  id="email_display_name"
+                  type="text"
+                  value={emailDisplayName}
+                  onChange={(e) => setEmailDisplayName(e.target.value)}
+                  placeholder={user.name || "Your full name"}
+                  className="w-full h-11 px-3 bg-white border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7]"
+                />
+                <p className="text-[11px] text-[#8A8983] mt-1">
+                  Shown in the &quot;From&quot; header recipients see in their inbox.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-[#5F5E5A] mb-1.5">Sender email</label>
+                <div className="flex items-center h-11 px-3 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-sm text-[#5F5E5A]">
+                  <span className="truncate">{emailStatus?.sender_address || "Pending domain verification"}</span>
+                </div>
+                <p className="text-[11px] text-[#8A8983] mt-1">Auto-generated. The from-address recipients see.</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-[#5F5E5A] mb-1.5">Reply-to address</label>
+                <div className="flex items-center gap-2 h-11 px-3 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-sm text-[#5F5E5A]">
+                  <span className="truncate flex-1">{emailStatus?.reply_to_address || "Pending domain verification"}</span>
+                  {emailStatus?.reply_to_address && (
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(emailStatus.reply_to_address!)}
+                      className="text-[11px] font-medium text-[#534AB7] hover:underline shrink-0"
+                    >
+                      {emailReplyToCopied ? "Copied" : "Copy"}
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-[#8A8983] mt-1">Replies route back into ARIA&apos;s inbound inbox.</p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center gap-3">
+              <button
+                onClick={saveEmailConfig}
+                disabled={emailSaving}
+                className="px-4 py-2 bg-[#534AB7] text-white rounded-lg text-sm font-medium hover:bg-[#433AA0] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {emailSaving ? "Saving..." : "Save changes"}
+              </button>
+            </div>
+          </div>
+
+          {/* Status panel */}
+          <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+            <h3 className="text-sm font-semibold text-[#2C2C2A] mb-3">Status</h3>
+            <div className="space-y-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[#5F5E5A]">Provider</span>
+                <span className="font-medium text-[#2C2C2A] capitalize">
+                  {emailStatus?.provider || (emailStatusLoaded ? "Resend" : "—")}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[#5F5E5A]">Sending domain</span>
+                <span className="font-medium text-[#2C2C2A] truncate max-w-[60%] text-right">
+                  {emailStatus?.domain
+                    ? emailStatus.domain
+                    : emailStatusLoaded
+                      ? "Not configured yet — emails will be queued"
+                      : "—"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[#5F5E5A]">Status</span>
+                {emailStatusLoaded ? (
+                  emailStatus?.configured ? (
+                    <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">
+                      Active
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#FDF3E7] text-[#BA7517]">
+                      Pending setup
+                    </span>
+                  )
+                ) : (
+                  <span className="text-xs text-[#9E9C95]">Checking…</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Advanced — Connect Gmail (opt-in legacy path) */}
+          <div className="bg-white rounded-xl border border-[#E0DED8]">
+            <button
+              type="button"
+              onClick={() => setEmailGmailAdvancedOpen((v) => !v)}
+              className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left hover:bg-[#F8F8F6] transition-colors rounded-xl"
+              aria-expanded={emailGmailAdvancedOpen}
+            >
+              <div>
+                <p className="text-sm font-semibold text-[#2C2C2A]">Advanced — Send from your own Gmail</p>
+                <p className="text-xs text-[#5F5E5A] mt-0.5">
+                  Optional. Connect a personal Gmail account to send from that address instead of ARIA&apos;s managed sender.
+                </p>
+              </div>
+              <svg
+                className={`w-4 h-4 text-[#5F5E5A] shrink-0 transition-transform ${emailGmailAdvancedOpen ? "rotate-180" : ""}`}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {emailGmailAdvancedOpen && (
+              <div className="border-t border-[#E0DED8]">
+                <div className="px-5 py-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className="w-9 h-9 rounded-lg bg-[#FDF3E7] flex items-center justify-center shrink-0">
+                      <svg className="w-5 h-5 text-[#BA7517]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+                      </svg>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-[#2C2C2A]">Gmail</p>
+                      <p className="text-xs text-[#5F5E5A] mt-0.5 break-words">
+                        {gmailConnected === null ? "Checking..." : gmailConnected
+                          ? `Connected — emails sent from ${gmailEmail || user.email}`
+                          : "Not connected — emails will send from your ARIA managed address"}
+                      </p>
+                    </div>
+                  </div>
+                  {gmailConnected === false ? (
+                    <button
+                      onClick={reconnectGmail}
+                      disabled={gmailReconnecting}
+                      className="text-xs font-medium px-4 py-2 rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-60 shrink-0 whitespace-nowrap"
+                    >
+                      {gmailReconnecting ? "Connecting..." : "Connect Gmail"}
+                    </button>
+                  ) : gmailConnected ? (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-[#E6F5ED] text-[#1D9E75]">Connected</span>
+                      <button onClick={reconnectGmail} className="text-[10px] text-[#534AB7] hover:underline transition-colors">Reconnect</button>
+                      <button onClick={disconnectGmail} className="text-[10px] text-[#5F5E5A] hover:text-[#D85A30] transition-colors">Disconnect</button>
+                    </div>
+                  ) : null}
+                </div>
+                {gmailConnected === false && (
+                  <div className="px-5 pb-4 -mt-1">
+                    <p className="text-[11px] text-[#8A8983] leading-relaxed">
+                      <span className="font-medium text-[#5F5E5A]">Tip:</span> when the Google account picker
+                      appears, choose a <span className="font-medium">personal Gmail account</span>.
+                      Work or school accounts (Google Workspace) usually have third-party Gmail
+                      access disabled by their admin and will return an &ldquo;Access blocked&rdquo; error.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

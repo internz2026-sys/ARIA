@@ -264,74 +264,43 @@ def _wrap_html(body: str) -> str:
 
 
 async def send_emails_via_gmail(tenant_id: str, emails: list[dict]) -> list[dict]:
-    """Send email dicts via Gmail. Returns results for each send."""
-    from backend.config.loader import get_tenant_config, save_tenant_config
-    from backend.tools import gmail_tool
+    """Send a batch of email dicts. Returns one result per send.
 
-    config = get_tenant_config(tenant_id)
-    access_token = config.integrations.google_access_token
-    refresh_token = config.integrations.google_refresh_token
+    Name kept for backward-compat with existing callers, but the
+    transport is now provider-agnostic — actual channel (Resend /
+    Gmail) is decided by `email_provider.send_email` based on env +
+    tenant config.
 
-    # Proactively refresh if we have a refresh token but no access token
-    if not access_token and refresh_token:
-        try:
-            access_token = await gmail_tool.refresh_access_token(refresh_token)
-            config.integrations.google_access_token = access_token
-            save_tenant_config(config)
-        except Exception as e:
-            logger.warning("Gmail proactive refresh failed for tenant %s: %s", tenant_id, e)
-
-    if not access_token:
-        logger.warning("Gmail not connected for tenant %s", tenant_id)
-        return [{"error": "Gmail not connected"}]
+    Each result dict contains: {to, subject, message_id, provider, error?}
+    """
+    from backend.services import email_provider
 
     results = []
     for email in emails:
-        try:
-            result = await gmail_tool.send_email(
-                access_token=access_token,
-                to=email["to"],
-                subject=email["subject"],
-                html_body=email["html_body"],
-                from_email=config.owner_email,
-            )
-
-            # Token expired — try refresh, or clear if no refresh token
-            if result.get("error") == "token_expired" and not refresh_token:
-                config.integrations.google_access_token = None
-                save_tenant_config(config)
-                result = {"error": "Gmail session expired (no refresh token). Please reconnect Gmail in Settings > Integrations."}
-            elif result.get("error") == "token_expired" and refresh_token:
-                try:
-                    new_token = await gmail_tool.refresh_access_token(refresh_token)
-                    access_token = new_token
-                    config.integrations.google_access_token = new_token
-                    save_tenant_config(config)
-                    result = await gmail_tool.send_email(
-                        access_token=new_token,
-                        to=email["to"],
-                        subject=email["subject"],
-                        html_body=email["html_body"],
-                        from_email=config.owner_email,
-                    )
-                except Exception as e:
-                    # Refresh failed — clear access token but preserve refresh_token
-                    # unless Google explicitly revoked it
-                    config.integrations.google_access_token = None
-                    if getattr(e, "is_revoked", False):
-                        config.integrations.google_refresh_token = None
-                        logger.warning("Google revoked refresh token for tenant %s — user must reconnect", tenant_id)
-                    else:
-                        logger.warning("Gmail token refresh failed (transient) for tenant %s: %s", tenant_id, e)
-                    save_tenant_config(config)
-                    result = {"error": "Gmail session expired. Please reconnect Gmail in Settings > Integrations."}
-        except Exception as e:
-            logger.error("Gmail send exception to=%s: %s", email["to"], e)
-            result = {"error": f"Send failed: {e}"}
-
-        results.append({"to": email["to"], "subject": email["subject"], **result})
-        logger.info("Gmail send to=%s subject=%s result=%s", email["to"], email["subject"], result)
-
+        send_result = await email_provider.send_email(
+            tenant_id,
+            to=email["to"],
+            subject=email["subject"],
+            html_body=email["html_body"],
+            text_body=email.get("text_body", ""),
+            inbox_item_id=email.get("inbox_item_id", ""),
+            inbound_thread_id=email.get("thread_id", ""),
+        )
+        adapted: dict = {
+            "to": email["to"],
+            "subject": email["subject"],
+            "provider": send_result.get("provider", ""),
+        }
+        if send_result.get("success"):
+            adapted["message_id"] = send_result.get("message_id") or ""
+        else:
+            adapted["error"] = send_result.get("error") or "send_failed"
+        results.append(adapted)
+        logger.info(
+            "[email_marketer] send to=%s subject=%s provider=%s result=%s",
+            email["to"], email["subject"], adapted["provider"],
+            "ok" if send_result.get("success") else adapted.get("error"),
+        )
     return results
 
 
