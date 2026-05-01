@@ -743,17 +743,13 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
                 if not title or title.lower().startswith(("draft", "marketing email", "email", "untitled")):
                     title = f"Email: {parsed_subject}"
 
-    # Ad Strategist [GRAPH_DATA] block rendering — same hook the watcher
-    # path runs. Failures are silent: malformed JSON / missing storage
-    # bucket / matplotlib hiccup all leave the original block in place.
-    if body.agent == "ad_strategist" and isinstance(body.content, str) and "[GRAPH_DATA]" in body.content.upper():
-        try:
-            from backend.services.visualizer import process_ad_strategist_text
-            transformed = process_ad_strategist_text(tenant_id, body.content)
-            if transformed != body.content:
-                body.content = transformed
-        except Exception as e:
-            logger.debug("[create_inbox_item] ad_strategist chart render skipped: %s", e)
+    # NOTE: Ad Strategist campaign briefs are intentionally chart-free.
+    # Charts now live in the AI Report flow (campaign_analyzer.py +
+    # routers/campaigns.py:_auto_generate_ai_report) which renders them
+    # against actual uploaded performance metrics, not imagined budget
+    # splits. If the brief still contains a [GRAPH_DATA] block here,
+    # the agent's prompt is out of date — the block will pass through
+    # as raw text rather than being rendered.
 
     if body.agent in ("content_writer", "social_manager"):
         social = _parse_social_drafts_from_text(body.content)

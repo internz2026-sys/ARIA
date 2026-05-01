@@ -165,27 +165,12 @@ The title is mandatory and must be specific, descriptive, and unique to this cam
 ## Budget Recommendations
 - [Budget breakdown and optimization tips]
 
-## Charts (REQUIRED — every campaign brief must include at least one chart)
-
-You MUST emit at least ONE [GRAPH_DATA] block in every campaign plan. The default mandatory chart is a `pie` chart for budget allocation across the three campaign tiers (Awareness / Retargeting / Conversion). Add up to 2 more charts if they make additional sections clearer (e.g. `funnel` for conversion projections, `bar` for audience tier weights). ARIA renders these as branded PNG charts automatically — DO NOT use ASCII art, markdown tables, or describe charts in prose.
-
-Supported chart types:
-- `pie` — budget allocation across campaign tiers (Awareness/Retargeting/Conversion), channel mix, audience tier splits
-- `bar` — demographic breakdowns, interest weights, projected metric comparisons
-- `funnel` — conversion projections (Impressions → Clicks → Leads → Customers)
-
-Format strictly:
-[GRAPH_DATA]
-{{"type": "pie", "title": "Monthly Budget Allocation", "data": {{"Awareness": 50, "Retargeting": 30, "Conversion": 20}}}}
-[/GRAPH_DATA]
-
-Rules:
-- At least 1 chart per brief is REQUIRED — not optional. Default to a budget-allocation pie chart.
-- Cap at 3 charts per campaign plan (don't spam them).
-- Numbers only in `data` values (no "$50" — use 50).
-- Title under 50 chars.
-- DO NOT describe what the chart will show in prose; the rendered image speaks for itself.
-- Place the chart block INSIDE the section it visualizes (e.g. budget pie inside "## Budget Recommendations").
+## DO NOT include charts or [GRAPH_DATA] blocks in this campaign brief
+Campaign briefs are text-only. Charts belong in the AI Report flow that
+runs AFTER the user uploads real performance data (clicks, leads, spend
+from Meta Ads Manager). That flow has its own prompt and will request
+charts based on actual numbers — not on the imagined budget splits in
+this brief.
 
 Keep it actionable, copy-paste ready, and beginner-friendly."""
 
@@ -213,18 +198,10 @@ async def run(tenant_id: str, context: dict | None = None) -> dict:
     """
     result = await _get().run(tenant_id, context)
 
-    # Chart rendering — runs first so the campaign-plan text in
-    # `result["result"]` already has the rendered chart URLs by the
-    # time the inbox finalization path picks it up. Wrapped in
-    # try/except per spec: malformed data must NOT crash the run.
-    try:
-        from backend.services.visualizer import process_ad_strategist_text
-        if isinstance(result.get("result"), str) and tenant_id:
-            transformed = process_ad_strategist_text(tenant_id, result["result"])
-            if transformed != result["result"]:
-                result["result"] = transformed
-    except Exception as e:
-        logger.warning("[ad_strategist] chart rendering skipped: %s", e)
+    # NOTE: charts are intentionally NOT rendered here anymore. Campaign
+    # briefs are text-only — the AI Report flow (campaign_analyzer.py)
+    # owns chart rendering since charts there are based on actual uploaded
+    # performance data, not imagined budget splits in the brief.
 
     action = (context or {}).get("action", "") or ""
     image_url: str | None = None

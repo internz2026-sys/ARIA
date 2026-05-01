@@ -5108,19 +5108,12 @@ async def _dispatch_paperclip_and_watch_to_inbox(
         except Exception as e:
             _logger.debug("[paperclip-watch] agent-row dedupe lookup failed: %s", e)
 
-    # Ad Strategist [GRAPH_DATA] -> branded PNG charts. Same hook as
-    # in create_inbox_item — covers the watcher-path output (Paperclip
-    # comments scraped by pick_agent_output) so charts render
-    # regardless of whether the agent took the skill-curl direct-write
-    # path or fell through to the safety-net poller.
-    if agent_id == "ad_strategist" and isinstance(output, str) and "[GRAPH_DATA]" in output.upper():
-        try:
-            from backend.services.visualizer import process_ad_strategist_text
-            transformed = process_ad_strategist_text(tenant_id, output)
-            if transformed != output:
-                output = transformed
-        except Exception as e:
-            _logger.debug("[paperclip-watch] ad_strategist chart render skipped: %s", e)
+    # NOTE: Ad Strategist campaign briefs no longer render [GRAPH_DATA]
+    # blocks here. Charts now live in the AI Report flow (see
+    # campaign_analyzer.py + routers/campaigns.py:_auto_generate_ai_report)
+    # where they render against actual uploaded performance metrics, not
+    # imagined budget splits. Any straggler [GRAPH_DATA] blocks in legacy
+    # outputs will pass through as raw text — harmless, just unrendered.
 
     content_type = _infer_content_type(agent_id, output)
     title = _extract_title(agent_id, task_desc, output)

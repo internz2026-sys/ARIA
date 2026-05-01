@@ -92,6 +92,30 @@ IMPORTANT:
 - Write in human-readable business language — never dump raw JSON or spreadsheet rows.
 - This report will be saved permanently in the system and viewable later.
 
+## Charts (REQUIRED — at least one [GRAPH_DATA] block per report)
+
+You MUST emit at least ONE [GRAPH_DATA] block based on the actual metrics
+provided. These are real numbers, NOT imagined. ARIA renders these as
+branded PNG charts automatically — DO NOT use ASCII art, markdown tables
+for chart data, or describe charts in prose.
+
+Pick chart types that match the data shape:
+- `funnel` — Impressions → Reach → Clicks → Conversions (REQUIRED if all 4 metrics present)
+- `bar` — Per-campaign metric comparison (REQUIRED if multiple campaigns in report)
+- `pie` — Spend distribution by campaign type / audience tier (when multi-campaign)
+
+Format strictly (raw JSON between the tags, no markdown code fences):
+[GRAPH_DATA]
+{{"type": "funnel", "title": "Conversion Funnel", "data": {{"Impressions": 50000, "Clicks": 1200, "Conversions": 45}}}}
+[/GRAPH_DATA]
+
+Rules:
+- At least 1 chart per report is REQUIRED.
+- Cap at 3 charts. Skip charts where the underlying metric is missing/null — don't fabricate.
+- Numbers only in `data` values (no "$50" — use 50; no "1.2K" — use 1200).
+- Title under 50 chars.
+- Place chart blocks INSIDE the relevant section (funnel inside "## Performance Summary" or "## Key Metrics").
+
 Format your response as TWO clearly separated sections:
 
 ===REPORT===
@@ -103,10 +127,10 @@ Format your response as TWO clearly separated sections:
 Campaign name, reporting period, objective, data source.
 
 ## Performance Summary
-High-level assessment — is the campaign performing well, average, or poorly? One paragraph executive summary.
+High-level assessment — is the campaign performing well, average, or poorly? One paragraph executive summary. (Recommended to embed the funnel chart here.)
 
 ## Key Metrics
-The most important numbers with brief context for each.
+The most important numbers with brief context for each. (Recommended to embed a per-campaign bar chart here when multi-campaign.)
 
 ## What Improved
 Any metrics or areas showing positive trends or strong performance.
@@ -161,6 +185,17 @@ Write the full report following the required structure. Make it thorough but rea
         recommendations = parts[1].strip()
     elif "===REPORT===" in result:
         report_text = result.replace("===REPORT===", "").strip()
+
+    # Render any [GRAPH_DATA] blocks the agent emitted into branded PNG
+    # charts. Failures are silent — the report text falls through with
+    # the raw block as text-only fallback so a malformed JSON or storage
+    # outage never crashes the persist step.
+    try:
+        from backend.services.visualizer import process_ad_strategist_text
+        if "[GRAPH_DATA]" in report_text.upper():
+            report_text = process_ad_strategist_text(tenant_id, report_text)
+    except Exception as e:
+        logger.warning("[campaign_analyzer] chart rendering skipped: %s", e)
 
     return {
         "report_text": report_text,
