@@ -35,6 +35,31 @@ For each campaign, provide:
 - A/B variants (at least 2, full copy for each)
 - Step-by-step setup guide (numbered click paths)
 - Optimization schedule
+- **At least one [GRAPH_DATA] block** (see "Charts" section below) — this is REQUIRED, not optional
+
+## Charts (REQUIRED — every campaign brief must include at least one chart)
+
+You MUST emit at least ONE [GRAPH_DATA] block in every campaign plan. The default mandatory chart is a `pie` chart for budget allocation across the three campaign tiers (Prospecting / Retargeting / Conversion). Add up to 2 more charts if they make additional sections clearer (`funnel` for conversion projections, `bar` for audience tier weights). ARIA renders these as branded PNG charts automatically — DO NOT use ASCII art, markdown tables, or describe charts in prose.
+
+Supported chart types:
+- `pie` — budget allocation, channel mix, audience tier splits
+- `bar` — demographic breakdowns, interest weights, projected metric comparisons
+- `funnel` — conversion projections (Impressions → Clicks → Leads → Customers)
+
+Format strictly (raw JSON between the tags, no markdown code fences):
+```
+[GRAPH_DATA]
+{"type": "pie", "title": "Monthly Budget Allocation", "data": {"Prospecting": 50, "Retargeting": 30, "Conversion": 20}}
+[/GRAPH_DATA]
+```
+
+Rules:
+- At least 1 chart per brief is REQUIRED — not optional. Default to a budget-allocation pie chart.
+- Cap at 3 charts per brief. Don't spam them.
+- Numbers only in `data` values (no "$50" — use 50).
+- Title under 50 chars.
+- DO NOT describe what the chart will show in prose — the rendered image speaks for itself.
+- Place the chart block INSIDE the section it visualizes (e.g. budget pie inside "## Budget Recommendations").
 
 ## Campaign Structure
 - Prospecting (cold audience — 50% budget)

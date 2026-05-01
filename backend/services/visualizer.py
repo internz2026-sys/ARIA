@@ -366,6 +366,85 @@ def _parse_block_json(raw: str) -> dict | None:
     return None
 
 
+def _synthesize_default_budget_chart(text: str) -> str:
+    """Backstop for when the agent (Paperclip-hosted, our Python prompt
+    updates don't reach it) doesn't emit a [GRAPH_DATA] block at all.
+
+    Tries to extract budget tier percentages from common Ad Strategist
+    output patterns:
+      - "Prospecting (TOFU): 60%" / "Awareness 60%"
+      - "Retargeting (MOFU): 20%"
+      - "Conversion (BOFU) / Closing: 20%"
+      - "Awareness/Retargeting/Conversion 50/30/20"
+    If a recognizable 3-tier breakdown is found, injects a synthetic
+    pie-chart block right after the "Budget Recommendations" heading
+    (or appends one if no heading found). Returns text unchanged when
+    no parseable structure exists — better to ship no chart than a
+    fake one.
+    """
+    if "[GRAPH_DATA]" in text.upper():
+        return text  # agent emitted at least one — don't double up
+
+    tier_buckets: dict[str, int] = {}
+
+    # Pattern 1: "Awareness ... NN%" or "Prospecting ... NN%"
+    label_aliases = {
+        "Awareness": ("awareness", "prospecting", "tofu", "top of funnel"),
+        "Retargeting": ("retargeting", "mofu", "middle of funnel", "consideration"),
+        "Conversion": ("conversion", "bofu", "bottom of funnel", "closing"),
+    }
+    pct_re = re.compile(
+        r"(?:^|\n|\||:)\s*(?P<label>[A-Za-z][A-Za-z /()\-]{2,40}?)\s*[:\-|]?\s*"
+        r"(?:[\$\d,]+(?:/day|/month|\s*total)?)?\s*[\(\[]?\s*(?P<pct>\d{1,3})\s*%",
+        re.IGNORECASE,
+    )
+    for m in pct_re.finditer(text):
+        label_lower = m.group("label").strip().lower()
+        try:
+            pct = int(m.group("pct"))
+        except ValueError:
+            continue
+        if pct <= 0 or pct > 100:
+            continue
+        for canonical, aliases in label_aliases.items():
+            if any(a in label_lower for a in aliases):
+                # Take the first match per canonical bucket (avoids
+                # double-counting if the agent mentions a tier twice)
+                tier_buckets.setdefault(canonical, pct)
+                break
+
+    if len(tier_buckets) < 2:
+        return text  # not enough signal — bail rather than fabricate
+    # Normalize to sum 100 if close — small mismatches from "60% / 30% / 15%"
+    total = sum(tier_buckets.values())
+    if total < 80 or total > 120:
+        return text
+    if total != 100:
+        # Scale proportionally so the pie chart is honest about the
+        # split even if the source numbers don't add to 100 exactly.
+        tier_buckets = {
+            k: max(1, round(v * 100 / total)) for k, v in tier_buckets.items()
+        }
+
+    chart_block = (
+        "\n[GRAPH_DATA]\n"
+        + json.dumps({
+            "type": "pie",
+            "title": "Budget Allocation by Campaign Tier",
+            "data": tier_buckets,
+        })
+        + "\n[/GRAPH_DATA]\n"
+    )
+    # Inject after the Budget heading if we can find one
+    budget_heading_re = re.compile(r"(^|\n)(##\s*Budget[^\n]*)\n", re.IGNORECASE)
+    m = budget_heading_re.search(text)
+    if m:
+        insert_at = m.end()
+        return text[:insert_at] + chart_block + text[insert_at:]
+    # Fallback: append at end (still gets rendered, just lives below the brief)
+    return text + chart_block
+
+
 def process_ad_strategist_text(tenant_id: str, text: str) -> str:
     """Scan `text` for [GRAPH_DATA]...[/GRAPH_DATA] blocks, render each
     to a branded PNG, upload, and replace the block with a markdown
@@ -374,10 +453,22 @@ def process_ad_strategist_text(tenant_id: str, text: str) -> str:
     'if the data is malformed, it defaults to the standard text-only
     strategy without crashing.'
 
-    Returns the transformed text. If `text` has no blocks, returns it
-    unchanged (zero overhead for non-chart campaign plans).
+    If the agent didn't emit any [GRAPH_DATA] blocks (common when the
+    agent runs in Paperclip's spawned CLI which has its own system
+    prompt), fall back to `_synthesize_default_budget_chart` which
+    parses the budget breakdown out of the brief and injects a pie
+    chart. Backstop for the case where our Python prompt mandate
+    doesn't propagate to the Paperclip-hosted agent.
+
+    Returns the transformed text. Zero overhead when text has no
+    parseable budget structure either.
     """
-    if not text or "[GRAPH_DATA]" not in text.upper():
+    if not text:
+        return text
+
+    text = _synthesize_default_budget_chart(text)
+
+    if "[GRAPH_DATA]" not in text.upper():
         return text
 
     rendered_count = 0
