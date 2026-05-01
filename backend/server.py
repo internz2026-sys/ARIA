@@ -116,9 +116,28 @@ async def _gmail_sync_loop():
 
 
 async def _scheduler_executor_loop():
-    """Background loop: execute due scheduled tasks every 30 seconds."""
+    """Background loop: execute due scheduled tasks every 30 seconds.
+
+    Also scans the `campaigns` table once per minute for 7-day Copy-Paste
+    performance review reminders (Task A in the campaigns workstream).
+    A campaign is "due" when `metadata.performance_review_at` is in the
+    past AND `metadata.performance_review_fired` is not truthy. We fire
+    a notification and set the fired flag so we don't re-notify.
+
+    The reminder scan runs every other tick (~60s) instead of every
+    tick — the work is cheap, but we don't need second-level
+    responsiveness for "you set this 7 days ago" prompts. Counter is
+    process-local so a container restart re-aligns it (intentional;
+    a brief duplicate-tick window after restart is harmless because
+    of the `performance_review_fired` flag).
+    """
     from backend.services.scheduler import get_due_tasks, execute_task
+    from backend.services.campaigns import (
+        list_due_performance_reviews,
+        mark_performance_review_fired,
+    )
     _log = logging.getLogger("aria.scheduler_executor")
+    review_tick = 0
     while True:
         await asyncio.sleep(30)
         try:
@@ -141,6 +160,56 @@ async def _scheduler_executor_loop():
                 _log.info("Scheduler: processed %d due tasks", len(due))
         except Exception as e:
             _log.warning("Scheduler executor loop failed: %s", e)
+
+        # ── Performance review reminders (every other tick, ~60s) ──
+        review_tick += 1
+        if review_tick % 2 != 0:
+            continue
+        try:
+            due_reviews = list_due_performance_reviews(limit=100)
+        except Exception as e:
+            _log.warning("Performance review scan failed: %s", e)
+            due_reviews = []
+        for camp in due_reviews:
+            tid = camp.get("tenant_id", "")
+            cid = camp.get("id", "")
+            name = (camp.get("campaign_name") or "Untitled Campaign")[:120]
+            if not tid or not cid:
+                continue
+            try:
+                sb = _get_supabase()
+                sb.table("notifications").insert({
+                    "tenant_id": tid,
+                    "title": f"Performance Review: {name}",
+                    "body": (
+                        "It's been 7 days since you launched this campaign — "
+                        "time to review the metrics"
+                    ),
+                    "category": "campaign",
+                    "href": f"/campaigns/{cid}",
+                }).execute()
+            except Exception as e:
+                _log.warning(
+                    "Failed to write performance review notification for %s: %s",
+                    cid, e,
+                )
+                # Don't flip the fired flag — let the next tick retry.
+                continue
+            # Flag the campaign so we don't re-notify on the next sweep.
+            mark_performance_review_fired(tid, cid)
+            try:
+                await sio.emit("notification_created", {
+                    "category": "campaign",
+                    "title": f"Performance Review: {name}",
+                    "href": f"/campaigns/{cid}",
+                }, room=tid)
+            except Exception:
+                pass
+        if due_reviews:
+            _log.info(
+                "Scheduler: fired %d performance review reminders",
+                len(due_reviews),
+            )
 
 
 async def _followup_nudge_loop():

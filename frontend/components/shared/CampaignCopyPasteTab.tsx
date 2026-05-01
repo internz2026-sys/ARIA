@@ -20,6 +20,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { inbox as inboxApi, campaigns as campaignsApi } from "@/lib/api";
+import { useNotifications } from "@/lib/use-notifications";
 
 /* ─── Types ─── */
 
@@ -232,6 +233,7 @@ function CopyButton({
 
 export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpdate }: Props) {
   const inboxItemId: string | undefined = campaign?.inbox_item_id;
+  const { showToast } = useNotifications();
 
   const [item, setItem] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -241,6 +243,10 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
   const [launching, setLaunching] = useState(false);
   const [launchedAt, setLaunchedAt] = useState<string | null>(null);
   const [reviewAt, setReviewAt] = useState<string | null>(null);
+  // Per-session toggle: once a snapshot exists, default to the snapshot
+  // view but let the user flip to live to peek at the current inbox.
+  const [forceLive, setForceLive] = useState(false);
+  const [winnerSaving, setWinnerSaving] = useState(false);
 
   // Hydrate "pasted" state from campaign.metadata so the badge survives
   // a refresh. Backend's update_campaign shallow-merges these keys, so
@@ -252,11 +258,40 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
     setReviewAt(meta.performance_review_at || null);
   }, [campaign?.id, campaign?.metadata]);
 
-  // Lazy-fetch the inbox item this tab is bound to.
+  // Snapshot taken at "I have pasted" time. When present, this is the
+  // source of truth — the inbox item is just a draft store and the
+  // user may have edited it since pasting. Only fall back to a live
+  // inbox read for non-pasted (draft) campaigns or when the user
+  // explicitly clicks "View Latest".
+  const pastedSnapshot: ParsedPlan | null = useMemo(() => {
+    const snap = campaign?.metadata?.pasted_snapshot;
+    if (!snap || typeof snap !== "object") return null;
+    // Defensive: ensure required fields exist with safe fallbacks so
+    // an older / partial snapshot doesn't crash the renderer.
+    return {
+      campaignTitle: snap.campaignTitle || campaign?.campaign_name || "",
+      overview: Array.isArray(snap.overview) ? snap.overview : [],
+      audience: Array.isArray(snap.audience) ? snap.audience : [],
+      variants: Array.isArray(snap.variants) ? snap.variants : [],
+      setupSteps: Array.isArray(snap.setupSteps) ? snap.setupSteps : [],
+    };
+  }, [campaign?.metadata?.pasted_snapshot, campaign?.campaign_name]);
+
+  const useSnapshot = !!pastedSnapshot && !forceLive;
+
+  // Lazy-fetch the inbox item — but only when we actually need to
+  // render from live data (no snapshot yet, or user toggled to live).
+  // Avoids an unnecessary inbox round-trip on snapshot-mode renders.
   useEffect(() => {
     let cancelled = false;
     if (!inboxItemId) {
       setItem(null);
+      setLoading(false);
+      return;
+    }
+    if (useSnapshot && !forceLive) {
+      // We have a snapshot and the user hasn't asked for live —
+      // skip the fetch entirely.
       setLoading(false);
       return;
     }
@@ -275,13 +310,17 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
       }
     })();
     return () => { cancelled = true; };
-  }, [inboxItemId]);
+  }, [inboxItemId, useSnapshot, forceLive]);
 
-  const plan = useMemo<ParsedPlan | null>(() => {
+  const livePlan = useMemo<ParsedPlan | null>(() => {
     const content: string = item?.content || "";
     if (!content) return null;
     return parsePlan(content);
   }, [item?.content]);
+
+  // The plan we actually render — snapshot wins when present unless
+  // the user toggled to live.
+  const plan: ParsedPlan | null = useSnapshot ? pastedSnapshot : livePlan;
 
   const audienceBlockText = useMemo(() => (plan?.audience || []).join("\n"), [plan]);
 
@@ -307,15 +346,24 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
     const pastedAt = now.toISOString();
     const reviewIso = reviewDate.toISOString();
 
+    // Capture the parsed plan AT THIS MOMENT into the snapshot. This
+    // is the canonical version of what the user actually pasted into
+    // Meta — the underlying inbox row may be edited later and
+    // shouldn't retroactively change what we show here. Use the live
+    // plan because we know the snapshot path isn't active yet.
+    const snapshot: ParsedPlan | null = livePlan;
+
     try {
       // Single PATCH carries the status flip + the metadata stamps.
       // Backend shallow-merges metadata so other keys (e.g. campaign
-      // objective parsed from the agent markdown) are preserved.
+      // objective parsed from the agent markdown, winning_variant if
+      // it somehow got set early) are preserved.
       await campaignsApi.update(tenantId, campaign.id, {
         status: "active",
         metadata: {
           pasted_at: pastedAt,
           performance_review_at: reviewIso,
+          ...(snapshot ? { pasted_snapshot: snapshot } : {}),
         },
       });
       setLaunchedAt(pastedAt);
@@ -327,7 +375,42 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
     }
     setLaunching(false);
     onCampaignUpdate();
-  }, [campaign?.id, tenantId, launching, onCampaignUpdate]);
+  }, [campaign?.id, tenantId, launching, livePlan, onCampaignUpdate]);
+
+  // ─── A/B variant winner picker ───
+  // Read the saved winner so the radio + chip restore on load. The
+  // backend stores this as metadata.winning_variant ∈ {A, B, tie}.
+  const winningVariant: "A" | "B" | "tie" | null = useMemo(() => {
+    const w = campaign?.metadata?.winning_variant;
+    return w === "A" || w === "B" || w === "tie" ? w : null;
+  }, [campaign?.metadata?.winning_variant]);
+
+  const handleWinnerChange = useCallback(
+    async (winner: "A" | "B" | "tie") => {
+      if (!campaign?.id || winnerSaving) return;
+      if (winningVariant === winner) return; // no-op
+      setWinnerSaving(true);
+      try {
+        await campaignsApi.updateWinningVariant(tenantId, campaign.id, winner);
+        showToast({ title: "Winner saved", variant: "success" });
+        onCampaignUpdate();
+      } catch (e: any) {
+        showToast({
+          title: "Failed to save winner",
+          body: e?.message || "",
+          variant: "error",
+        });
+      } finally {
+        setWinnerSaving(false);
+      }
+    },
+    [campaign?.id, tenantId, winnerSaving, winningVariant, onCampaignUpdate, showToast],
+  );
+
+  // Show the picker only when the campaign is active AND there are
+  // ≥ 2 variants in the rendered plan.
+  const showWinnerPicker =
+    campaign?.status === "active" && (plan?.variants.length || 0) > 1;
 
   /* ─── Empty / loading states ─── */
 
@@ -352,7 +435,9 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
     );
   }
 
-  if (error || !item || !plan) {
+  // Snapshot mode is allowed to render without `item` — the plan
+  // comes from metadata. Live mode requires both item and plan.
+  if (!plan || (!useSnapshot && (error || !item))) {
     return (
       <div className="bg-white rounded-xl border border-[#E0DED8] p-8 text-center">
         <p className="text-sm text-[#5F5E5A]">{error || "Could not parse campaign plan."}</p>
@@ -364,6 +449,38 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
 
   return (
     <div className="space-y-5">
+      {/* Snapshot banner — only when we're rendering the frozen
+          snapshot (i.e. campaign was pasted, user hasn't toggled to
+          live). Inbox edits after the paste won't propagate here, so
+          we want the user to know they can flip back to the live
+          inbox view if they need to compare. */}
+      {pastedSnapshot && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div className="flex items-start gap-2">
+            <svg className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+            </svg>
+            <p className="text-xs text-amber-900 leading-relaxed">
+              {useSnapshot ? "Snapshot from " : "Showing latest inbox content. Snapshot from "}
+              <strong>
+                {launchedAt
+                  ? new Date(launchedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+                  : "earlier"}
+              </strong>
+              . The original inbox item may have been edited since.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setForceLive((v) => !v)}
+            disabled={!inboxItemId}
+            className="self-start sm:self-auto shrink-0 text-xs font-semibold text-[#534AB7] hover:underline disabled:opacity-50"
+          >
+            {useSnapshot ? "View Latest" : "View Snapshot"}
+          </button>
+        </div>
+      )}
+
       {/* Header strip — title + paste-progress chip + review badge */}
       <div className="bg-white rounded-xl border border-[#E0DED8] p-5">
         <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
@@ -465,19 +582,36 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
           {plan.variants.map((v, idx) => {
             const variantKey = `v${idx}`;
             const isPasted = pastedVariants.has(variantKey);
+            // Map index 0 → A, 1 → B for the winner badge. Variants
+            // beyond B don't get a badge in v1 — the picker only
+            // exposes A / B / tie.
+            const variantLetter: "A" | "B" | null = idx === 0 ? "A" : idx === 1 ? "B" : null;
+            const isWinner = variantLetter != null && winningVariant === variantLetter;
             return (
               <div
                 key={idx}
                 className={`bg-white rounded-xl border p-5 space-y-3 ${
-                  isPasted ? "border-[#534AB7]/30 ring-1 ring-[#534AB7]/10" : "border-[#E0DED8]"
+                  isWinner
+                    ? "border-[#1D9E75]/40 ring-1 ring-[#1D9E75]/15"
+                    : isPasted
+                    ? "border-[#534AB7]/30 ring-1 ring-[#534AB7]/10"
+                    : "border-[#E0DED8]"
                 }`}
               >
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2">
                     <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-[#D85A30] text-white uppercase">Ad</span>
                     <h3 className="text-sm font-semibold text-[#2C2C2A]">{v.label}</h3>
+                    {isWinner && (
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-[#1D9E75] text-white uppercase flex items-center gap-1">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 18.75h-9m9 0a3 3 0 013 3h-15a3 3 0 013-3m9 0v-3.375c0-.621-.503-1.125-1.125-1.125h-.871M7.5 18.75v-3.375c0-.621.504-1.125 1.125-1.125h.872m5.007 0H9.497m5.007 0a7.454 7.454 0 01-.982-3.172M9.497 14.25a7.454 7.454 0 00.981-3.172M5.25 4.236c-.982.143-1.954.317-2.916.52A6.003 6.003 0 007.73 9.728M5.25 4.236V4.5c0 2.108.966 3.99 2.48 5.228M5.25 4.236V2.721C7.456 2.41 9.71 2.25 12 2.25c2.291 0 4.545.16 6.75.47v1.516M7.73 9.728a6.726 6.726 0 002.748 1.35m8.272-6.842V4.5c0 2.108-.966 3.99-2.48 5.228m2.48-5.492a46.32 46.32 0 012.916.52 6.003 6.003 0 01-5.395 4.972m0 0a6.726 6.726 0 01-2.749 1.35m0 0a6.772 6.772 0 01-3.044 0" />
+                        </svg>
+                        Marked as winner
+                      </span>
+                    )}
                   </div>
-                  {isPasted && (
+                  {isPasted && !isWinner && (
                     <span className="text-[10px] font-medium text-[#534AB7] flex items-center gap-1">
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
@@ -523,6 +657,51 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* A/B winner picker — only when active + ≥2 variants */}
+      {showWinnerPicker && (
+        <div className="bg-white rounded-xl border border-[#E0DED8] p-5 space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold text-[#2C2C2A]">Which variant won?</h3>
+            <p className="text-xs text-[#9E9C95] mt-0.5">
+              Tell ARIA which ad performed better. This data shapes the Ad Strategist's
+              recommendations on future campaigns.
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2">
+            {([
+              { key: "A", label: "Variant A won" },
+              { key: "B", label: "Variant B won" },
+              { key: "tie", label: "Tie / unclear" },
+            ] as Array<{ key: "A" | "B" | "tie"; label: string }>).map((opt) => {
+              const checked = winningVariant === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => handleWinnerChange(opt.key)}
+                  disabled={winnerSaving}
+                  className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition disabled:opacity-50 ${
+                    checked
+                      ? "border-[#1D9E75] bg-[#E6F5EE] text-[#1D9E75]"
+                      : "border-[#E0DED8] bg-white text-[#2C2C2A] hover:border-[#534AB7]/40 hover:bg-[#F8F8F6]"
+                  }`}
+                  aria-pressed={checked}
+                >
+                  <span
+                    className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+                      checked ? "border-[#1D9E75]" : "border-[#9E9C95]"
+                    }`}
+                  >
+                    {checked && <span className="w-2 h-2 rounded-full bg-[#1D9E75]" />}
+                  </span>
+                  <span className="flex-1 text-left">{opt.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 

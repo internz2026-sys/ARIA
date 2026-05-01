@@ -237,6 +237,51 @@ export const campaigns = {
     fetchAPI(`/api/campaigns/${tenantId}`, { method: "POST", body: JSON.stringify(data) }),
   update: (tenantId: string, id: string, data: any) =>
     fetchAPI(`/api/campaigns/${tenantId}/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  /**
+   * Convenience: write a `metadata.performance` block. Backend (Coder 2's
+   * `update_campaign_metrics` helper, exposed via the existing
+   * UpdateCampaignBody.metadata field) shallow-merges this into the
+   * existing campaigns.metadata, so other keys (pasted_at, snapshot,
+   * winning_variant, etc.) are preserved.
+   */
+  updateMetrics: (
+    tenantId: string,
+    id: string,
+    perf: {
+      clicks?: number | null;
+      leads?: number | null;
+      spend?: number | null;
+      ctr?: number | null;
+      cpl?: number | null;
+      notes?: string;
+    },
+  ) =>
+    fetchAPI(`/api/campaigns/${tenantId}/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        metadata: {
+          performance: { ...perf, recorded_at: new Date().toISOString() },
+        },
+      }),
+    }),
+  /**
+   * Convenience: status state-machine transitions. The Coder 1
+   * whitelist enforces the value set on the backend
+   * (draft/active/paused/completed/archived); anything else 400's.
+   */
+  updateStatus: (tenantId: string, id: string, status: string) =>
+    fetchAPI(`/api/campaigns/${tenantId}/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
+  /**
+   * Convenience: stamp the chosen A/B winner into metadata.
+   */
+  updateWinningVariant: (tenantId: string, id: string, winner: "A" | "B" | "tie") =>
+    fetchAPI(`/api/campaigns/${tenantId}/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ metadata: { winning_variant: winner } }),
+    }),
   delete: (tenantId: string, id: string) =>
     fetchAPI(`/api/campaigns/${tenantId}/${id}`, { method: "DELETE" }),
   listReports: (tenantId: string, campaignId: string) =>

@@ -31,7 +31,89 @@ class AdStrategistAgent(BaseAgent):
     MAX_TOKENS = 1500
     CONTEXT_FIELDS = {"business", "product", "differentiators", "audience", "pain_points"}
 
+    @staticmethod
+    def _format_past_performance_block(tenant_id: str) -> str:
+        """Build the 'Past Campaign Performance' prompt section.
+
+        Pulls up to 3 recent Ad Strategist campaigns for the tenant
+        whose `metadata.performance` is populated, formats each as a
+        single summary line, and wraps them in a markdown block the
+        model can use to learn from prior wins / losses. Returns an
+        empty string if no past campaigns have metrics — caller must
+        skip the section entirely instead of injecting an empty block.
+
+        Best-effort: any DB error or import failure short-circuits to
+        an empty string so an unmigrated tenant or transient outage
+        never blocks the agent run.
+        """
+        if not tenant_id:
+            return ""
+        try:
+            from backend.services.campaigns import (
+                list_recent_campaigns_with_metrics,
+            )
+        except Exception:
+            return ""
+        try:
+            past = list_recent_campaigns_with_metrics(
+                tenant_id, source_type="ad_strategist", limit=3,
+            )
+        except Exception as e:
+            logger.debug(
+                "[ad_strategist] past-performance lookup failed: %s", e,
+            )
+            return ""
+        if not past:
+            return ""
+
+        lines: list[str] = []
+        for camp in past:
+            name = (camp.get("campaign_name") or "Untitled")[:80]
+            meta = camp.get("metadata") or {}
+            perf = meta.get("performance") or {}
+            winning = meta.get("winning_variant") or "n/a"
+
+            def _fmt(key: str) -> str:
+                v = perf.get(key)
+                if v is None or v == "":
+                    return "?"
+                return str(v)
+
+            clicks = _fmt("clicks")
+            leads = _fmt("leads")
+            spend = _fmt("spend")
+            cpl = _fmt("cpl")
+            lines.append(
+                f"- {name}: {clicks} clicks, {leads} leads, "
+                f"${spend} spend, CPL ${cpl}, winning_variant={winning}"
+            )
+
+        return (
+            "## Past Campaign Performance (for learning)\n"
+            "Reference the following past results from this tenant. Use these to:\n"
+            "- Avoid copy/audience patterns that underperformed\n"
+            "- Lean into patterns that won\n"
+            "- Pick the variant style (A=<X>, B=<Y>) that historically "
+            "converted better\n\n"
+            + "\n".join(lines)
+        )
+
     def build_system_prompt(self, config, action: str) -> str:
+        # Past Performance Context — closes the feedback loop so each
+        # new brief is informed by what actually worked last time.
+        # Injected RIGHT BEFORE the "Output in clean markdown" line per
+        # the workstream spec; falls back to empty string when the
+        # tenant has no past Ad Strategist campaigns with metrics.
+        past_perf_block = ""
+        try:
+            tid = str(getattr(config, "tenant_id", "") or "")
+            if tid:
+                past_perf_block = self._format_past_performance_block(tid)
+        except Exception as e:
+            logger.debug("[ad_strategist] perf-block injection skipped: %s", e)
+        past_perf_section = (
+            f"\n\n{past_perf_block}\n\n" if past_perf_block else "\n\n"
+        )
         return f"""You are the Ad Strategist for {config.business_name}.
 
 {self.business_context(config, self.CONTEXT_FIELDS)}
@@ -39,8 +121,7 @@ Pricing: {config.product.pricing_info}
 Positioning: {config.gtm_playbook.positioning}
 
 Write for beginners who have never used ads before. Use clear, readable formatting.
-
-Output in clean markdown (NOT JSON). Structure your response like this:
+{past_perf_section}Output in clean markdown (NOT JSON). Structure your response like this:
 
 # Campaign: <unique descriptive title — REQUIRED>
 

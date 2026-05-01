@@ -319,6 +319,21 @@ async def delete_inbox_item(item_id: str, permanent: bool = False, reason: str =
 
     # Soft-delete: flip to cancelled, stash previous_status + reason
     # in metadata so Restore can put the row back where it was.
+    #
+    # CRITICAL: this branch must NEVER fall through to a hard DELETE.
+    # We had a silent `except Exception: sb.delete()` fallback here
+    # for ages — it swallowed every soft-cancel failure (JSONB merge
+    # error, RLS hiccup, transient supabase-py error, anything) and
+    # quietly nuked the row instead of leaving it intact for retry.
+    # Symptom: bulk-cancel said "Moved to Cancelled" but rows actually
+    # left the DB and the Cancelled tab stayed empty (counts response
+    # had no `cancelled` key because zero rows landed in that status).
+    # If the metadata merge is the failure point we retry once with a
+    # minimal payload (status only) so the user's "stop this work"
+    # intent still flips the row out of the active tabs; only after
+    # that second try fails do we surface a 500 so the row stays in
+    # the DB and the user can see something went wrong instead of
+    # silently losing data.
     new_metadata = dict(existing_metadata)
     if previous_status and previous_status != "cancelled":
         new_metadata["previous_status"] = previous_status
@@ -330,11 +345,26 @@ async def delete_inbox_item(item_id: str, permanent: bool = False, reason: str =
             "status": "cancelled",
             "metadata": new_metadata,
         }).eq("id", item_id).execute()
-    except Exception:
-        # Worst case fall back to hard delete if the update fails
-        # (shouldn't happen, but better than leaving the row stuck)
-        sb.table("inbox_items").delete().eq("id", item_id).execute()
-        return {"deleted": item_id, "permanent": True, "fallback_hard_delete": True}
+    except Exception as e:
+        logger.warning(
+            "[inbox-delete] soft-cancel metadata write failed for %s: %s -- "
+            "retrying with status-only update",
+            item_id, e,
+        )
+        try:
+            sb.table("inbox_items").update({
+                "status": "cancelled",
+            }).eq("id", item_id).execute()
+        except Exception as e2:
+            logger.error(
+                "[inbox-delete] soft-cancel status-only retry ALSO failed for "
+                "%s: %s -- leaving row intact and surfacing 500 (do NOT silently "
+                "hard-delete; that masks data-loss bugs)", item_id, e2,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"soft-cancel failed: {e2}",
+            )
     return {
         "deleted": item_id,
         "permanent": False,

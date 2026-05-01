@@ -71,6 +71,11 @@ def update_campaign(tenant_id: str, campaign_id: str, updates: dict) -> dict:
     # a subset of keys (e.g. {pasted_at, performance_review_at}), and
     # we don't want to clobber unrelated keys the agent may have
     # written (e.g. campaign_objective, projected_budget).
+    #
+    # Special case: a nested `metadata.performance` dict is itself
+    # shallow-merged with the existing performance sub-object so the
+    # frontend can PATCH partial metric updates (e.g. {clicks: 100})
+    # without wiping previously saved keys (spend, leads, …).
     if "metadata" in updates and isinstance(updates["metadata"], dict):
         try:
             existing = (
@@ -83,7 +88,16 @@ def update_campaign(tenant_id: str, campaign_id: str, updates: dict) -> dict:
             )
             current = (existing.data or {}).get("metadata") or {}
             if isinstance(current, dict):
-                merged = {**current, **updates["metadata"]}
+                incoming = updates["metadata"]
+                # Two-level merge for `performance` only — every other
+                # key is treated as an opaque scalar replacement.
+                if (
+                    isinstance(incoming.get("performance"), dict)
+                    and isinstance(current.get("performance"), dict)
+                ):
+                    merged_perf = {**current["performance"], **incoming["performance"]}
+                    incoming = {**incoming, "performance": merged_perf}
+                merged = {**current, **incoming}
                 updates["metadata"] = merged
         except Exception as e:
             # Lookup failure shouldn't block the PATCH; we just lose
@@ -92,6 +106,183 @@ def update_campaign(tenant_id: str, campaign_id: str, updates: dict) -> dict:
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     sb.table("campaigns").update(updates).eq("id", campaign_id).eq("tenant_id", tenant_id).execute()
     return {"updated": campaign_id, "changes": updates}
+
+
+def update_campaign_metrics(
+    tenant_id: str,
+    campaign_id: str,
+    metrics: dict,
+) -> dict | None:
+    """Merge user-reported performance metrics into `metadata.performance`.
+
+    `metrics` is an open-ended dict — `{clicks, leads, spend, cpl, ctr,
+    cpc, impressions, ...}` — no whitelist, so the frontend can add new
+    KPI fields without a backend change. Re-running with the same values
+    is a no-op (Postgres treats the JSONB write as identical), so this
+    is safe to call from a debounced "Save metrics" button.
+
+    Stores into `metadata.performance` (a sub-object) so we don't pollute
+    the top-level metadata namespace where Ad Strategist outputs already
+    live (campaign_objective, projected_budget, etc).
+
+    Returns the full updated row, or `None` on DB error / empty input.
+    Mirrors the shape used by Coder 1's `UpdateCampaignBody` — callers
+    that already go through `PATCH /api/campaigns/{id}` with
+    `{metadata: {performance: {...}}}` get the same merge semantics from
+    `update_campaign` above. This helper exists for in-process callers
+    (CEO actions, scheduler hooks, future analytics ingestion) that
+    want a single dedicated entry point.
+    """
+    if not tenant_id or not campaign_id or not isinstance(metrics, dict):
+        return None
+    # Drop None values so the frontend can clear a metric by sending
+    # `{clicks: null}` if it ever wants to. Empty dict short-circuits.
+    cleaned = {k: v for k, v in metrics.items() if v is not None}
+    if not cleaned:
+        # Idempotent no-op: nothing to merge.
+        return get_campaign(tenant_id, campaign_id) or None
+    try:
+        # Reuse update_campaign so the two-level merge logic stays in
+        # one place — this is the helper for in-process callers, the
+        # PATCH route lands here too (via update_campaign).
+        update_campaign(
+            tenant_id,
+            campaign_id,
+            {"metadata": {"performance": cleaned}},
+        )
+        row = get_campaign(tenant_id, campaign_id)
+        return row or None
+    except Exception as e:
+        logger.error(
+            "[campaigns] update_campaign_metrics failed (tenant=%s campaign=%s): %s",
+            tenant_id, campaign_id, e,
+        )
+        return None
+
+
+def list_due_performance_reviews(limit: int = 100) -> list[dict]:
+    """Return campaigns whose 7-day Copy-Paste reminder is due.
+
+    A row is "due" when:
+      - metadata.performance_review_at is set and is in the past, AND
+      - metadata.performance_review_fired is NOT truthy
+
+    The supabase-py client doesn't have first-class JSONB-key filters,
+    so we pull a small page of candidate rows (those whose metadata is
+    non-null) and filter in Python. Campaigns table is small per
+    tenant; one query per scheduler tick is fine.
+
+    Used by the scheduler executor loop in server.py to fan reminder
+    notifications out to the user's bell. Set
+    `metadata.performance_review_fired = true` after firing so we
+    don't re-notify.
+    """
+    sb = get_db()
+    try:
+        # Pull candidate rows that have at least *some* metadata.
+        # We can't `not_.is_("metadata->>performance_review_at", "null")`
+        # via supabase-py, so the broad pull + Python filter is the
+        # pragmatic shape. `limit` is a guardrail; in practice a tenant
+        # rarely has more than a handful of pending reviews at once.
+        result = (
+            sb.table("campaigns")
+            .select("id,tenant_id,campaign_name,metadata")
+            .not_.is_("metadata", "null")
+            .limit(limit)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("[campaigns] list_due_performance_reviews query failed: %s", e)
+        return []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    due: list[dict] = []
+    for row in result.data or []:
+        meta = row.get("metadata") or {}
+        if not isinstance(meta, dict):
+            continue
+        review_at = meta.get("performance_review_at")
+        if not review_at or not isinstance(review_at, str):
+            continue
+        if meta.get("performance_review_fired"):
+            continue
+        # ISO-8601 lex-compares correctly for UTC timestamps the Copy-
+        # Paste tab writes, so a string compare is safe and avoids
+        # the parsing cost on every scan.
+        if review_at > now_iso:
+            continue
+        due.append(row)
+    return due
+
+
+def mark_performance_review_fired(tenant_id: str, campaign_id: str) -> bool:
+    """Flag a campaign as 'reminder already sent' so we don't re-notify.
+
+    Sets `metadata.performance_review_fired = true` (merged into
+    existing metadata via update_campaign's shallow-merge). Returns
+    True on success, False on DB error — callers should log but not
+    raise, since a missed flag at worst causes a duplicate
+    notification on the next scheduler tick.
+    """
+    try:
+        update_campaign(
+            tenant_id,
+            campaign_id,
+            {"metadata": {"performance_review_fired": True}},
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            "[campaigns] mark_performance_review_fired failed (tenant=%s id=%s): %s",
+            tenant_id, campaign_id, e,
+        )
+        return False
+
+
+def list_recent_campaigns_with_metrics(
+    tenant_id: str,
+    *,
+    source_type: str = "ad_strategist",
+    limit: int = 3,
+) -> list[dict]:
+    """Return the most recent campaigns for `tenant_id` that have
+    `metadata.performance` populated. Used by the Ad Strategist's
+    Past Performance Context prompt block to close the feedback loop.
+
+    Filter is done in Python because supabase-py doesn't expose a
+    first-class JSONB-key-presence filter. We pull a slightly larger
+    page than `limit` and stop once we've collected `limit` rows that
+    actually have metrics.
+    """
+    if not tenant_id:
+        return []
+    sb = get_db()
+    try:
+        result = (
+            sb.table("campaigns")
+            .select("id,campaign_name,metadata,created_at")
+            .eq("tenant_id", tenant_id)
+            .eq("source_type", source_type)
+            .order("created_at", desc=True)
+            .limit(max(limit * 4, 12))
+            .execute()
+        )
+    except Exception as e:
+        logger.warning(
+            "[campaigns] list_recent_campaigns_with_metrics query failed: %s", e,
+        )
+        return []
+    out: list[dict] = []
+    for row in result.data or []:
+        meta = row.get("metadata") or {}
+        if not isinstance(meta, dict):
+            continue
+        perf = meta.get("performance")
+        if not isinstance(perf, dict) or not perf:
+            continue
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def delete_campaign(tenant_id: str, campaign_id: str) -> dict:

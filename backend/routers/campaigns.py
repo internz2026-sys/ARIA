@@ -89,6 +89,19 @@ class UpdateCampaignBody(BaseModel):
     metadata: Optional[dict] = None
 
 
+# Canonical campaign status set. Anything outside this is rejected from PATCH so
+# typos / mis-cased strings (e.g. "Active", "live", "running") can't land in the
+# DB and leak a campaign past whichever filter ("active"/"completed") the rest
+# of the app uses. Same idiom as _VALID_INBOX_STATUSES in routers/inbox.py.
+_VALID_CAMPAIGN_STATUSES = frozenset({
+    "draft",
+    "active",
+    "paused",
+    "completed",
+    "archived",
+})
+
+
 # ── Campaign CRUD ───────────────────────────────────────────────────────────────
 
 @router.get("/{tenant_id}")
@@ -120,6 +133,24 @@ async def update_campaign(tenant_id: str, campaign_id: str, body: UpdateCampaign
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(400, "No fields to update")
+    # Status whitelist + normalization. Lowercase + strip so "Active" /
+    # "  draft  " all land canonically; reject anything outside the
+    # canonical set with a 400 so a buggy caller can't silently poison
+    # the row (e.g. "live" / "running" / "paused" mis-spellings break
+    # the campaigns-list status filter forever). Same pattern as the
+    # inbox PATCH validator in backend/routers/inbox.py.
+    if "status" in updates:
+        raw = updates["status"]
+        if not isinstance(raw, str):
+            raise HTTPException(400, "status must be a string")
+        normalized = raw.strip().lower()
+        if normalized not in _VALID_CAMPAIGN_STATUSES:
+            raise HTTPException(
+                400,
+                f"invalid status {raw!r}; must be one of "
+                f"{sorted(_VALID_CAMPAIGN_STATUSES)}",
+            )
+        updates["status"] = normalized
     return campaign_service.update_campaign(tenant_id, campaign_id, updates)
 
 
