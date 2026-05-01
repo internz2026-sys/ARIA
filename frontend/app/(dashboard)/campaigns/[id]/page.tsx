@@ -531,6 +531,39 @@ export default function CampaignDetailPage() {
             </div>
           )}
 
+          {/* Performance Visualizations — branded PNG charts generated
+              deterministically from the parsed metrics (services/visualizer.py
+              :generate_overview_charts_from_metrics, fired post-upload as a
+              background task). Source of truth: latestReport.raw_metrics_json.charts
+              array of {type, title, url}. Falls through silently if charts
+              aren't present yet (still generating, generation failed, or the
+              metrics shape didn't qualify for any chart). */}
+          {latestReport?.raw_metrics_json?.charts &&
+            Array.isArray(latestReport.raw_metrics_json.charts) &&
+            latestReport.raw_metrics_json.charts.length > 0 && (
+            <div className="bg-white rounded-xl border border-[#E0DED8] p-5">
+              <h3 className="text-sm font-semibold text-[#2C2C2A] mb-4">Performance Visualizations</h3>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {(latestReport.raw_metrics_json.charts as Array<{type: string; title: string; url: string}>).map((c, i) => (
+                  <figure key={i} className="rounded-lg border border-[#E0DED8] overflow-hidden bg-[#FAFAF8]">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={c.url}
+                      alt={c.title || `Chart ${i + 1}`}
+                      className="w-full h-auto block"
+                      loading="lazy"
+                    />
+                    {c.title ? (
+                      <figcaption className="text-xs text-center text-[#5F5E5A] py-2 px-3 italic border-t border-[#E0DED8] bg-white">
+                        {c.title}
+                      </figcaption>
+                    ) : null}
+                  </figure>
+                ))}
+              </div>
+            </div>
+          )}
+
           {!latestReport && (
             <div className="bg-white rounded-xl border border-[#E0DED8] p-8 text-center">
               <p className="text-sm text-[#5F5E5A] mb-3">No reports uploaded yet. Upload a Facebook Ads CSV to see metrics.</p>

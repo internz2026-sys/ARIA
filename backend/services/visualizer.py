@@ -430,3 +430,101 @@ def process_ad_strategist_text(tenant_id: str, text: str) -> str:
             rendered_count, tenant_id,
         )
     return "".join(out_parts)
+
+
+def generate_overview_charts_from_metrics(
+    tenant_id: str,
+    raw_metrics_json: dict,
+) -> list[dict]:
+    """Deterministic chart generation for the Campaign Overview tab.
+
+    Inputs the parsed `raw_metrics_json` dict from a campaign_reports
+    row (shape: `{totals: {spend, impressions, reach, clicks, conversions, ...},
+    campaigns: [{campaign_name, metrics: {...}}, ...]}`) and renders
+    a small set of charts directly from the numbers — no AI involved,
+    no [GRAPH_DATA] blocks, no Haiku call. Charts are uploaded to
+    Supabase storage; the function returns a list of
+    `{type, title, url}` dicts ready to embed in the response payload.
+
+    Selection logic (skips a chart silently when its source metrics
+    are missing — never fabricates data to fill a chart):
+      - `funnel`: Impressions → Reach → Clicks → Conversions, when at
+        least 3 of those 4 metrics are present and non-zero.
+      - `bar`: per-campaign clicks comparison, when the report has 2+
+        named campaigns with a `clicks` metric.
+      - `pie`: per-campaign spend distribution, when the report has
+        2+ named campaigns with a `spend` metric.
+
+    Returns `[]` on any DB / matplotlib / storage hiccup so the upload
+    pipeline never fails because chart generation flaked.
+    """
+    if not tenant_id or not isinstance(raw_metrics_json, dict):
+        return []
+
+    out: list[dict] = []
+    totals = raw_metrics_json.get("totals") or {}
+    campaigns = raw_metrics_json.get("campaigns") or []
+
+    def _try_render(chart_type: str, title: str, data: dict) -> None:
+        try:
+            png = render_chart_from_block(
+                {"type": chart_type, "title": title, "data": data}
+            )
+            if not png:
+                return
+            url = upload_chart_to_storage(tenant_id, png)
+            if url:
+                out.append({"type": chart_type, "title": title, "url": url})
+        except Exception as e:
+            logger.warning(
+                "[visualizer] overview chart %r skipped: %s", title, e,
+            )
+
+    def _num(v) -> float:
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Funnel — Impressions → Reach → Clicks → Conversions
+    funnel_data = {}
+    for src_key, label in (
+        ("impressions", "Impressions"),
+        ("reach", "Reach"),
+        ("clicks", "Clicks"),
+        ("conversions", "Conversions"),
+    ):
+        val = _num(totals.get(src_key))
+        if val > 0:
+            funnel_data[label] = val
+    if len(funnel_data) >= 3:
+        _try_render("funnel", "Performance Funnel", funnel_data)
+
+    # Per-campaign bar (clicks comparison)
+    if isinstance(campaigns, list) and len(campaigns) >= 2:
+        bar_data: dict[str, float] = {}
+        pie_data: dict[str, float] = {}
+        for c in campaigns[:8]:  # cap at 8 for legibility
+            if not isinstance(c, dict):
+                continue
+            name = (c.get("campaign_name") or "").strip()[:30]
+            if not name:
+                continue
+            metrics = c.get("metrics") or {}
+            clicks = _num(metrics.get("clicks") or metrics.get("link_clicks"))
+            spend = _num(metrics.get("spend"))
+            if clicks > 0:
+                bar_data[name] = clicks
+            if spend > 0:
+                pie_data[name] = spend
+        if len(bar_data) >= 2:
+            _try_render("bar", "Clicks by Campaign", bar_data)
+        if len(pie_data) >= 2:
+            _try_render("pie", "Spend Distribution", pie_data)
+
+    if out:
+        logger.info(
+            "[visualizer] generated %d overview chart(s) for tenant %s",
+            len(out), tenant_id,
+        )
+    return out

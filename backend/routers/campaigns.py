@@ -57,6 +57,52 @@ async def _auto_generate_ai_report(tenant_id: str, report_id: str, campaign_id: 
             pass
 
 
+async def _auto_generate_overview_charts(tenant_id: str, report_id: str):
+    """Background task: deterministically generate Overview-tab charts
+    from the freshly-uploaded report's parsed metrics. Runs separately
+    from the AI report (which is text-only narrative now); this one is
+    pure data → matplotlib → Supabase storage, no Haiku call.
+
+    Mutates the report row's raw_metrics_json by adding a `charts`
+    array of `{type, title, url}` dicts. Frontend Overview tab reads
+    that array and renders each chart as a <figure>. Best-effort:
+    DB / matplotlib / storage hiccups silently log and leave the
+    `charts` field absent (the Overview falls back to metric tiles
+    only).
+    """
+    try:
+        report = campaign_service.get_report(tenant_id, report_id)
+        if not report:
+            logger.warning("Overview charts skipped — report not found: %s", report_id)
+            return
+        raw_metrics = report.get("raw_metrics_json") or {}
+        if not isinstance(raw_metrics, dict):
+            return
+
+        from backend.services.visualizer import generate_overview_charts_from_metrics
+        # Run matplotlib synchronously inside this task's event loop —
+        # it's CPU-bound but fast (a few hundred ms per chart) and
+        # already off the request hot path since the whole helper is
+        # a background task fired post-response.
+        charts = generate_overview_charts_from_metrics(tenant_id, raw_metrics)
+        if not charts:
+            return
+
+        # Re-fetch raw_metrics_json in case create_report mutated it
+        # in-flight, then merge the new charts list and persist.
+        merged = dict(raw_metrics)
+        merged["charts"] = charts
+        campaign_service.update_report(tenant_id, report_id, {
+            "raw_metrics_json": merged,
+        })
+        logger.info(
+            "Overview charts generated for report %s — %d chart(s)",
+            report_id, len(charts),
+        )
+    except Exception as e:
+        logger.error("Overview chart generation failed for report %s: %s", report_id, e)
+
+
 # ── Request models ──────────────────────────────────────────────────────────────
 
 class CreateCampaignBody(BaseModel):
@@ -231,10 +277,13 @@ async def upload_report(
         report_end_date=date_end,
     )
 
-    # Auto-generate AI report in the background
+    # Auto-generate AI report (text narrative) AND Overview charts
+    # (deterministic visualizations) in the background, in parallel —
+    # neither blocks the upload response.
     report = report_result.get("report")
     if report:
         asyncio.create_task(_auto_generate_ai_report(tenant_id, report["id"], campaign_id))
+        asyncio.create_task(_auto_generate_overview_charts(tenant_id, report["id"]))
 
     return {
         "status": "uploaded",
@@ -291,10 +340,12 @@ async def upload_and_create_campaign(
         report_end_date=date_end,
     )
 
-    # Auto-generate AI report in the background
+    # Auto-generate AI report (text narrative) AND Overview charts
+    # (deterministic visualizations) in the background, in parallel.
     report = report_result.get("report")
     if report:
         asyncio.create_task(_auto_generate_ai_report(tenant_id, report["id"], campaign["id"]))
+        asyncio.create_task(_auto_generate_overview_charts(tenant_id, report["id"]))
 
     return {
         "status": "created",
