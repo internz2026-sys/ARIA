@@ -67,6 +67,28 @@ def create_campaign(tenant_id: str, data: dict) -> dict:
 
 def update_campaign(tenant_id: str, campaign_id: str, updates: dict) -> dict:
     sb = get_db()
+    # Shallow-merge `metadata` — callers (Copy-Paste tab) PATCH only
+    # a subset of keys (e.g. {pasted_at, performance_review_at}), and
+    # we don't want to clobber unrelated keys the agent may have
+    # written (e.g. campaign_objective, projected_budget).
+    if "metadata" in updates and isinstance(updates["metadata"], dict):
+        try:
+            existing = (
+                sb.table("campaigns")
+                .select("metadata")
+                .eq("id", campaign_id)
+                .eq("tenant_id", tenant_id)
+                .single()
+                .execute()
+            )
+            current = (existing.data or {}).get("metadata") or {}
+            if isinstance(current, dict):
+                merged = {**current, **updates["metadata"]}
+                updates["metadata"] = merged
+        except Exception as e:
+            # Lookup failure shouldn't block the PATCH; we just lose
+            # the merge and overwrite. Logged for visibility.
+            logger.debug("[campaigns] metadata merge fallback to overwrite: %s", e)
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     sb.table("campaigns").update(updates).eq("id", campaign_id).eq("tenant_id", tenant_id).execute()
     return {"updated": campaign_id, "changes": updates}
@@ -177,3 +199,109 @@ def get_campaign_with_latest_report(tenant_id: str, campaign_id: str) -> dict:
     latest = get_latest_report(tenant_id, campaign_id)
     campaign["latest_report"] = latest
     return campaign
+
+
+# ─── Inbox -> Campaigns Mirror ──────────────────────────────────────────────────
+#
+# When the Ad Strategist finalizes a deliverable, the inbox CREATE
+# handler mirrors the row into the campaigns table so the Campaigns
+# page Copy-Paste tab can surface it as a queued draft. Default status
+# is "draft" — the tab flips it to "active" once the user clicks
+# "I've pasted this into Ads Manager".
+
+
+def create_campaign_from_inbox(
+    tenant_id: str,
+    *,
+    inbox_item_id: str,
+    task_id: str | None = None,
+    title: str,
+    status: str = "draft",
+    metadata: dict | None = None,
+) -> dict | None:
+    """Insert a campaigns row mirroring a finalized inbox deliverable.
+
+    Idempotent: if a campaigns row already exists for `inbox_item_id`
+    we return the existing row instead of inserting a duplicate. The
+    partial unique index on (inbox_item_id) is the backstop, but we
+    check first to avoid noisy 23505 conflicts when retries / dual
+    paths (skill-curl + watcher placeholder) fire.
+
+    Returns the row dict, or None on DB error (logged, never raised —
+    the agent's deliverable is already in the inbox + Projects, so a
+    Campaigns mirror failure must not break the user-visible flow).
+    """
+    if not tenant_id or not inbox_item_id:
+        logger.warning("[campaigns] create_campaign_from_inbox: missing tenant_id or inbox_item_id")
+        return None
+    try:
+        sb = get_db()
+        # Idempotency: skip if a campaigns row already references this inbox item
+        try:
+            existing = (
+                sb.table("campaigns")
+                .select("*")
+                .eq("tenant_id", tenant_id)
+                .eq("inbox_item_id", inbox_item_id)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                logger.info(
+                    "[campaigns] row already exists for inbox %s — skipping insert",
+                    inbox_item_id,
+                )
+                return existing.data[0]
+        except Exception as e:
+            # Column missing on unmigrated DB — fall through to insert;
+            # the unique index will reject duplicates if it exists,
+            # otherwise we accept the small dup risk.
+            logger.debug("[campaigns] idempotency lookup skipped: %s", e)
+
+        meta = metadata or {}
+        row: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "campaign_name": (title or "Untitled Campaign")[:200],
+            "platform": "facebook",
+            "objective": (meta.get("campaign_objective") or "")[:120],
+            "status": status,
+            "source_type": "ad_strategist",
+            "inbox_item_id": inbox_item_id,
+            "metadata": meta,
+        }
+        if task_id:
+            row["task_id"] = task_id
+        # Strip empty strings so column defaults can kick in
+        row = {k: v for k, v in row.items() if v not in (None, "")}
+
+        result = sb.table("campaigns").insert(row).execute()
+        created = result.data[0] if result.data else None
+        if created:
+            logger.info(
+                "[campaigns] mirrored inbox %s -> campaign %s (task=%s)",
+                inbox_item_id, created.get("id"), task_id,
+            )
+        return created
+    except Exception as e:
+        # 23505 = duplicate key on the partial unique index — race
+        # with a concurrent path. Re-fetch and return the winner so
+        # the caller still gets a row back.
+        msg = str(e)
+        if "23505" in msg or "duplicate key" in msg.lower():
+            try:
+                sb = get_db()
+                row_lookup = (
+                    sb.table("campaigns")
+                    .select("*")
+                    .eq("tenant_id", tenant_id)
+                    .eq("inbox_item_id", inbox_item_id)
+                    .limit(1)
+                    .execute()
+                )
+                if row_lookup.data:
+                    logger.info("[campaigns] insert race resolved — returning existing row")
+                    return row_lookup.data[0]
+            except Exception:
+                pass
+        logger.error("[campaigns] create_campaign_from_inbox failed: %s", e)
+        return None

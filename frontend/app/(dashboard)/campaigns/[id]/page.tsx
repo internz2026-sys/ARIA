@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { campaigns as campaignsApi } from "@/lib/api";
+import CampaignCopyPasteTab from "@/components/shared/CampaignCopyPasteTab";
 
 /* ─── Helpers ─── */
 
@@ -204,7 +205,7 @@ export default function CampaignDetailPage() {
   const [reports, setReports] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "ai" | "history">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "copypaste" | "ai" | "history">("overview");
 
   const load = useCallback(async () => {
     if (!tenantId || !id) return;
@@ -395,20 +396,32 @@ export default function CampaignDetailPage() {
 
       {/* Tabs */}
       <div className="border-b border-[#E0DED8]">
-        <div className="flex gap-6">
-          {(["overview", "ai", "history"] as const).map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`pb-2 text-sm font-medium border-b-2 transition ${
-                activeTab === tab
-                  ? "border-[#534AB7] text-[#534AB7]"
-                  : "border-transparent text-[#9E9C95] hover:text-[#2C2C2A]"
-              }`}
-            >
-              {tab === "overview" ? "Overview" : tab === "ai" ? "AI Report" : "Report History"}
-            </button>
-          ))}
+        <div className="flex gap-6 overflow-x-auto">
+          {(() => {
+            const tabs: Array<{ key: typeof activeTab; label: string }> = [
+              { key: "overview", label: "Overview" },
+            ];
+            // Copy-Paste tab only when this campaign was created from an Ad
+            // Strategist inbox draft (campaigns mirror sets inbox_item_id).
+            if (campaign?.inbox_item_id) {
+              tabs.push({ key: "copypaste", label: "Copy-Paste" });
+            }
+            tabs.push({ key: "ai", label: "AI Report" });
+            tabs.push({ key: "history", label: "Report History" });
+            return tabs.map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className={`pb-2 text-sm font-medium border-b-2 transition whitespace-nowrap ${
+                  activeTab === key
+                    ? "border-[#534AB7] text-[#534AB7]"
+                    : "border-transparent text-[#9E9C95] hover:text-[#2C2C2A]"
+                }`}
+              >
+                {label}
+              </button>
+            ));
+          })()}
         </div>
       </div>
 
@@ -458,6 +471,14 @@ export default function CampaignDetailPage() {
             </div>
           )}
         </div>
+      )}
+
+      {activeTab === "copypaste" && (
+        <CampaignCopyPasteTab
+          tenantId={tenantId}
+          campaign={campaign}
+          onCampaignUpdate={load}
+        />
       )}
 
       {activeTab === "ai" && (

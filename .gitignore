@@ -43,6 +43,15 @@ Thumbs.db
 .vscode/settings.json
 *.log
 
+# ─── Playwright test artifacts ─────────────────────────────────────────────
+# Screenshots from the playwright-tester subagent + ad-hoc Playwright MCP
+# runs accumulate quickly. Keep them out of git unless explicitly needed
+# for a PR (in which case commit individually with `git add -f`).
+# We ignore the contents but keep the directory tracked via .gitkeep.
+tests/playwright/screenshots/*
+!tests/playwright/screenshots/.gitkeep
+.playwright-mcp/
+
 # ─── Misc ──────────────────────────────────────────────────────────────────
 *.tmp
 *.bak

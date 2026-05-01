@@ -1,0 +1,3 @@
+# Placeholder so the screenshots dir exists after a fresh clone.
+# The dir itself is gitignored — see .gitignore "Playwright test artifacts"
+# section. Do not delete this file.

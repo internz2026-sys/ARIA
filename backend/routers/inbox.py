@@ -916,6 +916,9 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
         and body.agent == "ad_strategist"
         and len(body.content or "") >= 200
     ):
+        project_task_row: dict | None = None
+        campaign_title: str = item.get("title") or "Ad Campaign"
+        project_meta: dict = {"source": "ad_strategist"}
         try:
             from backend.services.projects import (
                 create_project_task,
@@ -923,10 +926,9 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
             )
             meta = extract_campaign_metadata(body.content or "")
             campaign_title = meta.pop("title", None) or (item.get("title") or "Ad Campaign")
-            project_meta: dict = {"source": "ad_strategist"}
             if meta:
                 project_meta.update(meta)
-            await asyncio.to_thread(
+            project_task_row = await asyncio.to_thread(
                 create_project_task,
                 tenant_id,
                 agent="ad_strategist",
@@ -939,5 +941,24 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
             )
         except Exception as e:
             logger.warning("[inbox-create] project-task mirror skipped: %s", e)
+
+        # Campaigns mirror — same deliverable also lands in the
+        # campaigns table so the Campaigns page Copy-Paste tab can
+        # render it as a queued draft. Reuses the metadata dict from
+        # the project-task mirror so we don't re-parse the markdown.
+        # Triangle of links: inbox <-> tasks <-> campaigns.
+        try:
+            from backend.services.campaigns import create_campaign_from_inbox
+            await asyncio.to_thread(
+                create_campaign_from_inbox,
+                tenant_id,
+                inbox_item_id=item.get("id"),
+                task_id=(project_task_row or {}).get("id"),
+                title=campaign_title,
+                status="draft",
+                metadata=project_meta,
+            )
+        except Exception as e:
+            logger.warning("[inbox-create] campaigns mirror skipped: %s", e)
 
     return {"item": item}

@@ -81,6 +81,12 @@ class UpdateCampaignBody(BaseModel):
     tags: Optional[list[str]] = None
     date_range_start: Optional[str] = None
     date_range_end: Optional[str] = None
+    # Free-form JSONB. Used by the Copy-Paste tab to record
+    # `pasted_at` / `performance_review_at` so the user's "I have
+    # pasted" click survives a refresh without leaning on
+    # localStorage. Values are merged shallow at the service layer
+    # (see update_campaign).
+    metadata: Optional[dict] = None
 
 
 # ── Campaign CRUD ───────────────────────────────────────────────────────────────
