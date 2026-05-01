@@ -24,6 +24,7 @@ def _build_mime_message(
     from_email: str,
     in_reply_to: str = "",
     references: str = "",
+    inbound_thread_id: str = "",
 ) -> str:
     """Build RFC 2822 MIME message and return base64url-encoded string.
 
@@ -31,6 +32,16 @@ def _build_mime_message(
     the headers that third-party email clients (Apple Mail, Outlook, etc.)
     use to thread replies. Gmail itself threads via the API's `threadId`
     field, which is handled in `send_email`.
+
+    When INBOUND_EMAIL_DOMAIN env var is set (e.g. "inbound.tryaria.com")
+    AND inbound_thread_id is supplied, a Reply-To header is added that
+    routes customer replies to ARIA's webhook-backed mailbox instead of
+    the user's Gmail. Inbound mail provider (Postmark / SendGrid /
+    Mailgun) parses the `replies+<thread_id>@inbound.<domain>` token to
+    look up the conversation. Without the env var, no Reply-To is set
+    and replies fall back to landing in the sender's Gmail (the legacy
+    behavior that requires `gmail.readonly` scope to surface in ARIA's
+    Conversations UI).
     """
     msg = MIMEMultipart("alternative")
     msg["To"] = to
@@ -42,6 +53,9 @@ def _build_mime_message(
         msg["References"] = references or in_reply_to
     elif references:
         msg["References"] = references
+    inbound_domain = os.environ.get("INBOUND_EMAIL_DOMAIN", "").strip()
+    if inbound_domain and inbound_thread_id:
+        msg["Reply-To"] = f"replies+{inbound_thread_id}@{inbound_domain}"
     msg.attach(MIMEText(html_body, "html"))
     return base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
 

@@ -97,7 +97,26 @@ def _require_confirmation(action: str, confirmed: bool, message: str) -> dict | 
 
 
 async def _gmail_sync_loop():
-    """Background loop: sync Gmail inbound replies every 2 minutes."""
+    """Background loop: sync Gmail inbound replies.
+
+    Disabled by default — we dropped `gmail.readonly` from the OAuth
+    scope set to skip the CASA Tier-2 security audit that Google
+    requires for Restricted scopes. Inbound replies now come in via
+    reply-to routing through an ARIA-owned mailbox + Postmark/SendGrid
+    webhook (see docs/email-inbound-routing.md). This loop will fail
+    every iteration with a 403 from Gmail's API since tokens no longer
+    have read scope, so we no-op it unless GMAIL_READONLY_ENABLED=1
+    is explicitly set (e.g., for legacy tenants whose tokens still
+    carry readonly grants from before the scope was removed).
+    """
+    if os.environ.get("GMAIL_READONLY_ENABLED", "").lower() not in ("1", "true", "yes"):
+        logging.getLogger("aria.gmail_sync_loop").info(
+            "Gmail readonly sync disabled — inbound replies handled via "
+            "reply-to routing webhook. Set GMAIL_READONLY_ENABLED=1 to "
+            "re-enable polling for legacy tenants."
+        )
+        return
+
     from backend.tools.gmail_sync import sync_all_tenants
     _log = logging.getLogger("aria.gmail_sync_loop")
     while True:
@@ -2525,7 +2544,13 @@ async def save_google_tokens(tenant_id: str, body: GoogleTokens):
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GOOGLE_GMAIL_SCOPES = "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly"
+# Send-only scope — keeps OAuth in Google's "Sensitive" tier (no CASA
+# Tier-2 audit required). Inbound replies are handled via reply-to
+# routing through an ARIA-owned mailbox + Postmark/SendGrid webhook
+# (see docs/email-inbound-routing.md). Adding `gmail.readonly` back
+# would push the app into "Restricted" tier and require a $5K-15K
+# CASA security assessment plus annual re-audit.
+GOOGLE_GMAIL_SCOPES = "https://www.googleapis.com/auth/gmail.send"
 
 
 @app.get("/api/auth/google/connect/{tenant_id}")
