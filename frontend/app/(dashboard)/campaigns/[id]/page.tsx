@@ -41,18 +41,42 @@ function MetricCard({ label, value, prefix }: { label: string; value: number | n
 
 /* ─── Markdown Renderer (simple) ─── */
 
-/** Render inline markdown: **bold**, *italic*, `code` */
+/** Match a standalone markdown image line: `![alt](url)` (allows
+ *  surrounding whitespace). Used to detect block-level images in
+ *  the AI Report (chart PNGs uploaded by the visualizer). Inline
+ *  image matching is folded into the renderInline combined regex
+ *  below — keeping a separate constant for the standalone case
+ *  because it short-circuits at the line-parser level. */
+const STANDALONE_IMAGE_RE = /^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$/;
+
+/** Render inline markdown: ![alt](url), **bold**, *italic*, `code` */
 function renderInline(text: string): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
-  const regex = /(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`(.+?)`)/g;
+  // Image regex runs first so a `![alt](url)` doesn't get parsed as
+  // an emphasis or anything else. Combined regex with image | bold |
+  // italic | code so we walk the string in one pass.
+  const regex = /(!\[([^\]]*)\]\(([^)]+)\))|(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`(.+?)`)/g;
   let lastIndex = 0;
   let match;
   let key = 0;
   while ((match = regex.exec(text)) !== null) {
     if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
-    if (match[2]) parts.push(<strong key={key++} className="font-semibold">{match[2]}</strong>);
-    else if (match[4]) parts.push(<em key={key++}>{match[4]}</em>);
-    else if (match[6]) parts.push(<code key={key++} className="bg-[#F0EFEC] px-1 py-0.5 rounded text-xs font-mono">{match[6]}</code>);
+    if (match[1]) {
+      // Inline image — chart embedded mid-paragraph (rare). Renders
+      // with the same chart styling as the standalone form.
+      parts.push(
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={key++}
+          src={match[3]}
+          alt={match[2] || "chart"}
+          className="inline-block max-w-full h-auto rounded-md border border-[#E0DED8] my-1"
+          loading="lazy"
+        />,
+      );
+    } else if (match[5]) parts.push(<strong key={key++} className="font-semibold">{match[5]}</strong>);
+    else if (match[7]) parts.push(<em key={key++}>{match[7]}</em>);
+    else if (match[9]) parts.push(<code key={key++} className="bg-[#F0EFEC] px-1 py-0.5 rounded text-xs font-mono">{match[9]}</code>);
     lastIndex = match.index + match[0].length;
   }
   if (lastIndex < text.length) parts.push(text.slice(lastIndex));
@@ -123,6 +147,36 @@ function Markdown({ text }: { text: string }) {
       elements.push(<hr key={i} className="my-4 border-[#E0DED8]" />);
       i++;
       continue;
+    }
+
+    // Standalone image — chart PNGs from the AI Report visualizer
+    // get persisted as `![title](https://...png)` on their own line.
+    // Render block-level with full width + caption-styled alt text
+    // so the chart sits properly between report sections instead of
+    // showing as raw markdown text (the previous bug).
+    {
+      const imgMatch = STANDALONE_IMAGE_RE.exec(line);
+      if (imgMatch) {
+        const [, alt, url] = imgMatch;
+        elements.push(
+          <figure key={i} className="my-4">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={url}
+              alt={alt || "chart"}
+              className="block w-full max-w-2xl mx-auto h-auto rounded-lg border border-[#E0DED8] shadow-sm"
+              loading="lazy"
+            />
+            {alt ? (
+              <figcaption className="text-xs text-center text-[#5F5E5A] mt-2 italic">
+                {alt}
+              </figcaption>
+            ) : null}
+          </figure>,
+        );
+        i++;
+        continue;
+      }
     }
 
     // Headers
