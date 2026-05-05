@@ -71,7 +71,24 @@ def verify_jwt(token: str) -> dict:
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token format")
 
-    alg = header.get("alg", "HS256")
+    # Audit item #18: explicitly require an alg header. Previously we
+    # defaulted to HS256 if the header was missing, which is fine in
+    # practice (jwt.decode with algorithms=['HS256'] would still reject
+    # alg=none) but defends in depth against any future decoder change
+    # that's lenient with missing-header tokens. Also reject 'none'
+    # explicitly — python-jose already does this when algorithms list
+    # excludes 'none', but a clear 401 here is louder than a generic
+    # decode failure downstream.
+    alg = header.get("alg")
+    if not alg:
+        logger.warning("JWT rejected: missing alg header")
+        raise HTTPException(status_code=401, detail="Invalid token: missing alg")
+    if alg.lower() == "none":
+        logger.warning("JWT rejected: alg=none")
+        raise HTTPException(status_code=401, detail="Invalid token: unsupported alg")
+    if alg not in ("HS256", "ES256"):
+        logger.warning("JWT rejected: unsupported alg=%r", alg)
+        raise HTTPException(status_code=401, detail="Invalid token: unsupported alg")
 
     try:
         if alg == "ES256":
