@@ -231,6 +231,17 @@ export default function CRMPage() {
   useEffect(() => { if (tab === "companies") fetchCompanies(); }, [tab, fetchCompanies]);
   useEffect(() => { if (tab === "deals") fetchDeals(); }, [tab, fetchDeals]);
 
+  // Eager-load all three lists once on mount so tab count badges are
+  // accurate before the user clicks into each tab. Per-tab refresh on
+  // tab switch / search / filter is still handled by the effects above.
+  useEffect(() => {
+    if (!tenantId) return;
+    fetchContacts();
+    fetchCompanies();
+    fetchDeals();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId]);
+
   // Real-time refresh when CEO creates/updates CRM records (entity-targeted)
   useEffect(() => {
     if (!tenantId) return;
@@ -243,10 +254,24 @@ export default function CRMPage() {
         if (entity === "crm_company" || !entity) fetchCompanies();
         if (entity === "crm_deal" || !entity) fetchDeals();
       };
+      socket.on("crm_update", handleCrmUpdate);
       socket.on("ceo_action_executed", handleCrmUpdate);
-      return () => { socket.off("ceo_action_executed", handleCrmUpdate); };
+      return () => {
+        socket.off("crm_update", handleCrmUpdate);
+        socket.off("ceo_action_executed", handleCrmUpdate);
+      };
     } catch {}
   }, [tenantId, fetchContacts, fetchCompanies, fetchDeals]);
+
+  // ─── Edit modals state ───
+  // We keep the *whole* row in state (not a stripped patch) so non-edited
+  // fields like tags / company_id / created_at / metadata pass through
+  // unchanged. The PATCH call only sends what changed via spread, but
+  // having the full row prevents accidental field stripping if a future
+  // edit form omits a column.
+  const [editContact, setEditContact] = useState<CrmContact | null>(null);
+  const [editCompany, setEditCompany] = useState<CrmCompany | null>(null);
+  const [editDeal, setEditDeal] = useState<CrmDeal | null>(null);
 
   // ─── Contact CRUD ───
   const [newContact, setNewContact] = useState({ name: "", email: "", phone: "", source: "manual", status: "lead", notes: "" });
@@ -292,6 +317,33 @@ export default function CRMPage() {
     }
   }
 
+  async function handleUpdateContact() {
+    if (!editContact) return;
+    if (!editContact.name.trim()) {
+      showToast({ title: "Name is required", variant: "error" });
+      return;
+    }
+    try {
+      await crm.updateContact(tenantId, editContact.id, {
+        name: editContact.name,
+        email: editContact.email,
+        phone: editContact.phone,
+        status: editContact.status,
+        source: editContact.source,
+        notes: editContact.notes,
+      });
+      setContacts(prev => prev.map(c => c.id === editContact.id ? { ...c, ...editContact } : c));
+      setEditContact(null);
+      showToast({ title: "Contact updated", variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't update contact",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
+  }
+
   async function handleContactStatusChange(id: string, status: string) {
     try {
       await crm.updateContact(tenantId, id, { status });
@@ -321,6 +373,32 @@ export default function CRMPage() {
     } catch (err: any) {
       showToast({
         title: "Couldn't create company",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
+  }
+
+  async function handleUpdateCompany() {
+    if (!editCompany) return;
+    if (!editCompany.name.trim()) {
+      showToast({ title: "Name is required", variant: "error" });
+      return;
+    }
+    try {
+      await crm.updateCompany(tenantId, editCompany.id, {
+        name: editCompany.name,
+        domain: editCompany.domain,
+        industry: editCompany.industry,
+        size: editCompany.size,
+        notes: editCompany.notes,
+      });
+      setCompanies(prev => prev.map(c => c.id === editCompany.id ? { ...c, ...editCompany } : c));
+      setEditCompany(null);
+      showToast({ title: "Company updated", variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't update company",
         body: err?.message || "Network error -- please try again.",
         variant: "error",
       });
@@ -387,6 +465,33 @@ export default function CRMPage() {
     }
   }
 
+  async function handleUpdateDeal() {
+    if (!editDeal) return;
+    if (!editDeal.title.trim()) {
+      showToast({ title: "Title is required", variant: "error" });
+      return;
+    }
+    try {
+      await crm.updateDeal(tenantId, editDeal.id, {
+        title: editDeal.title,
+        value: editDeal.value,
+        stage: editDeal.stage,
+        notes: editDeal.notes,
+      });
+      setDeals(prev => prev.map(d => d.id === editDeal.id ? { ...d, ...editDeal } : d));
+      setEditDeal(null);
+      // Pipeline summary depends on stage + value, so recompute when either changes
+      crm.pipelineSummary(tenantId).then(p => setPipelineSummary(p.stages || {})).catch(() => {});
+      showToast({ title: "Deal updated", variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't update deal",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
+  }
+
   async function handleDeleteDeal(id: string) {
     const d = deals.find((x) => x.id === id);
     const ok = await confirm({
@@ -410,10 +515,10 @@ export default function CRMPage() {
     }
   }
 
-  const tabs: { key: Tab; label: string }[] = [
-    { key: "contacts", label: "Contacts" },
-    { key: "companies", label: "Companies" },
-    { key: "deals", label: "Deals" },
+  const tabs: { key: Tab; label: string; count: number }[] = [
+    { key: "contacts", label: "Contacts", count: contacts.length },
+    { key: "companies", label: "Companies", count: companies.length },
+    { key: "deals", label: "Deals", count: deals.length },
   ];
 
   return (
@@ -441,10 +546,15 @@ export default function CRMPage() {
       <div className="flex items-center gap-1 bg-white rounded-xl border border-[#E0DED8] p-1.5">
         {tabs.map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               tab === t.key ? "bg-[#EEEDFE] text-[#534AB7]" : "text-[#5F5E5A] hover:bg-[#F8F8F6]"
             }`}
-          >{t.label}</button>
+          >
+            <span>{t.label}</span>
+            <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded-full ${
+              tab === t.key ? "bg-white text-[#534AB7]" : "bg-[#F0EFEC] text-[#9E9C95]"
+            }`}>{t.count}</span>
+          </button>
         ))}
       </div>
 
@@ -519,9 +629,22 @@ export default function CRMPage() {
                         <td className="px-4 py-3 text-[#9E9C95] text-xs">{c.source}</td>
                         <td className="px-4 py-3 text-[#9E9C95] text-xs">{timeAgo(c.created_at)}</td>
                         <td className="px-4 py-3">
-                          <button onClick={() => handleDeleteContact(c.id)} className="text-[#B0AFA8] hover:text-red-500 transition-colors">
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
-                          </button>
+                          <div className="flex items-center gap-3">
+                            <a
+                              href={c.email ? `mailto:${c.email}` : undefined}
+                              onClick={(e) => { if (!c.email) e.preventDefault(); }}
+                              className={`transition-colors ${c.email ? "text-[#B0AFA8] hover:text-[#534AB7]" : "text-[#E0DED8] cursor-not-allowed"}`}
+                              title={c.email ? `Email ${c.email}` : "No email on file"}
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" /></svg>
+                            </a>
+                            <button onClick={() => setEditContact({ ...c })} className="text-[#B0AFA8] hover:text-[#534AB7] transition-colors" title="Edit">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
+                            </button>
+                            <button onClick={() => handleDeleteContact(c.id)} className="text-[#B0AFA8] hover:text-red-500 transition-colors" title="Delete">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -578,9 +701,14 @@ export default function CRMPage() {
                       <td className="px-4 py-3 text-[#5F5E5A]">{c.size || "—"}</td>
                       <td className="px-4 py-3 text-[#9E9C95] text-xs">{timeAgo(c.created_at)}</td>
                       <td className="px-4 py-3">
-                        <button onClick={() => handleDeleteCompany(c.id)} className="text-[#B0AFA8] hover:text-red-500 transition-colors">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
-                        </button>
+                        <div className="flex items-center gap-3">
+                          <button onClick={() => setEditCompany({ ...c })} className="text-[#B0AFA8] hover:text-[#534AB7] transition-colors" title="Edit">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
+                          </button>
+                          <button onClick={() => handleDeleteCompany(c.id)} className="text-[#B0AFA8] hover:text-red-500 transition-colors" title="Delete">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -635,9 +763,14 @@ export default function CRMPage() {
                         <div key={deal.id} className="bg-white rounded-xl border border-[#E0DED8] p-3.5 hover:shadow-sm transition-shadow">
                           <div className="flex items-start justify-between mb-2">
                             <p className="text-sm font-medium text-[#2C2C2A] flex-1">{deal.title}</p>
-                            <button onClick={() => handleDeleteDeal(deal.id)} className="text-[#B0AFA8] hover:text-red-500 shrink-0 ml-2">
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                            </button>
+                            <div className="flex items-center gap-2 shrink-0 ml-2">
+                              <button onClick={() => setEditDeal({ ...deal })} className="text-[#B0AFA8] hover:text-[#534AB7] transition-colors" title="Edit">
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
+                              </button>
+                              <button onClick={() => handleDeleteDeal(deal.id)} className="text-[#B0AFA8] hover:text-red-500 transition-colors" title="Delete">
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                              </button>
+                            </div>
                           </div>
                           {deal.value > 0 && (
                             <p className="text-sm font-semibold text-[#1D9E75] mb-2">{formatCurrency(deal.value)}</p>
@@ -750,6 +883,114 @@ export default function CRMPage() {
             className="w-full py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-40"
           >Add Deal</button>
         </div>
+      </Modal>
+
+      {/* ════════ EDIT CONTACT MODAL ════════ */}
+      <Modal open={!!editContact} onClose={() => setEditContact(null)} title="Edit Contact">
+        {editContact && (
+          <div className="space-y-4">
+            <FormField label="Name *">
+              <input value={editContact.name} onChange={e => setEditContact({ ...editContact, name: e.target.value })} className={inputCls} />
+            </FormField>
+            <FormField label="Email">
+              <input type="email" value={editContact.email || ""} onChange={e => setEditContact({ ...editContact, email: e.target.value })} className={inputCls} />
+            </FormField>
+            <FormField label="Phone">
+              <input value={editContact.phone || ""} onChange={e => setEditContact({ ...editContact, phone: e.target.value })} className={inputCls} />
+            </FormField>
+            <div className="grid grid-cols-2 gap-4">
+              <FormField label="Status">
+                <select value={editContact.status} onChange={e => setEditContact({ ...editContact, status: e.target.value })} className={selectCls}>
+                  {CONTACT_STATUSES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </select>
+              </FormField>
+              <FormField label="Source">
+                <select value={editContact.source || ""} onChange={e => setEditContact({ ...editContact, source: e.target.value })} className={selectCls}>
+                  {CONTACT_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </FormField>
+            </div>
+            <FormField label="Notes">
+              <textarea value={editContact.notes || ""} onChange={e => setEditContact({ ...editContact, notes: e.target.value })} className={inputCls} rows={3} />
+            </FormField>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setEditContact(null)}
+                className="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-[#F8F8F6] border border-[#E0DED8] text-[#5F5E5A] hover:bg-white transition-colors"
+              >Cancel</button>
+              <button onClick={handleUpdateContact} disabled={!editContact.name.trim()}
+                className="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-40"
+              >Save Changes</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ════════ EDIT COMPANY MODAL ════════ */}
+      <Modal open={!!editCompany} onClose={() => setEditCompany(null)} title="Edit Company">
+        {editCompany && (
+          <div className="space-y-4">
+            <FormField label="Company Name *">
+              <input value={editCompany.name} onChange={e => setEditCompany({ ...editCompany, name: e.target.value })} className={inputCls} />
+            </FormField>
+            <FormField label="Domain">
+              <input value={editCompany.domain || ""} onChange={e => setEditCompany({ ...editCompany, domain: e.target.value })} className={inputCls} />
+            </FormField>
+            <div className="grid grid-cols-2 gap-4">
+              <FormField label="Industry">
+                <input value={editCompany.industry || ""} onChange={e => setEditCompany({ ...editCompany, industry: e.target.value })} className={inputCls} />
+              </FormField>
+              <FormField label="Size">
+                <select value={editCompany.size || ""} onChange={e => setEditCompany({ ...editCompany, size: e.target.value })} className={selectCls}>
+                  <option value="">Select size</option>
+                  {COMPANY_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </FormField>
+            </div>
+            <FormField label="Notes">
+              <textarea value={editCompany.notes || ""} onChange={e => setEditCompany({ ...editCompany, notes: e.target.value })} className={inputCls} rows={3} />
+            </FormField>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setEditCompany(null)}
+                className="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-[#F8F8F6] border border-[#E0DED8] text-[#5F5E5A] hover:bg-white transition-colors"
+              >Cancel</button>
+              <button onClick={handleUpdateCompany} disabled={!editCompany.name.trim()}
+                className="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-40"
+              >Save Changes</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ════════ EDIT DEAL MODAL ════════ */}
+      <Modal open={!!editDeal} onClose={() => setEditDeal(null)} title="Edit Deal">
+        {editDeal && (
+          <div className="space-y-4">
+            <FormField label="Deal Title *">
+              <input value={editDeal.title} onChange={e => setEditDeal({ ...editDeal, title: e.target.value })} className={inputCls} />
+            </FormField>
+            <div className="grid grid-cols-2 gap-4">
+              <FormField label="Value ($)">
+                <input type="number" value={editDeal.value} onChange={e => setEditDeal({ ...editDeal, value: Number(e.target.value) })} className={inputCls} />
+              </FormField>
+              <FormField label="Stage">
+                <select value={editDeal.stage} onChange={e => setEditDeal({ ...editDeal, stage: e.target.value })} className={selectCls}>
+                  {DEAL_STAGES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </select>
+              </FormField>
+            </div>
+            <FormField label="Notes">
+              <textarea value={editDeal.notes || ""} onChange={e => setEditDeal({ ...editDeal, notes: e.target.value })} className={inputCls} rows={3} />
+            </FormField>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setEditDeal(null)}
+                className="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-[#F8F8F6] border border-[#E0DED8] text-[#5F5E5A] hover:bg-white transition-colors"
+              >Cancel</button>
+              <button onClick={handleUpdateDeal} disabled={!editDeal.title.trim()}
+                className="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-40"
+              >Save Changes</button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );
