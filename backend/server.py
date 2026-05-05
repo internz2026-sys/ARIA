@@ -1702,7 +1702,8 @@ async def approve_and_publish_social(tenant_id: str, body: SocialApproveRequest)
         errors = [r.get("error", "unknown") for r in results if r.get("error")]
         error_msg = "; ".join(errors) if errors else "No posts were published"
         logger.error("Social publish failed for tenant %s: %s", tenant_id, error_msg)
-        raise HTTPException(status_code=400, detail=f"Publish failed: {error_msg}")
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(status_code=400, detail=safe_detail(error_msg, "Publish failed"))
 
     return {"status": new_status, "results": results}
 
@@ -1868,7 +1869,8 @@ async def whatsapp_connect(tenant_id: str, body: WhatsAppConnectRequest):
         phone_number_id=body.phone_number_id,
     )
     if profile.get("error"):
-        raise HTTPException(status_code=400, detail=f"Connection test failed: {profile['error']}")
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(status_code=400, detail=safe_detail(profile["error"], "Connection test failed"))
 
     # Save credentials to tenant config
     config = get_tenant_config(tenant_id)
@@ -2665,7 +2667,8 @@ async def save_google_tokens(tenant_id: str, body: GoogleTokens):
         save_tenant_config(config)
         return {"ok": True}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(status_code=400, detail=safe_detail(e, "Google token save failed"))
 
 
 # ─── Google OAuth Connect (dedicated flow, independent of Supabase) ───

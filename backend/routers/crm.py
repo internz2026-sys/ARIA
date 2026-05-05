@@ -254,12 +254,14 @@ async def send_email_to_contact(
     except Exception as e:
         logger.exception("[crm] send-email provider error: %s", e)
         _mark_send_failed(sb, inbox_item_id, email_msg_id)
-        raise HTTPException(status_code=502, detail=f"Email provider error: {e}")
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(status_code=502, detail=safe_detail(e, "Email provider error"))
 
     if not result or not result.get("success"):
         _mark_send_failed(sb, inbox_item_id, email_msg_id)
         detail = (result or {}).get("error") or "Unknown send error"
-        raise HTTPException(status_code=502, detail=str(detail))
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(status_code=502, detail=safe_detail(detail, "Email send failed"))
 
     provider_msg_id = (result.get("message_id") or "").strip()
 

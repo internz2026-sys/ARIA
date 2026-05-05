@@ -426,4 +426,5 @@ async def generate_ai_report(tenant_id: str, report_id: str):
     except Exception as e:
         logger.error("AI report generation failed for report %s: %s", report_id, e)
         campaign_service.update_report(tenant_id, report_id, {"ai_summary_status": "failed"})
-        raise HTTPException(500, f"AI analysis failed: {str(e)}")
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(500, safe_detail(e, "AI analysis failed"))

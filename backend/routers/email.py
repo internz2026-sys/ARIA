@@ -184,7 +184,8 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
 
     if result.get("error"):
         _mark_failed()
-        raise HTTPException(status_code=500, detail=f"Email send failed: {result['error']}")
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(status_code=500, detail=safe_detail(result["error"], "Email send failed"))
 
     sb.table("inbox_items").update({
         "status": "sent",
@@ -600,7 +601,8 @@ async def send_thread_reply(tenant_id: str, thread_id: str, body: SendReplyReque
 
     if result.get("error"):
         detail = result.get("detail") or result.get("error") or "Gmail send failed"
-        raise HTTPException(status_code=500, detail=f"Email send failed: {detail}")
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(status_code=500, detail=safe_detail(detail, "Email send failed"))
 
     now_iso = datetime.now(timezone.utc).isoformat()
     sb.table("email_messages").insert({
