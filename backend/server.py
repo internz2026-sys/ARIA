@@ -861,35 +861,28 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
         request.state.user = user
         request.state.role = role
 
-    # Tenant ownership check: if path has a tenant_id segment, verify ownership
-    # Skip for paths that don't use tenant_id (CEO chat uses session_id instead)
-    _SKIP_TENANT_CHECK_PREFIXES = ("/api/ceo/chat/", "/api/onboarding/", "/api/notifications/")
-    skip_tenant = any(path.startswith(p) for p in _SKIP_TENANT_CHECK_PREFIXES)
-
-    path_parts = path.strip("/").split("/")
-    tenant_id = None
-    if not skip_tenant:
-        for i, part in enumerate(path_parts):
-            # tenant_id is typically the segment after a known prefix
-            if i >= 2 and len(part) > 8 and part not in ("run", "pause", "resume", "connect", "disconnect", "send", "sync", "history", "sessions", "counts"):
-                # Looks like a tenant_id (UUID or long string)
-                tenant_id = part
-                break
-
-    if tenant_id:
-        user_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
-        try:
-            from backend.config.loader import get_tenant_config
-            config = get_tenant_config(tenant_id)
-            owner_email = (config.owner_email or "").lower().strip()
-            # Allow if: no owner set, emails match (case-insensitive), or user sub matches
-            if owner_email and user_email and owner_email != user_email:
-                if str(config.tenant_id) != user.get("sub", ""):
-                    logger.warning("Tenant ownership denied: jwt_email=%s owner_email=%s tenant=%s", user_email, owner_email, tenant_id)
-                    from starlette.responses import JSONResponse
-                    return JSONResponse(status_code=403, content={"detail": "Access denied to this tenant"}, headers=cors_headers)
-        except Exception:
-            pass  # Tenant not found — let the endpoint handle it
+    # NOTE: tenant ownership check used to live here as a heuristic that
+    # scanned URL segments for "long strings >8 chars" and short-circuited
+    # with 403 on mismatch. It was removed in 2026-05-05 (security audit
+    # batch B, item #10) because:
+    #
+    #   1. The heuristic was leaky — it could miss-identify the wrong
+    #      segment as the tenant_id when a route had multiple long path
+    #      components, or skip the check entirely on routes whose
+    #      "skip" segment list was incomplete.
+    #   2. The whole DB lookup was wrapped in `try/except: pass` so any
+    #      DB hiccup, config-load error, or import failure silently let
+    #      the request through (fail-OPEN).
+    #   3. It's now redundant. Every per-tenant route in the codebase
+    #      runs Depends(get_verified_tenant) at the router or per-route
+    #      level (see commits ba6adce + cf0ebb0 + 664d19e). That dep is
+    #      authoritative, runs after path resolution (so it has the
+    #      actual tenant_id, not a heuristic guess), and fails CLOSED
+    #      with 403/404 instead of silently allowing.
+    #
+    # Removing this block kills 30 lines of false-confidence defense
+    # and forces every per-tenant route to depend on the explicit
+    # router-level guard, which is what we want.
 
     # Attach user info to request state for endpoints that need it
     request.state.user = user
