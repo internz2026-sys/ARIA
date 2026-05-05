@@ -16,7 +16,13 @@ services:
       - REDIS_URL=redis://redis:6379
       - QDRANT_URL=http://qdrant:6333
     volumes:
-      - /root/.claude:/root/.claude
+      # Auth dir for the Claude CLI. Source path on the host is
+      # /opt/aria/.claude (chowned to uid 1000 during the security #13
+      # migration); destination matches HOME=/home/aria for the
+      # non-root aria user inside the container. The auto-restore
+      # helper in claude_cli.py expects ~/.claude/backups/*.backup.*
+      # to be writable, which this mount provides.
+      - /opt/aria/.claude:/home/aria/.claude
     depends_on:
       - redis
       - qdrant
@@ -91,6 +97,7 @@ services:
     depends_on:
       - backend
       - frontend
+
 
 networks:
   paperclip:
