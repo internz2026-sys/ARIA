@@ -45,6 +45,14 @@ function FormField({ label, children }: { label: string; children: React.ReactNo
 const inputCls = "w-full text-sm text-[#2C2C2A] bg-[#F8F8F6] border border-[#E0DED8] rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7]";
 const selectCls = inputCls;
 
+// Practical email regex — matches the same subset the backend validates
+// against. Used for client-side UX (disabled Send button, inline error)
+// only; the server is the source of truth.
+const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+function isValidEmail(s: string): boolean {
+  return !!s && EMAIL_RE.test(s.trim());
+}
+
 // ─── Main Page ───
 
 type Tab = "contacts" | "companies" | "deals";
@@ -272,6 +280,70 @@ export default function CRMPage() {
   const [editContact, setEditContact] = useState<CrmContact | null>(null);
   const [editCompany, setEditCompany] = useState<CrmCompany | null>(null);
   const [editDeal, setEditDeal] = useState<CrmDeal | null>(null);
+
+  // ─── Compose-email modal (CRM contact send) ───
+  const [composeContact, setComposeContact] = useState<CrmContact | null>(null);
+  const [composeSubject, setComposeSubject] = useState("");
+  const [composeBody, setComposeBody] = useState("");
+  const [composeSending, setComposeSending] = useState(false);
+
+  function openComposeFor(c: CrmContact) {
+    if (!c.email || !isValidEmail(c.email)) {
+      showToast({
+        title: "Can't email this contact",
+        body: !c.email ? "No email address on file." : `'${c.email}' is not a valid email address.`,
+        variant: "error",
+      });
+      return;
+    }
+    setComposeSubject("");
+    setComposeBody("");
+    setComposeContact(c);
+  }
+
+  async function handleSendComposeEmail() {
+    if (!composeContact) return;
+    if (!isValidEmail(composeContact.email)) {
+      showToast({ title: "Invalid email address", variant: "error" });
+      return;
+    }
+    if (!composeSubject.trim() || !composeBody.trim()) {
+      showToast({ title: "Subject and message are required", variant: "error" });
+      return;
+    }
+    setComposeSending(true);
+    try {
+      const result = await crm.sendEmailToContact(tenantId, composeContact.id, {
+        subject: composeSubject.trim(),
+        body: composeBody.trim(),
+      });
+      const provider = result?.provider || "";
+      // provider="none" means RESEND_API_KEY isn't configured — be honest
+      // about it instead of pretending the message was actually sent.
+      if (provider === "none") {
+        showToast({
+          title: "Email queued (provider not configured)",
+          body: "Configure RESEND_API_KEY or Gmail to enable real delivery.",
+          variant: "info",
+        });
+      } else {
+        showToast({
+          title: `Email sent to ${composeContact.name}`,
+          body: provider ? `via ${provider}` : undefined,
+          variant: "success",
+        });
+      }
+      setComposeContact(null);
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't send email",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    } finally {
+      setComposeSending(false);
+    }
+  }
 
   // ─── Contact CRUD ───
   const [newContact, setNewContact] = useState({ name: "", email: "", phone: "", source: "manual", status: "lead", notes: "" });
@@ -630,14 +702,14 @@ export default function CRMPage() {
                         <td className="px-4 py-3 text-[#9E9C95] text-xs">{timeAgo(c.created_at)}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
-                            <a
-                              href={c.email ? `mailto:${c.email}` : undefined}
-                              onClick={(e) => { if (!c.email) e.preventDefault(); }}
-                              className={`transition-colors ${c.email ? "text-[#B0AFA8] hover:text-[#534AB7]" : "text-[#E0DED8] cursor-not-allowed"}`}
-                              title={c.email ? `Email ${c.email}` : "No email on file"}
+                            <button
+                              onClick={() => openComposeFor(c)}
+                              disabled={!c.email || !isValidEmail(c.email)}
+                              className={`transition-colors ${c.email && isValidEmail(c.email) ? "text-[#B0AFA8] hover:text-[#534AB7]" : "text-[#E0DED8] cursor-not-allowed"}`}
+                              title={!c.email ? "No email on file" : !isValidEmail(c.email) ? `Invalid email: ${c.email}` : `Email ${c.email}`}
                             >
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" /></svg>
-                            </a>
+                            </button>
                             <button onClick={() => setEditContact({ ...c })} className="text-[#B0AFA8] hover:text-[#534AB7] transition-colors" title="Edit">
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
                             </button>
@@ -956,6 +1028,54 @@ export default function CRMPage() {
               <button onClick={handleUpdateCompany} disabled={!editCompany.name.trim()}
                 className="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-40"
               >Save Changes</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ════════ COMPOSE EMAIL MODAL ════════ */}
+      <Modal open={!!composeContact} onClose={() => !composeSending && setComposeContact(null)} title={composeContact ? `Email ${composeContact.name}` : "Email"}>
+        {composeContact && (
+          <div className="space-y-4">
+            <FormField label="To">
+              <input
+                value={composeContact.email}
+                readOnly
+                className={`${inputCls} cursor-not-allowed text-[#5F5E5A]`}
+              />
+            </FormField>
+            <FormField label="Subject *">
+              <input
+                value={composeSubject}
+                onChange={e => setComposeSubject(e.target.value)}
+                className={inputCls}
+                placeholder="What's this about?"
+                autoFocus
+              />
+            </FormField>
+            <FormField label="Message *">
+              <textarea
+                value={composeBody}
+                onChange={e => setComposeBody(e.target.value)}
+                className={inputCls}
+                rows={8}
+                placeholder="Write your message..."
+              />
+            </FormField>
+            <p className="text-[11px] text-[#9E9C95]">
+              Sent from your configured email provider (Resend or Gmail). Replies will route back into ARIA.
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setComposeContact(null)}
+                disabled={composeSending}
+                className="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-[#F8F8F6] border border-[#E0DED8] text-[#5F5E5A] hover:bg-white transition-colors disabled:opacity-40"
+              >Cancel</button>
+              <button
+                onClick={handleSendComposeEmail}
+                disabled={composeSending || !composeSubject.trim() || !composeBody.trim() || !isValidEmail(composeContact.email)}
+                className="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors disabled:opacity-40"
+              >{composeSending ? "Sending..." : "Send Email"}</button>
             </div>
           </div>
         )}

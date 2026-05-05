@@ -152,6 +152,11 @@ export const crm = {
     fetchAPI(`/api/crm/${tenantId}/contacts/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteContact: (tenantId: string, id: string) =>
     fetchAPI(`/api/crm/${tenantId}/contacts/${id}`, { method: "DELETE" }),
+  sendEmailToContact: (tenantId: string, contactId: string, data: { subject: string; body: string }) =>
+    fetchAPI(`/api/crm/${tenantId}/contacts/${contactId}/send-email`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 
   // Companies
   listCompanies: (tenantId: string, search = "") =>
