@@ -241,6 +241,49 @@ _CSV_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 _CSV_READ_CHUNK = 64 * 1024
 
 
+# Audit item #17: file.filename comes from the multipart upload header
+# and is fully attacker-controlled. We persist it to the DB column
+# `source_file_name` and surface it in the campaign UI + AI Report
+# prompt. Without sanitization, a hostile filename like
+# `<script>alert(1)</script>.csv` could XSS any UI that renders it
+# unescaped, and `../../../../etc/passwd.csv` would store the path
+# verbatim (no traversal exploit because it's just a string field, but
+# noisy in the audit log). Strip to a basename, drop control chars,
+# cap length, fall back to a stable default.
+import re as _re_filename
+import os.path as _ospath_filename
+
+_FILENAME_BAD_RE = _re_filename.compile(r'[\x00-\x1f\x7f-\x9f<>:"|?*\\/]')
+
+
+def _sanitize_filename(name: str | None, fallback: str = "report.csv") -> str:
+    """Reduce a multipart-supplied filename to a safe DB / UI string.
+
+    - basename (drop any path components — defends against ../ traversal
+      patterns showing up in the stored value, even though we don't
+      use the value as a filesystem path)
+    - drop control chars + Windows-reserved chars (<, >, :, ", |, ?, *,
+      \\, /)
+    - trim whitespace, cap to 200 chars, fall back if empty
+    """
+    if not name:
+        return fallback
+    base = _ospath_filename.basename(str(name)).strip()
+    if not base:
+        return fallback
+    cleaned = _FILENAME_BAD_RE.sub("", base)
+    if not cleaned:
+        return fallback
+    if len(cleaned) > 200:
+        # Preserve the extension if there is one
+        stem, dot, ext = cleaned.rpartition(".")
+        if dot and len(ext) <= 8:
+            cleaned = stem[: 200 - len(ext) - 1] + "." + ext
+        else:
+            cleaned = cleaned[:200]
+    return cleaned
+
+
 async def _read_upload_bounded(file: "UploadFile", limit: int = _CSV_MAX_BYTES) -> bytes:
     """Read an UploadFile in chunks, raising 413 the moment we cross
     `limit` bytes. Returns the full content on success."""
@@ -274,6 +317,7 @@ async def upload_report(
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Only CSV files are supported. Please export your Facebook Ads report as CSV.")
 
+    safe_filename = _sanitize_filename(file.filename)
     content = await _read_upload_bounded(file)
     parsed = parse_csv(content)
     if not parsed["success"]:
@@ -295,7 +339,7 @@ async def upload_report(
 
         return {
             "status": "needs_association",
-            "file_name": file.filename,
+            "file_name": safe_filename,
             "parsed": parsed,
             "suggestions": suggestions,
         }
@@ -306,7 +350,7 @@ async def upload_report(
     report_result = campaign_service.create_report(
         tenant_id=tenant_id,
         campaign_id=campaign_id,
-        source_file_name=file.filename or "report.csv",
+        source_file_name=safe_filename,
         raw_metrics={"campaigns": parsed["campaigns"], "totals": parsed["totals"]},
         report_start_date=date_start,
         report_end_date=date_end,
@@ -339,6 +383,7 @@ async def upload_and_create_campaign(
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Only CSV files are supported.")
 
+    safe_filename = _sanitize_filename(file.filename)
     content = await _read_upload_bounded(file)
     parsed = parse_csv(content)
     if not parsed["success"]:
@@ -348,7 +393,7 @@ async def upload_and_create_campaign(
     if not campaign_name and parsed["campaigns"]:
         campaign_name = parsed["campaigns"][0]["campaign_name"]
     if not campaign_name:
-        campaign_name = file.filename.replace(".csv", "")
+        campaign_name = safe_filename.replace(".csv", "")
 
     metrics, date_start, date_end = _extract_report_context(parsed)
 
@@ -369,7 +414,7 @@ async def upload_and_create_campaign(
     report_result = campaign_service.create_report(
         tenant_id=tenant_id,
         campaign_id=campaign["id"],
-        source_file_name=file.filename or "report.csv",
+        source_file_name=safe_filename,
         raw_metrics={"campaigns": parsed["campaigns"], "totals": parsed["totals"]},
         report_start_date=date_start,
         report_end_date=date_end,
