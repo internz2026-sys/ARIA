@@ -842,6 +842,15 @@ async def inbound_email_webhook(request: Request):
     secret = get_webhook_secret()
 
     # ── Signature validation ──────────────────────────────────────────
+    # In production (ARIA_ENV / ENV = "prod"|"production") we REFUSE to
+    # serve this endpoint without a configured secret. Without it any
+    # caller could POST a forged inbound reply that lands in the
+    # Conversations UI as if a real customer wrote it. Dev mode keeps
+    # the legacy "accept unsigned with warning" fallback so local
+    # smoke tests still work.
+    import os as _os
+    is_production = (_os.environ.get("ARIA_ENV") or _os.environ.get("ENV") or "").lower() in ("prod", "production")
+
     if secret:
         if provider == "postmark":
             sig = request.headers.get("X-Postmark-Signature", "")
@@ -862,6 +871,15 @@ async def inbound_email_webhook(request: Request):
             if not _verify_sendgrid_signature(secret, raw_body, sig):
                 logger.warning("[inbound] sendgrid signature mismatch")
                 raise HTTPException(status_code=401, detail="Invalid signature")
+    elif is_production:
+        logger.error(
+            "[inbound] INBOUND_WEBHOOK_SECRET not configured in production — refusing to accept unsigned %s payload",
+            provider,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Inbound email webhook secret not configured",
+        )
     else:
         logger.warning(
             "[inbound] INBOUND_WEBHOOK_SECRET unset — accepting unsigned %s payload (dev mode)",
