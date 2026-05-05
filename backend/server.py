@@ -3402,14 +3402,45 @@ async def run_agent(tenant_id: str, agent_name: str):
 
 
 @app.post("/api/media/{tenant_id}/generate")
-async def generate_media_image(tenant_id: str, payload: dict = Body(default={})):
+async def generate_media_image(tenant_id: str, request: Request, payload: dict = Body(default={})):
     """Direct image-generation endpoint for the Paperclip Media Designer agent.
 
     Bypasses Paperclip dispatch and calls media_agent.run() locally so the agent
     actually produces a real PNG via Pollinations -> Supabase Storage -> inbox.
     Public (no JWT) so the Paperclip-spawned Claude CLI can curl it from inside
     the container — same pattern as /api/inbox/.
+
+    Auth gate: the Paperclip Media Designer is the only legitimate caller,
+    but the endpoint reaches a paid AI image API. Without auth, anyone could
+    drain the API budget with a curl loop. We gate via a shared internal
+    token (ARIA_INTERNAL_AGENT_TOKEN) sent in the `X-Aria-Agent-Token`
+    header. The Paperclip skill MD on the agent side must include this
+    header on the curl call. Production refuses requests when the token
+    isn't configured (fail-closed); dev still allows unauth'd with a
+    warning to keep local smoke tests working.
     """
+    expected_token = (os.environ.get("ARIA_INTERNAL_AGENT_TOKEN") or "").strip()
+    received_token = (request.headers.get("X-Aria-Agent-Token") or "").strip()
+    if expected_token:
+        if not received_token or received_token != expected_token:
+            logger.warning(
+                "[media] /api/media/%s/generate rejected: bad/missing X-Aria-Agent-Token",
+                tenant_id,
+            )
+            raise HTTPException(status_code=401, detail="Invalid agent token")
+    elif _is_production():
+        logger.error(
+            "[media] ARIA_INTERNAL_AGENT_TOKEN not configured in production — refusing"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Internal agent token not configured",
+        )
+    else:
+        logger.warning(
+            "[media] ARIA_INTERNAL_AGENT_TOKEN unset (dev mode) — accepting unauth'd request"
+        )
+
     from backend.agents import media_agent
 
     prompt = (payload or {}).get("prompt", "")
