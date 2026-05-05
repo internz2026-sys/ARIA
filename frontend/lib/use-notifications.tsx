@@ -243,7 +243,14 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       // Long-running task heartbeat — fires once per stalled issue
       // when it's been in todo/in_progress for >3min. Reassures the
       // user without a loud high-priority bell ring.
+      //
+      // The id is derived from paperclip_issue_id (stable across
+      // backend restarts) so a redeploy that wipes the backend's
+      // _stalled_alerted set doesn't pile up duplicate toasts on the
+      // same stuck issue. addToast already dedupes by id — same id
+      // in === one toast on screen.
       const handleTaskStalled = (payload: {
+        paperclip_issue_id?: string;
         agent?: string;
         title?: string;
         stalled_seconds?: number;
@@ -252,8 +259,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           ? payload.agent.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
           : "Agent";
         const minutes = Math.max(3, Math.round((payload.stalled_seconds || 180) / 60));
+        const stableKey = payload.paperclip_issue_id
+          || `${payload.agent || "agent"}-${(payload.title || "").slice(0, 40)}`;
         const synthetic: Notification = {
-          id: `task-stalled-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          id: `task-stalled-${stableKey}`,
           tenant_id: tenantId,
           type: "task_stalled",
           category: "status",  // grey left-border = neutral / informational
