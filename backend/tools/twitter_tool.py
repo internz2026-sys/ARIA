@@ -73,8 +73,12 @@ async def exchange_code(code: str, state: str, redirect_uri: str) -> dict:
             auth=(CLIENT_ID, CLIENT_SECRET),
         )
         if resp.status_code != 200:
-            logger.error("Twitter token exchange failed: %s %s", resp.status_code, resp.text)
-            raise RuntimeError(f"Token exchange failed: {resp.text}")
+            # Redact: provider error responses can echo the access_token
+            # back when the request half-succeeded. Never log resp.text raw.
+            from backend.services.log_redaction import redact_oauth_payload
+            safe = redact_oauth_payload(resp.text)
+            logger.error("Twitter token exchange failed: %s %s", resp.status_code, safe)
+            raise RuntimeError(f"Token exchange failed: HTTP {resp.status_code}")
 
         data = resp.json()
         return {

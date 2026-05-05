@@ -20,6 +20,12 @@ from backend.auth import get_current_user, get_verified_tenant, check_rate_limit
 
 load_dotenv()
 
+# Install the global log-redaction filter as early as possible so any
+# secrets that surface in startup logs (e.g. a connection string in an
+# exception during a DB warmup) are scrubbed before stdout flush.
+from backend.services.log_redaction import install_global_filter as _install_log_redaction
+_install_log_redaction()
+
 logger = logging.getLogger("aria.server")
 
 import html as _html

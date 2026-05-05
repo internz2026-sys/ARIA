@@ -230,6 +230,36 @@ async def get_report(tenant_id: str, report_id: str):
 
 # ── CSV Upload + Parse ──────────────────────────────────────────────────────────
 
+# Hard cap on uploaded CSV size. Anything larger is almost certainly an
+# attack or a misconfigured export — Facebook Ads reports for a single
+# account at the lifetime level rarely exceed a few MB. The cap is
+# enforced via a streaming bounded reader so a multi-GB upload is
+# rejected on first chunk-overflow rather than after the full body has
+# been buffered in memory (the original `await file.read()` then
+# size-check pattern still OOMs the container before the check fires).
+_CSV_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+_CSV_READ_CHUNK = 64 * 1024
+
+
+async def _read_upload_bounded(file: "UploadFile", limit: int = _CSV_MAX_BYTES) -> bytes:
+    """Read an UploadFile in chunks, raising 413 the moment we cross
+    `limit` bytes. Returns the full content on success."""
+    parts: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_CSV_READ_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum {limit // (1024 * 1024)}MB.",
+            )
+        parts.append(chunk)
+    return b"".join(parts)
+
+
 @router.post("/{tenant_id}/upload")
 async def upload_report(
     tenant_id: str,
@@ -244,10 +274,7 @@ async def upload_report(
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Only CSV files are supported. Please export your Facebook Ads report as CSV.")
 
-    content = await file.read()
-    if len(content) > 10 * 1024 * 1024:  # 10MB limit
-        raise HTTPException(400, "File too large. Maximum 10MB.")
-
+    content = await _read_upload_bounded(file)
     parsed = parse_csv(content)
     if not parsed["success"]:
         raise HTTPException(400, parsed.get("error", "Failed to parse CSV"))
@@ -312,7 +339,7 @@ async def upload_and_create_campaign(
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(400, "Only CSV files are supported.")
 
-    content = await file.read()
+    content = await _read_upload_bounded(file)
     parsed = parse_csv(content)
     if not parsed["success"]:
         raise HTTPException(400, parsed.get("error", "Failed to parse CSV"))

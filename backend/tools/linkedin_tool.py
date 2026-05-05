@@ -54,8 +54,12 @@ async def exchange_code(code: str, redirect_uri: str) -> dict:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if resp.status_code != 200:
-            logger.error("LinkedIn token exchange failed: %s %s", resp.status_code, resp.text)
-            raise RuntimeError(f"Token exchange failed: {resp.text}")
+            # Redact: provider error responses can echo the access_token
+            # back when the request half-succeeded. Never log resp.text raw.
+            from backend.services.log_redaction import redact_oauth_payload
+            safe = redact_oauth_payload(resp.text)
+            logger.error("LinkedIn token exchange failed: %s %s", resp.status_code, safe)
+            raise RuntimeError(f"Token exchange failed: HTTP {resp.status_code}")
 
         data = resp.json()
         return {

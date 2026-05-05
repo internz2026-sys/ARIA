@@ -634,7 +634,7 @@ def _last_assistant_index(history: list[dict]) -> int | None:
 
 
 @router.post("")
-async def ceo_chat(body: CEOChatMessage):
+async def ceo_chat(body: CEOChatMessage, request: Request):
     """Send a message to the CEO agent. The CEO reads its own .md file and all sub-agent .md files,
     then responds and may delegate tasks to sub-agents.
 
@@ -645,7 +645,22 @@ async def ceo_chat(body: CEOChatMessage):
     both call session.append(user) -> call_claude() -> session.append(assistant)
     in interleaved order, producing garbled history and possibly duplicate
     messages saved to Supabase.
+
+    Auth: tenant_id arrives in the body, not the path, so the router-level
+    Depends(get_verified_tenant) doesn't apply here. Verify ownership
+    explicitly before doing any work — otherwise an authenticated user
+    could chat into another tenant's session by spoofing the body.
     """
+    # Verify the caller owns the tenant_id they sent in the body. Empty
+    # tenant_id is treated as "no tenant claim" and rejected with 400 —
+    # the chat handler downstream needs a tenant for everything from
+    # delegation to inbox writes, so an empty value is never legitimate.
+    if not (body.tenant_id or "").strip():
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(status_code=400, detail="tenant_id is required")
+    from backend.auth import get_verified_tenant as _get_verified_tenant
+    await _get_verified_tenant(request, body.tenant_id)
+
     # Lazy chat-state import (same circular-load concern as below).
     from backend.services.chat_state import get_session_lock as _get_chat_session_lock
     lock = _get_chat_session_lock(body.session_id)
