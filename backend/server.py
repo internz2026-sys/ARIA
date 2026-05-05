@@ -69,11 +69,16 @@ from backend.paperclip_office_sync import (
 )
 
 # ── CORS — restrict to known frontend origins ────────────────────────────
+# Production sets CORS_ALLOWED_ORIGINS to a comma-separated list. The
+# fallback below is dev-only; the previous fallback included a stale
+# Vercel preview origin (aria-alpha-weld.vercel.app) that hadn't been
+# deployed in months — if the env var ever got cleared, that preview
+# would silently become the only allowed cross-origin source. Removed
+# in security audit item #15. Localhost stays for local frontend dev.
 _allowed_origins = [
     o.strip() for o in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
 ] or [
     "http://localhost:3000",
-    "https://aria-alpha-weld.vercel.app",
 ]
 
 # Socket.IO singleton + the stateless emit helpers live in

@@ -48,9 +48,11 @@ def _socket_allowed_origins() -> list[str] | str:
     raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()]
+    # Dev-only fallback. Stale Vercel preview removed in #15 — if the
+    # env var ever gets cleared in prod, the only allowed origin should
+    # be the actual production hostname. Localhost stays for local dev.
     return [
         "http://localhost:3000",
-        "https://aria-alpha-weld.vercel.app",
         "https://72-61-126-188.sslip.io",
     ]
 
