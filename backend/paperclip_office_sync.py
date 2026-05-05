@@ -81,7 +81,16 @@ _STALL_THRESHOLD_SECONDS = 180  # 3 minutes per spec
 # stall detection — we only alert on issues stuck in these states. Tied
 # to Paperclip's status vocabulary; updated alongside _UNFINISHED if
 # new states are added.
-_IN_PROGRESS_STATUSES = ("backlog", "todo", "to_do", "in_progress", "in-progress", "running")
+# Statuses that count as "agent is actively working on this" for stall
+# alerts. We deliberately EXCLUDE "backlog" — Paperclip's inbox-lite
+# endpoint (which agents poll for assignments) returns only
+# todo/in_progress/blocked, so backlog issues never get picked up by
+# any agent. Treating backlog as in-progress meant every old failed
+# delegation in the queue fired a stall alert after 3min on every
+# backend restart, producing waves of "Content Writer is still
+# working" ghost toasts. If you genuinely want backlog tasks to be
+# picked up, change their status to "todo" instead of widening this set.
+_IN_PROGRESS_STATUSES = ("todo", "to_do", "in_progress", "in-progress", "running")
 
 
 def _drop_from_stall_tracking(issue_id: str) -> None:
