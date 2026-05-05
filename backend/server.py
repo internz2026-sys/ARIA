@@ -938,16 +938,127 @@ async def _emit_agent_status(tenant_id: str, agent_id: str, status: str,
 
 
 # ─── Socket.IO Events ───
+# Auth model: every connect must present a Supabase JWT (via the
+# socket.io-client `auth: { token }` option, or as a Bearer header).
+# Without it the connection is rejected — closes the cross-tenant
+# real-time data leak that came from `cors_allowed_origins="*"` plus
+# the empty connect handler. join_tenant additionally verifies that
+# the JWT user owns the tenant_id they're trying to subscribe to,
+# matching the REST get_verified_tenant logic.
+
 @sio.event
-async def connect(sid, environ):
-    pass
+async def connect(sid, environ, auth=None):
+    """Authenticate the WebSocket on connect.
+
+    Token sources, in priority order:
+      1. socket.io-client `auth: { token }` payload
+      2. HTTP `Authorization: Bearer <token>` header
+
+    Dev mode (SUPABASE_JWT_SECRET unset) allows anonymous connections —
+    join_tenant in dev mode lets any room through to keep local UX
+    working without auth wiring. In production any unauthenticated
+    connection is refused.
+    """
+    import socketio as _socketio
+    from backend.auth import _get_jwt_secret, verify_jwt
+
+    secret = _get_jwt_secret()
+    if not secret:
+        # Dev mode — record a synthetic dev-user so join_tenant can
+        # short-circuit ownership checks the same way the REST layer does.
+        await sio.save_session(sid, {"user": {"sub": "dev-user", "email": "dev@localhost"}})
+        return True
+
+    token = ""
+    if isinstance(auth, dict):
+        token = (auth.get("token") or "").strip()
+    if not token:
+        header = environ.get("HTTP_AUTHORIZATION", "")
+        if header.lower().startswith("bearer "):
+            token = header[7:].strip()
+
+    if not token:
+        logger.warning(
+            "[socket] connect rejected: no auth token from %s",
+            environ.get("REMOTE_ADDR") or environ.get("HTTP_X_FORWARDED_FOR") or "unknown",
+        )
+        raise _socketio.exceptions.ConnectionRefusedError("Missing auth token")
+
+    try:
+        user = verify_jwt(token)
+    except HTTPException as e:
+        logger.warning("[socket] connect rejected: invalid token (%s)", e.detail)
+        raise _socketio.exceptions.ConnectionRefusedError(f"Invalid token: {e.detail}")
+
+    await sio.save_session(sid, {"user": user})
+    return True
 
 
 @sio.event
 async def join_tenant(sid, data):
-    tenant_id = data.get("tenant_id", "")
-    if tenant_id:
+    """Add this socket to the given tenant's room AFTER verifying that
+    the authenticated user owns it. Returns {ok: bool, error?: str}.
+
+    Without this gate, any connected client could subscribe to any
+    tenant_id and silently receive that tenant's inbox / CRM / chat
+    events — the original critical leak.
+    """
+    tenant_id = ((data or {}).get("tenant_id") or "").strip()
+    if not tenant_id:
+        return {"ok": False, "error": "missing_tenant_id"}
+
+    session = await sio.get_session(sid)
+    user = (session or {}).get("user") or {}
+
+    # Dev-mode shortcut — REST does the same in get_verified_tenant
+    if user.get("sub") == "dev-user":
         await sio.enter_room(sid, tenant_id)
+        return {"ok": True, "dev_mode": True}
+
+    user_email = (user.get("email") or "").lower().strip()
+    user_id = user.get("sub") or ""
+    if not user_email and not user_id:
+        return {"ok": False, "error": "unauthenticated"}
+
+    try:
+        from backend.config.loader import get_tenant_config
+        config = get_tenant_config(tenant_id)
+    except Exception as e:
+        logger.warning("[socket] join_tenant lookup failed for %s: %s", tenant_id, e)
+        return {"ok": False, "error": "tenant_not_found"}
+
+    owner_email = (config.owner_email or "").lower().strip()
+    allowed = False
+    if owner_email and user_email and owner_email == user_email:
+        allowed = True
+    elif str(config.tenant_id) == user_id:
+        allowed = True
+    elif not owner_email:
+        # Legacy / migration: tenants without owner_email fall through
+        # the same way REST does. Logged loudly so we can backfill.
+        logger.warning("[socket] tenant %s has no owner_email — allowing join", tenant_id)
+        allowed = True
+
+    if not allowed:
+        logger.warning(
+            "[socket] join_tenant denied: jwt_email=%s owner_email=%s tenant=%s",
+            user_email, owner_email, tenant_id,
+        )
+        return {"ok": False, "error": "forbidden"}
+
+    await sio.enter_room(sid, tenant_id)
+    return {"ok": True}
+
+
+@sio.event
+async def leave_tenant(sid, data):
+    """Drop the socket from a tenant room. No ownership check — leaving
+    is always safe and the frontend cleanup path emits this on unmount.
+    """
+    tenant_id = ((data or {}).get("tenant_id") or "").strip()
+    if tenant_id:
+        await sio.leave_room(sid, tenant_id)
+    return {"ok": True}
 
 
 # Active onboarding sessions

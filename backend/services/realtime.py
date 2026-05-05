@@ -24,6 +24,7 @@ have a clean home):
 from __future__ import annotations
 
 import logging
+import os
 
 import socketio
 
@@ -34,7 +35,30 @@ logger = logging.getLogger("aria.services.realtime")
 # The whole codebase emits via this instance. server.py mounts it as
 # `socketio.ASGIApp(sio, other_asgi_app=app)` and exports `socket_app` as
 # the actual ASGI entry point.
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+#
+# CORS: read the same allowed-origins list as the REST layer instead of
+# the previous wildcard `"*"`. Wildcard meant any website could open a
+# Socket.IO connection to ARIA from a user's browser; combined with the
+# previously-empty connect handler that allowed any tenant to be joined,
+# it was the loud half of a cross-tenant real-time data leak. The auth
+# guard in server.py:connect is the other half of the fix; this restricts
+# WHO can even attempt the handshake. Falls back to the same dev-friendly
+# defaults the REST middleware uses when the env var isn't set.
+def _socket_allowed_origins() -> list[str] | str:
+    raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return [
+        "http://localhost:3000",
+        "https://aria-alpha-weld.vercel.app",
+        "https://72-61-126-188.sslip.io",
+    ]
+
+
+sio = socketio.AsyncServer(
+    async_mode="asgi",
+    cors_allowed_origins=_socket_allowed_origins(),
+)
 
 
 # ── Agent display names ──────────────────────────────────────────────────
