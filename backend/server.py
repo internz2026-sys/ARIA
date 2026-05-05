@@ -697,7 +697,27 @@ async def lifespan(app: FastAPI):
         logger.warning("Failed to close orchestrator httpx client: %s", e)
 
 
-app = FastAPI(title="ARIA API", version="1.0.0", lifespan=lifespan)
+# Gate the API documentation surface in production. /docs (Swagger UI),
+# /redoc, and /openapi.json expose every route, request schema, response
+# shape, and Pydantic validator in the codebase. Useful in dev; pure
+# reconnaissance fodder in production. ENABLE_API_DOCS=true overrides
+# the production gate when an operator needs them temporarily (e.g.
+# debugging a third-party integration).
+def _api_docs_enabled() -> bool:
+    if (os.environ.get("ENABLE_API_DOCS") or "").lower() in ("1", "true", "yes"):
+        return True
+    return (os.environ.get("ARIA_ENV") or os.environ.get("ENV") or "").lower() not in ("prod", "production")
+
+
+_DOCS_ENABLED = _api_docs_enabled()
+app = FastAPI(
+    title="ARIA API",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _DOCS_ENABLED else None,
+)
 
 # ── Register routers ──────────────────────────────────────────────────────
 from backend.routers.crm import router as crm_router
@@ -749,8 +769,11 @@ _PUBLIC_PREFIXES = (
     "/api/media/",          # Image generation (used by Paperclip Media Designer)
     "/api/tenant/by-email/", # Tenant lookup during login (returns only tenant_id)
     "/api/email/inbound",   # Inbound mail webhook (Postmark/Resend/SendGrid → /api/email/inbound)
-    "/docs",                # Swagger UI
-    "/openapi.json",
+    # /docs + /openapi.json removed from public prefixes in #20 — the
+    # FastAPI app constructor now sets docs_url/openapi_url=None in
+    # production so the routes don't exist at all there. In dev they
+    # don't need an entry here either, since they're under the auth
+    # middleware's `not path.startswith("/api/")` early-return.
 )
 
 
