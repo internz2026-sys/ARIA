@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from backend.config.loader import get_tenant_config
 from backend.schemas import (
     CrmContactCreate, CrmContactUpdate, CrmCompanyCreate, CrmCompanyUpdate,
     CrmDealCreate, CrmDealUpdate, CrmActivityCreate,
@@ -14,6 +16,7 @@ from backend.schemas import (
 from backend.services import crm as crm_service
 from backend.services.email_provider import send_email as send_email_via_provider
 from backend.services.realtime import sio
+from backend.services.supabase import get_db
 
 # RFC 5322 is huge — this matches the practical 99% subset most CRMs
 # accept. Frontend uses a similar regex, but server-side is authoritative.
@@ -134,6 +137,100 @@ async def send_email_to_contact(
     # use Resend's default rendering which is fine for plain text.
     html_body = "<p>" + "<br>".join(text_body.splitlines()) + "</p>"
 
+    sb = get_db()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cfg = get_tenant_config(tenant_id)
+    sender_email = (cfg.owner_email or "").strip()
+    contact_name = (contact.get("name") or "").strip()
+    preview_snippet = text_body[:280]
+
+    # ── 1. Find or create the email_thread for this contact ──
+    # Re-using the most recent thread per (tenant, contact_email) means
+    # repeated CRM sends to the same person all live in one Conversations
+    # thread instead of fragmenting into one-off threads.
+    thread_id = ""
+    try:
+        existing = (
+            sb.table("email_threads").select("id")
+            .eq("tenant_id", tenant_id).eq("contact_email", to)
+            .order("last_message_at", desc=True).limit(1).execute()
+        )
+        if existing.data:
+            thread_id = existing.data[0]["id"]
+    except Exception as e:
+        logger.debug("[crm] thread lookup failed (will create new): %s", e)
+
+    if not thread_id:
+        try:
+            tr = sb.table("email_threads").insert({
+                "tenant_id": tenant_id,
+                "contact_email": to,
+                "subject": subject,
+                "status": "awaiting_reply",
+                "last_message_at": now_iso,
+            }).execute()
+            if tr.data:
+                thread_id = tr.data[0]["id"]
+        except Exception as e:
+            logger.warning("[crm] email_threads insert failed: %s", e)
+
+    # ── 2. Insert inbox_items row (status=sending, will flip to sent) ──
+    # Type=email_sequence + agent=email_marketer matches the existing
+    # EmailEditor renderer in the inbox UI so the row displays as a
+    # proper email card with the draft body visible.
+    inbox_title = f"To {contact_name or to}: {subject}"[:200]
+    inbox_item_id = ""
+    email_draft_payload = {
+        "to": to,
+        "subject": subject,
+        "html_body": html_body,
+        "text_body": text_body,
+        "preview_snippet": preview_snippet,
+        "status": "sending",
+        "reply_to_thread_id": thread_id,
+    }
+    try:
+        ir = sb.table("inbox_items").insert({
+            "tenant_id": tenant_id,
+            "agent": "email_marketer",
+            "type": "email_sequence",
+            "title": inbox_title,
+            "content": text_body[:500],
+            "status": "sending",
+            "priority": "normal",
+            "email_draft": email_draft_payload,
+        }).execute()
+        if ir.data:
+            inbox_item_id = ir.data[0]["id"]
+    except Exception as e:
+        logger.warning("[crm] inbox_items insert failed: %s", e)
+
+    # ── 3. Insert outbound email_messages row (the Conversations entry) ──
+    email_msg_id = ""
+    if thread_id:
+        try:
+            mr = sb.table("email_messages").insert({
+                "thread_id": thread_id,
+                "tenant_id": tenant_id,
+                "direction": "outbound",
+                "sender": sender_email or "ARIA",
+                "recipients": to,
+                "subject": subject,
+                "text_body": text_body,
+                "html_body": html_body,
+                "preview_snippet": preview_snippet,
+                "message_timestamp": now_iso,
+                "approval_status": "sending",
+            }).execute()
+            if mr.data:
+                email_msg_id = mr.data[0]["id"]
+        except Exception as e:
+            logger.warning("[crm] email_messages insert failed: %s", e)
+
+    # ── 4. Send via the provider ──
+    # inbound_thread_id is what feeds the Reply-To token builder so when
+    # the recipient hits Reply, their message routes back to ARIA's
+    # /api/email/inbound webhook and matches THIS thread by id.
     try:
         result = await send_email_via_provider(
             tenant_id,
@@ -141,33 +238,112 @@ async def send_email_to_contact(
             subject=subject,
             html_body=html_body,
             text_body=text_body,
+            inbound_thread_id=thread_id,
+            inbox_item_id=inbox_item_id,
         )
     except Exception as e:
         logger.exception("[crm] send-email provider error: %s", e)
+        _mark_send_failed(sb, inbox_item_id, email_msg_id)
         raise HTTPException(status_code=502, detail=f"Email provider error: {e}")
 
     if not result or not result.get("success"):
+        _mark_send_failed(sb, inbox_item_id, email_msg_id)
         detail = (result or {}).get("error") or "Unknown send error"
         raise HTTPException(status_code=502, detail=str(detail))
 
-    # Best-effort activity log — never block the send response on this
+    provider_msg_id = (result.get("message_id") or "").strip()
+
+    # ── 5. Flip statuses to sent + bump the thread ──
+    if inbox_item_id:
+        try:
+            sb.table("inbox_items").update({
+                "status": "sent",
+                "email_draft": {
+                    **email_draft_payload,
+                    "status": "sent",
+                    "provider_message_id": provider_msg_id,
+                },
+                "updated_at": now_iso,
+            }).eq("id", inbox_item_id).execute()
+        except Exception as e:
+            logger.debug("[crm] inbox sent-flip failed: %s", e)
+
+    if email_msg_id:
+        try:
+            update_msg: dict = {"approval_status": "sent"}
+            if provider_msg_id:
+                update_msg["gmail_message_id"] = provider_msg_id
+            sb.table("email_messages").update(update_msg).eq("id", email_msg_id).execute()
+        except Exception as e:
+            logger.debug("[crm] email_messages sent-flip failed: %s", e)
+
+    if thread_id:
+        try:
+            sb.table("email_threads").update({
+                "last_message_at": now_iso,
+                "status": "awaiting_reply",
+                "updated_at": now_iso,
+            }).eq("id", thread_id).execute()
+        except Exception as e:
+            logger.debug("[crm] thread bump failed: %s", e)
+
+    # ── 6. CRM activity log (timeline entry) ──
     try:
         crm_service.create_activity(tenant_id, {
             "contact_id": contact_id,
             "type": "email_sent",
             "title": subject,
             "body": text_body[:500],
-            "metadata": {"to": to, "provider": result.get("provider", "")},
+            "metadata": {
+                "to": to,
+                "provider": result.get("provider", ""),
+                "thread_id": thread_id,
+                "inbox_item_id": inbox_item_id,
+            },
         })
     except Exception as e:
         logger.debug("[crm] activity log failed (non-fatal): %s", e)
 
+    # ── 7. Live UI refresh — Inbox + Conversations + CRM ──
+    try:
+        await sio.emit("inbox_updated", {
+            "action": "new_sent",
+            "inbox_item_id": inbox_item_id,
+        }, room=tenant_id)
+        if thread_id:
+            await sio.emit("email_thread_updated", {
+                "thread_id": thread_id,
+                "status": "awaiting_reply",
+                "last_message_at": now_iso,
+            }, room=tenant_id)
+        await _emit_crm_update(tenant_id, "crm_contact")
+    except Exception as e:
+        logger.debug("[crm] socket emits failed (non-fatal): %s", e)
+
     return {
         "status": "sent",
         "to": to,
-        "message_id": result.get("message_id", ""),
+        "thread_id": thread_id,
+        "inbox_item_id": inbox_item_id,
+        "message_id": provider_msg_id,
         "provider": result.get("provider", ""),
     }
+
+
+def _mark_send_failed(sb, inbox_item_id: str, email_msg_id: str) -> None:
+    """Flip inbox + email_messages to failed when the provider rejects.
+    Best-effort: never raises since the caller is already on an error
+    path returning a 502 to the user."""
+    if inbox_item_id:
+        try:
+            sb.table("inbox_items").update({"status": "failed"}).eq("id", inbox_item_id).execute()
+        except Exception as e:
+            logger.debug("[crm] inbox failed-flip failed: %s", e)
+    if email_msg_id:
+        try:
+            sb.table("email_messages").update({"approval_status": "failed"}).eq("id", email_msg_id).execute()
+        except Exception as e:
+            logger.debug("[crm] email_messages failed-flip failed: %s", e)
 
 
 # ── Companies ─────────────────────────────────────────────────────────────────
