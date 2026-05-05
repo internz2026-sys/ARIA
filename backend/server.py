@@ -1099,7 +1099,17 @@ VIRTUAL_OFFICE_AGENTS = [
 # ─── Health Check ───
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+    """Liveness probe. Returns the minimum needed to satisfy load
+    balancers / uptime checks: a static status string.
+
+    Audit item #19: response is intentionally tiny. No version, no
+    git SHA, no DB ping output, no timestamp -- each of those is a
+    small recon signal (server clock skew, deploy frequency, library
+    fingerprinting) that has no operational value to the caller.
+    Operators get health/version info via journalctl + `git log` on
+    the VPS, not over the wire.
+    """
+    return {"status": "ok"}
 
 
 # ─── Current user profile snapshot (role + status) ───
