@@ -2,6 +2,15 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  useDraggable,
+  useDroppable,
+  type DragEndEvent,
+} from "@dnd-kit/core";
 import { crm } from "@/lib/api";
 import {
   CrmContact, CrmCompany, CrmDeal,
@@ -123,6 +132,93 @@ function CrmPagination({ total, page, onPage }: { total: number; page: number; o
           Next
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── Kanban DnD primitives ───
+// Defined outside CRMPage so they don't recreate on every render. The
+// PointerSensor's distance:8 activation guard means a click on the
+// dropdown / edit / delete buttons never triggers a drag — only a
+// genuine drag motion >8px does. We still stopPropagation on
+// pointerdown for those inner controls as defense-in-depth so a
+// fast accidental drag doesn't swallow the click.
+
+interface KanbanCardProps {
+  deal: CrmDeal;
+  onEdit: () => void;
+  onDelete: () => void;
+  onStageChange: (stage: string) => void;
+}
+
+function KanbanCard({ deal, onEdit, onDelete, onStageChange }: KanbanCardProps) {
+  const { setNodeRef, attributes, listeners, transform, isDragging } = useDraggable({
+    id: deal.id,
+    data: { stage: deal.stage },
+  });
+  const style: React.CSSProperties | undefined = transform
+    ? {
+        transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
+        zIndex: 50,
+      }
+    : undefined;
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`bg-white rounded-xl border border-[#E0DED8] p-3.5 hover:shadow-sm transition-shadow select-none ${
+        isDragging ? "opacity-60 cursor-grabbing shadow-lg" : "cursor-grab"
+      }`}
+    >
+      <div className="flex items-start justify-between mb-2">
+        <p className="text-sm font-medium text-[#2C2C2A] flex-1">{deal.title}</p>
+        <div className="flex items-center gap-2 shrink-0 ml-2">
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={onEdit}
+            className="text-[#1D9E75] hover:text-[#168860] transition-colors"
+            title="Edit"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
+          </button>
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={onDelete}
+            className="text-[#D85A30] hover:text-[#B84A28] transition-colors"
+            title="Delete"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+      </div>
+      {deal.value > 0 && (
+        <p className="text-sm font-semibold text-[#1D9E75] mb-2">{formatCurrency(deal.value)}</p>
+      )}
+      {deal.notes && <p className="text-[11px] text-[#9E9C95] mb-2 line-clamp-2">{deal.notes}</p>}
+      <select
+        value={deal.stage}
+        onChange={e => onStageChange(e.target.value)}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="w-full text-[11px] font-medium px-2 py-1.5 rounded-lg border border-[#E0DED8] bg-[#F8F8F6] text-[#5F5E5A] cursor-pointer focus:outline-none"
+      >
+        {DEAL_STAGES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function KanbanColumn({ stageKey, children }: { stageKey: string; children: React.ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({ id: stageKey });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`space-y-2 min-h-[140px] rounded-xl p-1 transition-colors ${
+        isOver ? "bg-[#EEEDFE] outline outline-2 outline-dashed outline-[#534AB7]/40" : ""
+      }`}
+    >
+      {children}
     </div>
   );
 }
@@ -280,6 +376,25 @@ export default function CRMPage() {
   const [editContact, setEditContact] = useState<CrmContact | null>(null);
   const [editCompany, setEditCompany] = useState<CrmCompany | null>(null);
   const [editDeal, setEditDeal] = useState<CrmDeal | null>(null);
+
+  // ─── Kanban drag-and-drop ───
+  // distance:8 means a click won't trigger drag (only a real >8px
+  // motion does). This keeps the dropdown / edit / delete buttons
+  // inside each card fully clickable without needing to add cancellers
+  // on every interactive child.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+  );
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over) return;
+    const dealId = String(active.id);
+    const newStage = String(over.id);
+    const deal = deals.find(d => d.id === dealId);
+    if (!deal || deal.stage === newStage) return;
+    handleDealStageChange(dealId, newStage);
+  }
 
   // ─── Compose-email modal (CRM contact send) ───
   const [composeContact, setComposeContact] = useState<CrmContact | null>(null);
@@ -810,62 +925,47 @@ export default function CRMPage() {
             })}
           </div>
 
-          {/* Kanban board */}
+          {/* Kanban board with drag-and-drop. Each column is a Droppable
+              keyed on stage.key; each card is a Draggable keyed on
+              deal.id. onDragEnd routes through the same handler the
+              dropdown uses, so synthetic deals (contact-status-backed)
+              and real deals both persist via crm.updateDeal. */}
           {dealLoading ? (
             <div className="p-8 text-center text-sm text-[#9E9C95]">Loading deals...</div>
           ) : (
-            // Kanban scroll container. The themed thin-scrollbar utility
-            // class (defined in globals.css) replaces the chunky default
-            // scrollbar with a low-contrast track that matches the
-            // dashboard's neutral palette.
-            <div className="flex flex-col md:flex-row gap-3 md:overflow-x-auto pb-4 aria-scroll-thin">
-              {DEAL_STAGES.map(stage => {
-                const stageDeals = deals.filter(d => d.stage === stage.key);
-                return (
-                  <div key={stage.key} className="w-full md:min-w-[260px] md:w-[260px] md:shrink-0">
-                    {/* Column header */}
-                    <div className="flex items-center gap-2 px-3 py-2.5 mb-2">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: stage.color }} />
-                      <span className="text-xs font-semibold text-[#2C2C2A]">{stage.label}</span>
-                      <span className="text-[10px] text-[#9E9C95] bg-[#F8F8F6] px-1.5 py-0.5 rounded-full">{stageDeals.length}</span>
-                    </div>
-                    {/* Cards */}
-                    <div className="space-y-2 min-h-[100px]">
-                      {stageDeals.map(deal => (
-                        <div key={deal.id} className="bg-white rounded-xl border border-[#E0DED8] p-3.5 hover:shadow-sm transition-shadow">
-                          <div className="flex items-start justify-between mb-2">
-                            <p className="text-sm font-medium text-[#2C2C2A] flex-1">{deal.title}</p>
-                            <div className="flex items-center gap-2 shrink-0 ml-2">
-                              <button onClick={() => setEditDeal({ ...deal })} className="text-[#1D9E75] hover:text-[#168860] transition-colors" title="Edit">
-                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
-                              </button>
-                              <button onClick={() => handleDeleteDeal(deal.id)} className="text-[#D85A30] hover:text-[#B84A28] transition-colors" title="Delete">
-                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                              </button>
-                            </div>
+            <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+              <div className="flex flex-col md:flex-row gap-3 md:overflow-x-auto pb-4 aria-scroll-thin">
+                {DEAL_STAGES.map(stage => {
+                  const stageDeals = deals.filter(d => d.stage === stage.key);
+                  return (
+                    <div key={stage.key} className="w-full md:min-w-[260px] md:w-[260px] md:shrink-0">
+                      {/* Column header */}
+                      <div className="flex items-center gap-2 px-3 py-2.5 mb-2">
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: stage.color }} />
+                        <span className="text-xs font-semibold text-[#2C2C2A]">{stage.label}</span>
+                        <span className="text-[10px] text-[#9E9C95] bg-[#F8F8F6] px-1.5 py-0.5 rounded-full">{stageDeals.length}</span>
+                      </div>
+                      <KanbanColumn stageKey={stage.key}>
+                        {stageDeals.map(deal => (
+                          <KanbanCard
+                            key={deal.id}
+                            deal={deal}
+                            onEdit={() => setEditDeal({ ...deal })}
+                            onDelete={() => handleDeleteDeal(deal.id)}
+                            onStageChange={(s) => handleDealStageChange(deal.id, s)}
+                          />
+                        ))}
+                        {stageDeals.length === 0 && (
+                          <div className="border-2 border-dashed border-[#E0DED8] rounded-xl p-4 text-center">
+                            <p className="text-[11px] text-[#B0AFA8]">No deals</p>
                           </div>
-                          {deal.value > 0 && (
-                            <p className="text-sm font-semibold text-[#1D9E75] mb-2">{formatCurrency(deal.value)}</p>
-                          )}
-                          {deal.notes && <p className="text-[11px] text-[#9E9C95] mb-2 line-clamp-2">{deal.notes}</p>}
-                          {/* Stage selector */}
-                          <select value={deal.stage} onChange={e => handleDealStageChange(deal.id, e.target.value)}
-                            className="w-full text-[11px] font-medium px-2 py-1.5 rounded-lg border border-[#E0DED8] bg-[#F8F8F6] text-[#5F5E5A] cursor-pointer focus:outline-none"
-                          >
-                            {DEAL_STAGES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
-                          </select>
-                        </div>
-                      ))}
-                      {stageDeals.length === 0 && (
-                        <div className="border-2 border-dashed border-[#E0DED8] rounded-xl p-4 text-center">
-                          <p className="text-[11px] text-[#B0AFA8]">No deals</p>
-                        </div>
-                      )}
+                        )}
+                      </KanbanColumn>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            </DndContext>
           )}
         </>
       )}
