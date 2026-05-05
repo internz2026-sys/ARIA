@@ -15,9 +15,10 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from backend.auth import get_verified_tenant
 from backend.services import inbox as inbox_service
 from backend.services.realtime import sio, emit_task_completed as _emit_task_completed
 from backend.services.supabase import get_db
@@ -25,6 +26,40 @@ from backend.services.supabase import get_db
 logger = logging.getLogger("aria.routers.inbox")
 
 router = APIRouter(tags=["Inbox"])
+
+
+async def _verify_inbox_owner(request: Request, item_id: str) -> dict:
+    """Look up the inbox row + verify the JWT user owns its tenant.
+
+    Inbox PATCH / DELETE / restore routes take {item_id} (not tenant_id)
+    in the path, so the standard router-level get_verified_tenant dep
+    can't apply. This helper is the per-route equivalent — fetches the
+    row by id, then runs get_verified_tenant against the row's tenant.
+
+    Returns the row (id, tenant_id) on success, raises 404 if the row
+    is missing and 403 (via get_verified_tenant) if the user doesn't
+    own the tenant. Cost: one PK-equality lookup, sub-millisecond.
+    """
+    sb = get_db()
+    try:
+        result = (
+            sb.table("inbox_items")
+            .select("id, tenant_id")
+            .eq("id", item_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("[inbox] ownership lookup failed for %s: %s", item_id, e)
+        raise HTTPException(status_code=404, detail="Inbox item not found")
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Inbox item not found")
+    row = result.data[0]
+    tenant_id = row.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=500, detail="Inbox item missing tenant_id")
+    await get_verified_tenant(request, str(tenant_id))
+    return row
 
 
 @router.get("/api/inbox/item/{item_id}")
@@ -65,13 +100,13 @@ async def get_inbox_item(item_id: str):
         return {"item": None, "error": "fetch_failed"}
 
 
-@router.get("/api/inbox/{tenant_id}/counts")
+@router.get("/api/inbox/{tenant_id}/counts", dependencies=[Depends(get_verified_tenant)])
 async def inbox_status_counts(tenant_id: str):
     """Return counts per status for inbox tabs."""
     return {"counts": inbox_service.status_counts(tenant_id)}
 
 
-@router.get("/api/inbox/{tenant_id}")
+@router.get("/api/inbox/{tenant_id}", dependencies=[Depends(get_verified_tenant)])
 async def list_inbox(tenant_id: str, status: str = "", page: int = 1, page_size: int = 20):
     """List inbox items for a tenant with pagination."""
     try:
@@ -115,6 +150,7 @@ async def update_inbox_item(item_id: str, request: Request):
     import json
     from datetime import datetime, timezone
 
+    await _verify_inbox_owner(request, item_id)
     sb = get_db()
     body = await request.json() or {}
     updates: dict = {}
@@ -258,7 +294,7 @@ async def update_inbox_item(item_id: str, request: Request):
 
 
 @router.delete("/api/inbox/{item_id}")
-async def delete_inbox_item(item_id: str, permanent: bool = False, reason: str = ""):
+async def delete_inbox_item(item_id: str, request: Request, permanent: bool = False, reason: str = ""):
     """Soft-delete (default) or hard-delete an inbox item.
 
     DEFAULT (`permanent=false`): update status to `cancelled` and
@@ -277,6 +313,7 @@ async def delete_inbox_item(item_id: str, permanent: bool = False, reason: str =
     re-import the agent's late reply.
     """
     from datetime import datetime, timezone
+    await _verify_inbox_owner(request, item_id)
     sb = get_db()
     # Look up the row first so we can capture the previous status
     # (for restore) and the paperclip_issue_id (to cancel upstream).
@@ -375,12 +412,13 @@ async def delete_inbox_item(item_id: str, permanent: bool = False, reason: str =
 
 
 @router.post("/api/inbox/{item_id}/restore")
-async def restore_inbox_item(item_id: str):
+async def restore_inbox_item(item_id: str, request: Request):
     """Move a cancelled inbox row back to its previous status (or
     needs_review if none was recorded). Clears cancel_reason from
     metadata but keeps the cancelled_at timestamp so we have a
     history trail.
     """
+    await _verify_inbox_owner(request, item_id)
     sb = get_db()
     restored_to = "needs_review"
     try:

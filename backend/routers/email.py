@@ -20,9 +20,10 @@ import re
 from base64 import b64encode
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from backend.auth import get_verified_tenant
 from backend.config.loader import get_tenant_config
 from backend.services.email_sender import (
     resolve_reply_thread_context,
@@ -77,7 +78,7 @@ class SendReplyRequest(BaseModel):
 # ─── Generic send ─────────────────────────────────────────────────────
 
 
-@router.post("/api/email/{tenant_id}/send")
+@router.post("/api/email/{tenant_id}/send", dependencies=[Depends(get_verified_tenant)])
 async def send_gmail_email(tenant_id: str, body: GmailSendRequest, confirmed: bool = False):
     """Send an email via the user's authenticated Gmail account.
 
@@ -108,7 +109,7 @@ async def send_gmail_email(tenant_id: str, body: GmailSendRequest, confirmed: bo
 # ─── Approve-and-send pending draft ───────────────────────────────────
 
 
-@router.post("/api/email/{tenant_id}/approve-send")
+@router.post("/api/email/{tenant_id}/approve-send", dependencies=[Depends(get_verified_tenant)])
 async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
     """Approve a pending email draft and send it via Gmail.
 
@@ -267,7 +268,7 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
 # ─── Draft CRUD (update / cancel) ─────────────────────────────────────
 
 
-@router.post("/api/email/{tenant_id}/update-draft")
+@router.post("/api/email/{tenant_id}/update-draft", dependencies=[Depends(get_verified_tenant)])
 async def update_email_draft(tenant_id: str, body: UpdateDraftRequest):
     """Update an email draft's to, subject, or body before sending."""
     sb = get_db()
@@ -302,7 +303,7 @@ async def update_email_draft(tenant_id: str, body: UpdateDraftRequest):
     return {"ok": True, "email_draft": draft}
 
 
-@router.post("/api/email/{tenant_id}/cancel-draft")
+@router.post("/api/email/{tenant_id}/cancel-draft", dependencies=[Depends(get_verified_tenant)])
 async def cancel_email_draft(tenant_id: str, body: CancelDraftRequest):
     """Cancel a pending email draft, optionally capturing a reason."""
     sb = get_db()
@@ -330,7 +331,7 @@ async def cancel_email_draft(tenant_id: str, body: CancelDraftRequest):
 # ─── Threads list / get / mark-read ───────────────────────────────────
 
 
-@router.get("/api/email/{tenant_id}/threads")
+@router.get("/api/email/{tenant_id}/threads", dependencies=[Depends(get_verified_tenant)])
 async def list_email_threads(tenant_id: str, status: str = ""):
     """List email conversation threads for a tenant."""
     sb = get_db()
@@ -341,7 +342,7 @@ async def list_email_threads(tenant_id: str, status: str = ""):
     return {"threads": result.data or []}
 
 
-@router.get("/api/email/{tenant_id}/threads/{thread_id}")
+@router.get("/api/email/{tenant_id}/threads/{thread_id}", dependencies=[Depends(get_verified_tenant)])
 async def get_email_thread(tenant_id: str, thread_id: str):
     """Get a single thread with all its messages."""
     sb = get_db()
@@ -370,7 +371,7 @@ async def get_email_thread(tenant_id: str, thread_id: str):
     }
 
 
-@router.post("/api/email/{tenant_id}/threads/{thread_id}/mark-read")
+@router.post("/api/email/{tenant_id}/threads/{thread_id}/mark-read", dependencies=[Depends(get_verified_tenant)])
 async def mark_thread_read(tenant_id: str, thread_id: str):
     """Mark a thread as read (status → open)."""
     sb = get_db()
@@ -384,7 +385,7 @@ async def mark_thread_read(tenant_id: str, thread_id: str):
 # ─── Agent-drafted reply on a thread ─────────────────────────────────
 
 
-@router.post("/api/email/{tenant_id}/draft-reply")
+@router.post("/api/email/{tenant_id}/draft-reply", dependencies=[Depends(get_verified_tenant)])
 async def generate_draft_reply(tenant_id: str, body: DraftReplyRequest):
     """Generate a suggested reply draft for an email thread.
 
@@ -536,7 +537,7 @@ Keep it professional, concise, and on-brand. Do not include placeholder text."""
 # ─── Direct user-authored reply on a thread ──────────────────────────
 
 
-@router.post("/api/email/{tenant_id}/threads/{thread_id}/send-reply")
+@router.post("/api/email/{tenant_id}/threads/{thread_id}/send-reply", dependencies=[Depends(get_verified_tenant)])
 async def send_thread_reply(tenant_id: str, thread_id: str, body: SendReplyRequest):
     """Send a user-authored reply directly on an existing email thread.
 
@@ -709,7 +710,7 @@ async def get_email_settings_status(tenant_id: str):
 # /api/settings/{tenant_id}/email/status (tenant in path) instead of
 # /api/settings/email/status?tenant_id=...&. Both routes call the same
 # handler so the path-style + querystring-style callers both work.
-@router.get("/api/settings/{tenant_id}/email/status")
+@router.get("/api/settings/{tenant_id}/email/status", dependencies=[Depends(get_verified_tenant)])
 async def get_email_settings_status_path(tenant_id: str):
     """Tenant-in-path alias for get_email_settings_status."""
     return _email_status_payload(tenant_id)
@@ -728,7 +729,7 @@ async def update_email_settings(body: EmailSettingsPatch):
 # Tenant-in-path alias matching the frontend's PATCH path. Reuses the
 # same logic as the body-tenant variant so both calling conventions
 # stay in lockstep.
-@router.patch("/api/settings/{tenant_id}/email")
+@router.patch("/api/settings/{tenant_id}/email", dependencies=[Depends(get_verified_tenant)])
 async def update_email_settings_path(tenant_id: str, body: EmailSettingsPatch):
     """Tenant-in-path alias for update_email_settings.
 
@@ -906,7 +907,7 @@ async def inbound_email_webhook(request: Request):
 # ─── Gmail sync (manual trigger + sync-all for cron) ─────────────────
 
 
-@router.post("/api/email/{tenant_id}/sync")
+@router.post("/api/email/{tenant_id}/sync", dependencies=[Depends(get_verified_tenant)])
 async def trigger_email_sync(tenant_id: str):
     """Manually trigger Gmail inbound reply sync for a tenant."""
     from backend.server import _emit_sync_events

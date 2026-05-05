@@ -20,9 +20,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from backend.auth import get_verified_tenant
 from backend.services.supabase import get_db
 
 logger = logging.getLogger("aria.routers.tasks")
@@ -103,7 +104,7 @@ def _verify_task_owner(request: Request, sb, task_id: str) -> dict:
     raise HTTPException(status_code=403, detail="You don't have access to this task")
 
 
-@router.get("/{tenant_id}")
+@router.get("/{tenant_id}", dependencies=[Depends(get_verified_tenant)])
 async def list_tasks(tenant_id: str):
     """List all live tasks for a tenant, ordered by creation date.
 
@@ -127,7 +128,7 @@ async def list_tasks(tenant_id: str):
         return {"tasks": [], "error": str(e)}
 
 
-@router.get("/trash/{tenant_id}")
+@router.get("/trash/{tenant_id}", dependencies=[Depends(get_verified_tenant)])
 async def list_trashed_tasks(tenant_id: str):
     """List soft-deleted tasks for the Trash tab. Newest-deleted first
     so the user sees their most-recent regrets at the top."""

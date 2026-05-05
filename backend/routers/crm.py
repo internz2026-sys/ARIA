@@ -5,9 +5,10 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from backend.auth import get_verified_tenant
 from backend.config.loader import get_tenant_config
 from backend.schemas import (
     CrmContactCreate, CrmContactUpdate, CrmCompanyCreate, CrmCompanyUpdate,
@@ -24,7 +25,16 @@ _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 logger = logging.getLogger("aria.routers.crm")
 
-router = APIRouter(prefix="/api/crm/{tenant_id}", tags=["CRM"])
+# Router-level dep: every route under /api/crm/{tenant_id}/ runs
+# get_verified_tenant first. Returns 403 unless the JWT user owns the
+# tenant_id in the path. Closes the IDOR class for the entire CRM
+# surface in one line. Dev-mode (SUPABASE_JWT_SECRET unset) still
+# bypasses via the "dev-user" early-return inside get_verified_tenant.
+router = APIRouter(
+    prefix="/api/crm/{tenant_id}",
+    tags=["CRM"],
+    dependencies=[Depends(get_verified_tenant)],
+)
 
 
 async def _emit_crm_update(tenant_id: str, entity: str) -> None:

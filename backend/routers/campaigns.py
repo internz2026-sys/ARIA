@@ -5,15 +5,23 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
+from backend.auth import get_verified_tenant
 from backend.services import campaigns as campaign_service
 from backend.tools.fb_ads_parser import parse_csv
 
 logger = logging.getLogger("aria.api.campaigns")
 
-router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
+# Every route under /api/campaigns/ takes {tenant_id} as the first path
+# segment, so router-level get_verified_tenant covers the whole surface
+# in one shot. Closes IDOR class for campaigns CRUD + CSV uploads.
+router = APIRouter(
+    prefix="/api/campaigns",
+    tags=["campaigns"],
+    dependencies=[Depends(get_verified_tenant)],
+)
 
 
 def _extract_report_context(parsed: dict) -> tuple[dict, str | None, str | None]:

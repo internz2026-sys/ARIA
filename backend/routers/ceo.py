@@ -30,9 +30,10 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from backend.auth import get_verified_tenant
 from backend.config.loader import get_tenant_config
 from backend.services.async_utils import safe_background as _safe_background
 from backend.services.realtime import sio
@@ -89,7 +90,7 @@ async def ceo_chat_history(session_id: str):
         return {"session_id": session_id, "messages": []}
 
 
-@router.get("/sessions/{tenant_id}")
+@router.get("/sessions/{tenant_id}", dependencies=[Depends(get_verified_tenant)])
 async def list_chat_sessions(tenant_id: str):
     """List all chat sessions for a tenant, newest first."""
     try:
@@ -111,7 +112,7 @@ class BulkDeleteSessionsRequest(BaseModel):
     session_ids: list[str]
 
 
-@router.post("/sessions/{tenant_id}/bulk-delete")
+@router.post("/sessions/{tenant_id}/bulk-delete", dependencies=[Depends(get_verified_tenant)])
 async def bulk_delete_chat_sessions(tenant_id: str, body: BulkDeleteSessionsRequest):
     """Bulk-delete multiple chat sessions in a single Supabase round-trip.
 
@@ -159,7 +160,7 @@ async def bulk_delete_chat_sessions(tenant_id: str, body: BulkDeleteSessionsRequ
     return {"ok": True, "deleted": len(safe_ids), "deleted_ids": safe_ids}
 
 
-@router.delete("/sessions/{tenant_id}/{session_id}")
+@router.delete("/sessions/{tenant_id}/{session_id}", dependencies=[Depends(get_verified_tenant)])
 async def delete_chat_session(tenant_id: str, session_id: str):
     """Hard-delete a CEO chat session.
 
