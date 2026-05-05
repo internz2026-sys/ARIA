@@ -206,7 +206,11 @@ async def get_verified_tenant(request: Request, tenant_id: str) -> dict:
     if user.get("sub") == "dev-user":
         return user
 
-    user_email = user.get("email", "")
+    # Normalize the user's email same as the middleware does — Supabase
+    # stores emails lowercased but JWTs / user_metadata can leak through
+    # in mixed case. Strict == was producing spurious 403s for legitimate
+    # owners with case-mismatched DB rows.
+    user_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
     user_id = user.get("sub", "")
 
     if not user_email and not user_id:
@@ -216,9 +220,10 @@ async def get_verified_tenant(request: Request, tenant_id: str) -> dict:
     try:
         from backend.config.loader import get_tenant_config
         config = get_tenant_config(tenant_id)
+        owner_email = (config.owner_email or "").lower().strip()
 
-        # Verify ownership by email or by matching user_id in tenant_id
-        if config.owner_email and config.owner_email == user_email:
+        # Verify ownership by email (case/whitespace-insensitive)
+        if owner_email and owner_email == user_email:
             return user
 
         # Also check if the tenant_id itself matches the user_id (some setups)
@@ -226,10 +231,13 @@ async def get_verified_tenant(request: Request, tenant_id: str) -> dict:
             return user
 
         # If tenant has no owner_email set, allow access (legacy/migration)
-        if not config.owner_email:
+        if not owner_email:
             logger.warning("Tenant %s has no owner_email — allowing access", tenant_id)
             return user
 
+    except HTTPException:
+        # Don't swallow our own 401 / 403 / 404 from upstream — let them surface
+        raise
     except Exception as e:
         logger.error("Tenant ownership check failed: %s", e)
         raise HTTPException(status_code=404, detail="Tenant not found")
