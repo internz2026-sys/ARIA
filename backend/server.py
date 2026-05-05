@@ -3200,20 +3200,52 @@ async def mark_notifications_seen(tenant_id: str, body: MarkReadRequest):
 
 
 # ─── Webhook Endpoints ───
-@app.post("/api/webhooks/sendgrid")
-async def sendgrid_webhook(request: Request):
-    payload = await request.json()
-    tenant_id = request.headers.get("X-Tenant-Id", "")
-    result = await handle_webhook("inbound_email", {"tenant_id": tenant_id, **payload})
-    await sio.emit("agent_event", result, room=tenant_id)
-    return result
+# Every external webhook MUST verify a provider-side signature before
+# trusting payload contents. Without this, anyone can curl POST a forged
+# event ("invoice.paid", "orders/create", etc.) and fire downstream side
+# effects — a critical risk for the Stripe path which handle_webhook can
+# act on as a payment confirmation.
+#
+# Per-provider behavior:
+#   - signed and valid     → process the event
+#   - signed and invalid   → 401, log, do nothing
+#   - secret env var unset → 503 in production, allow in dev with a loud
+#     warning. Refusing prod-without-secret prevents the silent
+#     dev-fallback from being deployed by accident.
+
+def _is_production() -> bool:
+    return (os.environ.get("ARIA_ENV") or os.environ.get("ENV") or "").lower() in ("prod", "production")
 
 
 @app.post("/api/webhooks/stripe")
 async def stripe_webhook(request: Request):
-    payload = await request.json()
+    import json as _json
+    secret = (os.environ.get("STRIPE_WEBHOOK_SECRET") or "").strip()
+    raw_body = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    if not secret:
+        if _is_production():
+            logger.error("[webhook/stripe] STRIPE_WEBHOOK_SECRET not configured — refusing in prod")
+            raise HTTPException(status_code=503, detail="Stripe webhook secret not configured")
+        logger.warning("[webhook/stripe] STRIPE_WEBHOOK_SECRET unset (dev mode) — accepting unsigned event")
+        try:
+            payload = _json.loads(raw_body.decode() or "{}")
+        except Exception:
+            payload = {}
+    else:
+        try:
+            import stripe as _stripe
+            event = _stripe.Webhook.construct_event(raw_body, sig_header, secret)
+            payload = event if isinstance(event, dict) else dict(event)
+        except Exception as e:
+            logger.warning("[webhook/stripe] signature verification failed: %s", type(e).__name__)
+            raise HTTPException(status_code=401, detail="Invalid Stripe signature")
+
     event_type = payload.get("type", "")
-    tenant_id = payload.get("data", {}).get("object", {}).get("metadata", {}).get("tenant_id", "")
+    tenant_id = (
+        payload.get("data", {}).get("object", {}).get("metadata", {}).get("tenant_id", "")
+    )
     if "invoice" in event_type:
         result = await handle_webhook("payment_received", {"tenant_id": tenant_id, **payload})
     else:
@@ -3221,9 +3253,92 @@ async def stripe_webhook(request: Request):
     return result
 
 
+@app.post("/api/webhooks/sendgrid")
+async def sendgrid_webhook(request: Request):
+    """SendGrid Event Webhook with HMAC-SHA256 signature verification.
+
+    Setup: in SendGrid → Settings → Mail Settings → Event Webhook,
+    enable "Signed Event Webhook Requests". The secret comes from
+    `SENDGRID_WEBHOOK_VERIFICATION_KEY` (the public key string from
+    the SendGrid UI). Without it set, prod returns 503; dev allows
+    unsigned with a warning.
+    """
+    import json as _json
+    secret = (os.environ.get("SENDGRID_WEBHOOK_VERIFICATION_KEY") or "").strip()
+    raw_body = await request.body()
+    sig = request.headers.get("X-Twilio-Email-Event-Webhook-Signature", "")
+    ts = request.headers.get("X-Twilio-Email-Event-Webhook-Timestamp", "")
+
+    if not secret:
+        if _is_production():
+            logger.error("[webhook/sendgrid] SENDGRID_WEBHOOK_VERIFICATION_KEY not configured — refusing in prod")
+            raise HTTPException(status_code=503, detail="SendGrid webhook secret not configured")
+        logger.warning("[webhook/sendgrid] secret unset (dev mode) — accepting unsigned event")
+    else:
+        try:
+            import base64
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import ec, utils as ec_utils
+            pub_der = base64.b64decode(secret)
+            pub_key = serialization.load_der_public_key(pub_der)
+            signed_payload = ts.encode() + raw_body
+            signature_bytes = base64.b64decode(sig)
+            r, s = ec_utils.decode_dss_signature(signature_bytes)
+            pub_key.verify(
+                ec_utils.encode_dss_signature(r, s),
+                signed_payload,
+                ec.ECDSA(hashes.SHA256()),
+            )
+        except Exception as e:
+            logger.warning("[webhook/sendgrid] signature verification failed: %s", type(e).__name__)
+            raise HTTPException(status_code=401, detail="Invalid SendGrid signature")
+
+    try:
+        payload = _json.loads(raw_body.decode() or "{}")
+    except Exception:
+        payload = {}
+    # SendGrid sends a list of events, not a single dict — preserve old
+    # behavior of treating it as one inbound_email by passing through.
+    tenant_id = request.headers.get("X-Tenant-Id", "")
+    body_for_handler = payload if isinstance(payload, dict) else {"events": payload}
+    result = await handle_webhook("inbound_email", {"tenant_id": tenant_id, **body_for_handler})
+    if tenant_id:
+        await sio.emit("agent_event", result, room=tenant_id)
+    return result
+
+
 @app.post("/api/webhooks/shopify")
 async def shopify_webhook(request: Request):
-    payload = await request.json()
+    """Shopify webhook with HMAC-SHA256 verification.
+
+    Setup: in Shopify Admin → Settings → Notifications → Webhooks,
+    use the shared secret as `SHOPIFY_WEBHOOK_SECRET`. Without it set,
+    prod returns 503; dev allows unsigned with a warning. The
+    X-Tenant-Id header is still trusted but only AFTER the signature
+    proves the request actually came from Shopify.
+    """
+    import json as _json
+    secret = (os.environ.get("SHOPIFY_WEBHOOK_SECRET") or "").strip()
+    raw_body = await request.body()
+    received_hmac = request.headers.get("X-Shopify-Hmac-Sha256", "")
+
+    if not secret:
+        if _is_production():
+            logger.error("[webhook/shopify] SHOPIFY_WEBHOOK_SECRET not configured — refusing in prod")
+            raise HTTPException(status_code=503, detail="Shopify webhook secret not configured")
+        logger.warning("[webhook/shopify] secret unset (dev mode) — accepting unsigned event")
+    else:
+        import base64, hashlib, hmac as _hmac
+        digest = _hmac.new(secret.encode(), raw_body, hashlib.sha256).digest()
+        expected = base64.b64encode(digest).decode()
+        if not _hmac.compare_digest(expected, received_hmac):
+            logger.warning("[webhook/shopify] HMAC mismatch")
+            raise HTTPException(status_code=401, detail="Invalid Shopify signature")
+
+    try:
+        payload = _json.loads(raw_body.decode() or "{}")
+    except Exception:
+        payload = {}
     tenant_id = request.headers.get("X-Tenant-Id", "")
     topic = request.headers.get("X-Shopify-Topic", "")
     event_map = {"orders/create": "new_order", "checkouts/create": "abandoned_cart"}
