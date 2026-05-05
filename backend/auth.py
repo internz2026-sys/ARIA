@@ -216,7 +216,15 @@ async def get_verified_tenant(request: Request, tenant_id: str) -> dict:
     if not user_email and not user_id:
         raise HTTPException(status_code=401, detail="Invalid token: no user identity")
 
-    # Check tenant ownership
+    # Check tenant ownership.
+    # Security audit #16: collapse 404 (tenant doesn't exist) and 403
+    # (tenant exists but not yours) to a single 403 with the same body.
+    # Returning 404 leaked tenant existence — an attacker enumerating
+    # UUIDs could distinguish "this UUID is a real tenant" from
+    # "this UUID doesn't map to anything." Both are now reported as
+    # 403 "Access denied" so the response is identical regardless of
+    # whether the tenant exists. The internal log still distinguishes
+    # the two cases for the operator.
     try:
         from backend.config.loader import get_tenant_config
         config = get_tenant_config(tenant_id)
@@ -239,10 +247,14 @@ async def get_verified_tenant(request: Request, tenant_id: str) -> dict:
         # Don't swallow our own 401 / 403 / 404 from upstream — let them surface
         raise
     except Exception as e:
-        logger.error("Tenant ownership check failed: %s", e)
-        raise HTTPException(status_code=404, detail="Tenant not found")
+        # Tenant lookup failed — could be "doesn't exist" or a transient
+        # DB error. Log the real reason; respond with the same 403 the
+        # ownership-mismatch path uses so we don't leak existence.
+        logger.warning("Tenant lookup failed for %s: %s", tenant_id, e)
+        raise HTTPException(status_code=403, detail="Access denied")
 
-    raise HTTPException(status_code=403, detail="You don't have access to this tenant")
+    # Tenant exists but caller doesn't own it.
+    raise HTTPException(status_code=403, detail="Access denied")
 
 
 # ── Rate limiting helpers ────────────────────────────────────────────────────
