@@ -815,6 +815,23 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
     if is_expensive:
         from backend.services.profiles import get_user_status, is_paused
         user_id = (user.get("sub") or "")
+
+        # Per-user rate limit on expensive ops. The IP-level limiter
+        # alone lets a logged-in user fan out to the whole 120/min IP
+        # cap on chat or agent runs; this adds a per-user backstop so
+        # proxy rotation doesn't help. 30 expensive calls per minute
+        # per user is generous for a human and tight against scripts.
+        from backend.services import rate_limit as _rate_limit_svc
+        action = "ceo_chat" if path == "/api/ceo/chat" else "agent_run"
+        allowed, _ = _rate_limit_svc.hit(f"user:{action}", user_id, 30, 60)
+        if not allowed:
+            from starlette.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={"detail": f"Too many {action} requests. Please wait before retrying."},
+                headers=cors_headers,
+            )
+
         status = get_user_status(user_id)
         if is_paused(status):
             from starlette.responses import JSONResponse

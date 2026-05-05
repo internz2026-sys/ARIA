@@ -247,34 +247,43 @@ async def get_verified_tenant(request: Request, tenant_id: str) -> dict:
 
 # ── Rate limiting helpers ────────────────────────────────────────────────────
 
-# Simple in-memory rate limiter (per IP) with eviction
-_rate_limits: dict[str, list[float]] = {}
-_last_eviction: float = 0
-
 
 def check_rate_limit(request: Request, max_requests: int = 60, window_seconds: int = 60):
-    """In-memory sliding window rate limiter by IP with periodic eviction."""
-    import time
-    global _last_eviction
+    """Sliding window rate limiter by IP, backed by Redis with in-memory
+    fallback when Redis is unreachable.
 
+    Replaces the previous purely in-memory implementation, which was wiped
+    on every container restart (giving anyone a free quota right after a
+    deploy) and didn't coordinate across replicas. The Redis path uses an
+    atomic Lua script so concurrent requests can't both pass the cap on
+    a read-then-write race.
+
+    Caller args preserved: server.py middleware passes (max_requests=120,
+    window_seconds=60) for the global IP limit.
+    """
+    from backend.services import rate_limit as _rate_limit
     client_ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    cutoff = now - window_seconds
-
-    # Evict stale IPs every 5 minutes to prevent unbounded growth
-    if now - _last_eviction > 300:
-        stale_ips = [ip for ip, timestamps in _rate_limits.items() if not timestamps or timestamps[-1] < cutoff]
-        for ip in stale_ips:
-            del _rate_limits[ip]
-        _last_eviction = now
-
-    if client_ip not in _rate_limits:
-        _rate_limits[client_ip] = []
-
-    # Clean old entries for this IP
-    _rate_limits[client_ip] = [t for t in _rate_limits[client_ip] if t > cutoff]
-
-    if len(_rate_limits[client_ip]) >= max_requests:
+    allowed, _count = _rate_limit.hit("ip", client_ip, max_requests, window_seconds)
+    if not allowed:
         raise HTTPException(status_code=429, detail="Too many requests. Please slow down.")
 
-    _rate_limits[client_ip].append(now)
+
+def check_user_rate_limit(user_id: str, action: str, max_requests: int, window_seconds: int):
+    """Per-user rate limit for expensive operations (chat, agent runs,
+    image generation). The IP-level limit alone doesn't stop a logged-in
+    user from hammering one endpoint up to the IP cap; this adds a
+    per-user backstop that survives proxy rotation.
+
+    `action` is the bucket name — pass distinct values for distinct
+    policies (e.g. "ceo_chat" vs "agent_run") so a chat-heavy user
+    isn't penalized on agent invocations and vice versa.
+    """
+    from backend.services import rate_limit as _rate_limit
+    if not user_id:
+        return  # anonymous; covered by IP limit only
+    allowed, _count = _rate_limit.hit(f"user:{action}", user_id, max_requests, window_seconds)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many {action} requests. Please wait before retrying.",
+        )

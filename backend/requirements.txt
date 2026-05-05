@@ -22,3 +22,7 @@ passlib[bcrypt]>=1.7.4
 matplotlib>=3.8.0
 # Paperclip AI orchestration is a local Node.js server (localhost:3100)
 # integrated via REST API using httpx — no Python package needed
+# Redis client — backs the per-tenant / per-user rate limiter and any
+# future shared cache. The aria-redis container is already in the
+# stack; this just gives the backend a Python client for it.
+redis>=5.0.0
