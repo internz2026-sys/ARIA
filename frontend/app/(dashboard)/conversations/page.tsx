@@ -643,7 +643,7 @@ export default function ConversationsPage() {
                           Cancel
                         </button>
                         <span className="text-xs text-[#9E9C95] ml-auto">
-                          Sent from {selected.contact_email ? "your Gmail" : "Gmail"} — threaded with this conversation
+                          Sent via ARIA — threaded with this conversation
                         </span>
                       </div>
                     </div>

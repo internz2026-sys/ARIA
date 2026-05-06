@@ -134,19 +134,30 @@ def build_reply_to(
 ) -> str:
     """Build the Reply-To address for a given send.
 
-    Format:
-        replies+<TOKEN>@inbound.<APEX_DOMAIN>
+    Uses **plus-addressing on the SMTP mailbox** so replies land back in
+    the same Hostinger mailbox the IMAP poller is already watching:
 
-    Returns "" when INBOUND_EMAIL_DOMAIN is unset OR no token can be
-    resolved — caller should then omit the Reply-To header so replies
-    fall back to the From address (Resend handles its own bounce
-    routing for that case).
+        Format: <smtp_local>+<TOKEN>@<smtp_domain>
+        Example: aria+<thread_id>@hoversight.agency
 
-    Token priority: thread_id > tenant_id > inbox_item_id. See module
-    docstring for the lookup convention the inbound parser uses.
+    The previous design used `replies+<TOKEN>@inbound.<APEX>` which
+    required a separate MX record + mailbox at `inbound.<domain>`. That
+    was never set up in production, so every Reply-To pointed at a
+    non-deliverable address and customer replies bounced silently.
+    Plus-addressing avoids the second mailbox entirely — Hostinger /
+    Postfix routes any `aria+anything@hoversight.agency` to the canonical
+    `aria@hoversight.agency` inbox by default.
+
+    Returns "" when SMTP_FROM_EMAIL is unset OR no token can be resolved
+    — caller then omits the Reply-To header so the customer's client
+    falls back to From, which is the same mailbox.
+
+    Token priority: thread_id > tenant_id > inbox_item_id. See
+    `email_inbound.extract_to_token` for the parser side.
     """
-    apex = _apex_domain()
-    if not apex:
+    cfg = _smtp_config()
+    from_email = (cfg.get("from_email") or "").strip()
+    if not from_email or "@" not in from_email:
         return ""
     if inbound_thread_id:
         token = inbound_thread_id
@@ -156,7 +167,8 @@ def build_reply_to(
         token = f"i.{inbox_item_id}"
     else:
         return ""
-    return f"replies+{token}@inbound.{apex}"
+    local, _, domain = from_email.partition("@")
+    return f"{local}+{token}@{domain}"
 
 
 def build_sender_address(local: str) -> str:
