@@ -27,6 +27,7 @@
 
 import React, { useState, useRef, useCallback } from "react";
 import { authFetch } from "@/lib/api";
+import type { ClientToastOptions } from "@/lib/use-notifications";
 
 interface PreviewResponse {
   headers: string[];
@@ -55,7 +56,7 @@ interface Props {
   /** Called after a successful import so the parent can refetch the
    *  contacts list and show the new rows. */
   onImported: () => void;
-  showToast: (msg: { title: string; body?: string; variant?: string }) => void;
+  showToast: (opts: ClientToastOptions) => void;
 }
 
 // ARIA field → human label for the mapping form. Order is the order
