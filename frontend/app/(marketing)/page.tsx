@@ -300,10 +300,13 @@ export default function AriaLanding() {
       />
 
       <div style={{ position: "relative", zIndex: 2 }}>
-        {/* Nav */}
+        {/* Nav — desktop only. The layout-level <Navbar /> already
+            handles mobile via hamburger, so this in-page nav is hidden
+            below md: to avoid the duplicate-nav overlap bug spotted in
+            the mobile audit. */}
         <nav
+          className="hidden md:flex"
           style={{
-            display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
             padding: "24px 48px",
