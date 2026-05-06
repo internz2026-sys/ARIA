@@ -300,3 +300,66 @@ def parse_csv(content: str | bytes) -> dict[str, Any]:
         "mapped_columns": list(col_map.values()),
         "unmapped_columns": unmapped_cols,
     }
+
+
+# ── XLSX support ───────────────────────────────────────────────────────────────
+#
+# Meta Ads Manager exports as CSV by default, but operators frequently
+# pull the data through Excel first (cleaning columns, applying filters,
+# saving as .xlsx). Rather than telling them to "Save As CSV first",
+# we accept .xlsx directly: read the first sheet via openpyxl, write
+# back out as a CSV string, and feed it to the existing parse_csv path.
+# Keeps every downstream behavior (column aliases, totals, date
+# extraction, suggested-match logic) identical for both formats.
+
+
+def _xlsx_to_csv_text(raw: bytes) -> str:
+    """Convert the first sheet of an XLSX workbook into a CSV-formatted
+    string. Cells containing commas / newlines / quotes get quoted by
+    csv.writer the same way an Excel "Save As CSV" would. Empty rows
+    are dropped so the parse_csv header-detection heuristic still works
+    on workbooks that prefix their data with blank rows.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError as e:
+        raise RuntimeError(
+            "openpyxl is required for XLSX uploads — pip install openpyxl",
+        ) from e
+
+    wb = load_workbook(filename=io.BytesIO(raw), read_only=True, data_only=True)
+    try:
+        sheet = wb.active
+        out = io.StringIO()
+        writer = csv.writer(out)
+        for row in sheet.iter_rows(values_only=True):
+            cells = [
+                ("" if c is None else str(c))
+                for c in row
+            ]
+            if any(c.strip() for c in cells):
+                writer.writerow(cells)
+        return out.getvalue()
+    finally:
+        wb.close()
+
+
+def parse_report(content: bytes, filename: str = "") -> dict[str, Any]:
+    """Format-detecting wrapper around parse_csv.
+
+    Dispatches to XLSX → CSV conversion when the filename ends in
+    .xlsx / .xlsm; otherwise delegates straight to parse_csv. Returns
+    the same structured payload regardless of source format so callers
+    don't need to branch.
+    """
+    name = (filename or "").lower()
+    if name.endswith(".xlsx") or name.endswith(".xlsm"):
+        try:
+            csv_text = _xlsx_to_csv_text(content)
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Could not read Excel file: {e}",
+            }
+        return parse_csv(csv_text)
+    return parse_csv(content)

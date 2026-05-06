@@ -65,7 +65,7 @@ function UploadModal({ open, onClose, tenantId, onSuccess }: { open: boolean; on
       const result = await campaignsApi.upload(tenantId, file);
       if (result.status === "needs_association") {
         setParsed(result);
-        setCampaignName(result.suggestions?.[0]?.parsed_campaign_name || file.name.replace(".csv", ""));
+        setCampaignName(result.suggestions?.[0]?.parsed_campaign_name || file.name.replace(/\.(csv|tsv|txt|xlsx|xlsm)$/i, ""));
         setStep("associate");
       } else {
         onSuccess();
@@ -121,13 +121,19 @@ function UploadModal({ open, onClose, tenantId, onSuccess }: { open: boolean; on
       {step === "upload" && (
         <div className="space-y-4">
           <p className="text-sm text-[#5F5E5A]">
-            Upload a CSV export from Facebook Ads Manager. ARIA will parse the metrics and create a campaign report.
+            Upload a CSV or Excel (.xlsx) export from Facebook Ads Manager. ARIA will parse the metrics and create a campaign report.
           </p>
           <div
             className="border-2 border-dashed border-[#E0DED8] rounded-xl p-8 text-center cursor-pointer hover:border-[#534AB7]/40 transition"
             onClick={() => fileRef.current?.click()}
           >
-            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={e => setFile(e.target.files?.[0] || null)} />
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv,.tsv,.txt,.xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+              className="hidden"
+              onChange={e => setFile(e.target.files?.[0] || null)}
+            />
             {file ? (
               <div>
                 <p className="text-sm font-medium text-[#2C2C2A]">{file.name}</p>

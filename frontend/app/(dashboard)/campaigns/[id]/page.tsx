@@ -234,7 +234,13 @@ function UploadReportButton({ tenantId, campaignId, onSuccess }: { tenantId: str
 
   return (
     <div>
-      <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleFile} />
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".csv,.tsv,.txt,.xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+        className="hidden"
+        onChange={handleFile}
+      />
       <button
         onClick={() => fileRef.current?.click()}
         disabled={loading}

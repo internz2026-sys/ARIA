@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from backend.auth import get_verified_tenant
 from backend.services import campaigns as campaign_service
-from backend.tools.fb_ads_parser import parse_csv
+from backend.tools.fb_ads_parser import parse_csv, parse_report
 
 logger = logging.getLogger("aria.api.campaigns")
 
@@ -284,6 +284,16 @@ def _sanitize_filename(name: str | None, fallback: str = "report.csv") -> str:
     return cleaned
 
 
+# Supported upload formats for ad-report uploads. The list mirrors what
+# parse_report dispatches on — keep the two in lockstep.
+_SUPPORTED_REPORT_EXTS = (".csv", ".tsv", ".txt", ".xlsx", ".xlsm")
+
+
+def _is_supported_report_extension(filename: str) -> bool:
+    name = (filename or "").lower()
+    return any(name.endswith(ext) for ext in _SUPPORTED_REPORT_EXTS)
+
+
 async def _read_upload_bounded(file: "UploadFile", limit: int = _CSV_MAX_BYTES) -> bytes:
     """Read an UploadFile in chunks, raising 413 the moment we cross
     `limit` bytes. Returns the full content on success."""
@@ -314,14 +324,18 @@ async def upload_report(
     If campaign_id is provided, links to that campaign.
     If not, returns parsed data with suggested campaign matches so the user can choose.
     """
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(400, "Only CSV files are supported. Please export your Facebook Ads report as CSV.")
+    if not file.filename or not _is_supported_report_extension(file.filename):
+        raise HTTPException(
+            400,
+            "Only CSV and Excel (.xlsx) files are supported. "
+            "Export your Facebook Ads report as either format.",
+        )
 
     safe_filename = _sanitize_filename(file.filename)
     content = await _read_upload_bounded(file)
-    parsed = parse_csv(content)
+    parsed = parse_report(content, file.filename)
     if not parsed["success"]:
-        raise HTTPException(400, parsed.get("error", "Failed to parse CSV"))
+        raise HTTPException(400, parsed.get("error", "Failed to parse report"))
 
     # If no campaign_id, return parsed data with suggestions
     if not campaign_id:
@@ -380,20 +394,27 @@ async def upload_and_create_campaign(
     objective: str = Form(""),
 ):
     """Upload a report AND create a new campaign from it in one step."""
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(400, "Only CSV files are supported.")
+    if not file.filename or not _is_supported_report_extension(file.filename):
+        raise HTTPException(400, "Only CSV and Excel (.xlsx) files are supported.")
 
     safe_filename = _sanitize_filename(file.filename)
     content = await _read_upload_bounded(file)
-    parsed = parse_csv(content)
+    parsed = parse_report(content, file.filename)
     if not parsed["success"]:
-        raise HTTPException(400, parsed.get("error", "Failed to parse CSV"))
+        raise HTTPException(400, parsed.get("error", "Failed to parse report"))
 
     # Use parsed campaign name if not provided
     if not campaign_name and parsed["campaigns"]:
         campaign_name = parsed["campaigns"][0]["campaign_name"]
     if not campaign_name:
-        campaign_name = safe_filename.replace(".csv", "")
+        # Strip whichever extension the operator uploaded so the default
+        # campaign name doesn't carry the file format suffix.
+        for ext in (".csv", ".xlsx", ".xlsm", ".tsv", ".txt"):
+            if safe_filename.lower().endswith(ext):
+                campaign_name = safe_filename[: -len(ext)]
+                break
+        else:
+            campaign_name = safe_filename
 
     metrics, date_start, date_end = _extract_report_context(parsed)
 
