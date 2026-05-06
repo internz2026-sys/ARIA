@@ -91,7 +91,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.aria.entrypoints=websecure"
-      - "traefik.http.routers.aria.rule=Host(`72-61-126-188.sslip.io`) || Host(`aria.hoversight.agency`)"
+      - "traefik.http.routers.aria.rule=Host(`aria.hoversight.agency`)"
       - "traefik.http.routers.aria.tls.certresolver=letsencrypt"
       - "traefik.http.services.aria.loadbalancer.server.port=80"
     depends_on:
