@@ -1,0 +1,89 @@
+# Staging stack — runs alongside prod on the same VPS, joined to the
+# same docker network so the existing nginx + Traefik can proxy
+# staging.aria.hoversight.agency → backend-staging / frontend-staging.
+#
+# Deploy via /opt/aria-staging (a separate clone of the repo on the
+# `staging` branch). Operator instructions live in STAGING_SETUP.md.
+#
+# Sharing model (chosen by the operator on 2026-05-06):
+#   - Supabase: SHARED with prod. Staging actions touch real data;
+#     do not run destructive bulk operations against staging.
+#   - Redis: SHARED. Rate-limit keys are per-tenant so they don't
+#     collide.
+#   - Qdrant: SHARED. Semantic-cache collections are per-tenant.
+#   - Email outbound: SHARED via the same Hostinger SMTP. Staging
+#     CAN send real email — be careful with test recipients.
+#   - Email inbound (IMAP): DISABLED on staging via empty IMAP_HOST
+#     so prod and staging don't race to mark the same messages
+#     Seen. Operators test inbound by hitting prod directly.
+#   - Paperclip orchestration: SHARED. Sub-agents will skill-curl
+#     back to the docker host IP — i.e. the PROD backend
+#     (172.17.0.1:8000). For staging-only delegation testing, hit
+#     the local-Claude path via /api/ceo/chat which doesn't go
+#     through Paperclip.
+services:
+
+  backend-staging:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: aria-backend-staging
+    # Pull baseline config from prod's .env, then overlay staging-only
+    # overrides via the inline `environment:` block. Absolute path so
+    # we don't have to duplicate the .env file in /opt/aria-staging.
+    env_file:
+      - /opt/aria/.env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - QDRANT_URL=http://qdrant:6333
+      # ARIA_ENV stays "production" so the strict fail-closed paths
+      # (signed webhooks, hidden /docs, scrubbed errors) still apply
+      # — staging should mirror prod's hardening, not run in dev mode.
+      - ARIA_ENV=production
+      # Extend the CORS allow-list so the staging frontend can call
+      # the staging backend without tripping the production CORS check.
+      - CORS_ALLOWED_ORIGINS=https://aria.hoversight.agency,https://staging.aria.hoversight.agency,http://localhost:3000
+      # Disable IMAP on staging — prod is already polling the same
+      # Hostinger mailbox; if staging joins, both stacks race to mark
+      # messages \\Seen and we'd get split-brain inbound delivery.
+      - IMAP_HOST=
+    volumes:
+      - /opt/aria/.claude:/home/aria/.claude
+    networks:
+      - shared
+      - paperclip
+    restart: unless-stopped
+
+  frontend-staging:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* are baked into the static bundle at build time,
+        # so we MUST point at the staging hostname here — flipping at
+        # runtime won't work for these.
+        NEXT_PUBLIC_API_URL: https://staging.aria.hoversight.agency
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
+    container_name: aria-frontend-staging
+    depends_on:
+      - backend-staging
+    networks:
+      - shared
+    restart: unless-stopped
+
+
+networks:
+  # Join the same network the prod stack uses so nginx (which lives in
+  # the prod compose) can proxy to the staging containers by service
+  # name. The actual network name is auto-generated as
+  # <project>_default — for the prod stack at /opt/aria that resolves
+  # to "aria_default". If the operator's setup names it differently,
+  # update the `name:` field below.
+  shared:
+    external: true
+    name: aria_default
+  paperclip:
+    external: true
+    name: paperclip-tgdk_default

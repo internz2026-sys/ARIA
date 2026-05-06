@@ -90,10 +90,20 @@ services:
       - certbot_www:/var/www/certbot
     labels:
       - "traefik.enable=true"
+      # PROD router — aria.hoversight.agency
       - "traefik.http.routers.aria.entrypoints=websecure"
       - "traefik.http.routers.aria.rule=Host(`aria.hoversight.agency`)"
       - "traefik.http.routers.aria.tls.certresolver=letsencrypt"
       - "traefik.http.services.aria.loadbalancer.server.port=80"
+      # STAGING router — staging.aria.hoversight.agency. Hits the same
+      # nginx container, which dispatches by Host header to the
+      # backend-staging / frontend-staging upstreams from
+      # docker-compose.staging.yml. Cert provisioning via Let's
+      # Encrypt happens automatically on first request.
+      - "traefik.http.routers.aria-staging.entrypoints=websecure"
+      - "traefik.http.routers.aria-staging.rule=Host(`staging.aria.hoversight.agency`)"
+      - "traefik.http.routers.aria-staging.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.aria-staging.service=aria"
     depends_on:
       - backend
       - frontend
