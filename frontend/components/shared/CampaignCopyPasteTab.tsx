@@ -266,14 +266,29 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
   const pastedSnapshot: ParsedPlan | null = useMemo(() => {
     const snap = campaign?.metadata?.pasted_snapshot;
     if (!snap || typeof snap !== "object") return null;
-    // Defensive: ensure required fields exist with safe fallbacks so
-    // an older / partial snapshot doesn't crash the renderer.
+    const overview = Array.isArray(snap.overview) ? snap.overview : [];
+    const audience = Array.isArray(snap.audience) ? snap.audience : [];
+    const variants = Array.isArray(snap.variants) ? snap.variants : [];
+    const setupSteps = Array.isArray(snap.setupSteps) ? snap.setupSteps : [];
+    // If every section is empty the snapshot is useless — return null so
+    // we fall through to the live inbox content. This guards against the
+    // bug where clicking "Pasted" before the inbox content finished
+    // parsing froze the tab in an empty snapshot view (the Copy-Paste
+    // fields would never render again).
+    if (
+      overview.length === 0 &&
+      audience.length === 0 &&
+      variants.length === 0 &&
+      setupSteps.length === 0
+    ) {
+      return null;
+    }
     return {
       campaignTitle: snap.campaignTitle || campaign?.campaign_name || "",
-      overview: Array.isArray(snap.overview) ? snap.overview : [],
-      audience: Array.isArray(snap.audience) ? snap.audience : [],
-      variants: Array.isArray(snap.variants) ? snap.variants : [],
-      setupSteps: Array.isArray(snap.setupSteps) ? snap.setupSteps : [],
+      overview,
+      audience,
+      variants,
+      setupSteps,
     };
   }, [campaign?.metadata?.pasted_snapshot, campaign?.campaign_name]);
 
@@ -352,6 +367,16 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
     // shouldn't retroactively change what we show here. Use the live
     // plan because we know the snapshot path isn't active yet.
     const snapshot: ParsedPlan | null = livePlan;
+    // Only persist a snapshot when it actually carries content. An
+    // empty snapshot would otherwise lock the tab into snapshot mode
+    // forever, hiding the live copy-paste fields the user came back
+    // to read again.
+    const snapshotHasContent =
+      !!snapshot &&
+      (snapshot.overview.length > 0 ||
+        snapshot.audience.length > 0 ||
+        snapshot.variants.length > 0 ||
+        snapshot.setupSteps.length > 0);
 
     try {
       // Single PATCH carries the status flip + the metadata stamps.
@@ -363,7 +388,7 @@ export default function CampaignCopyPasteTab({ tenantId, campaign, onCampaignUpd
         metadata: {
           pasted_at: pastedAt,
           performance_review_at: reviewIso,
-          ...(snapshot ? { pasted_snapshot: snapshot } : {}),
+          ...(snapshotHasContent ? { pasted_snapshot: snapshot } : {}),
         },
       });
       setLaunchedAt(pastedAt);
