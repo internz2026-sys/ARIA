@@ -167,25 +167,38 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
             access_token=config.integrations.google_access_token or "",
         )
 
+    # Route through the provider abstraction so the configured provider
+    # (SMTP / Gmail / auto) handles the actual send. Previously this
+    # called send_with_refresh() directly, which is Gmail-only -- meaning
+    # tenants on the SMTP path got 500 errors when approving inbox drafts.
+    from backend.services.email_provider import send_email as _send_via_provider
     try:
-        result = await send_with_refresh(
+        result = await _send_via_provider(
             tenant_id,
             to=to,
             subject=subject,
             html_body=html_body,
-            thread_id=reply_thread_id,
             in_reply_to=reply_in_reply_to,
+            references=reply_in_reply_to,
             inbound_thread_id=reply_to_thread_db_id,
             inbox_item_id=body.inbox_item_id,
+            reply_to_gmail_thread_id=reply_thread_id,
         )
     except HTTPException:
         _mark_failed()
         raise
-
-    if result.get("error"):
+    except Exception as e:
         _mark_failed()
         from backend.services.safe_errors import safe_detail
-        raise HTTPException(status_code=500, detail=safe_detail(result["error"], "Email send failed"))
+        raise HTTPException(status_code=500, detail=safe_detail(e, "Email send failed"))
+
+    if not result.get("success"):
+        _mark_failed()
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(
+            status_code=500,
+            detail=safe_detail(result.get("error") or "Send failed", "Email send failed"),
+        )
 
     sb.table("inbox_items").update({
         "status": "sent",
@@ -193,6 +206,10 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
     }).eq("id", body.inbox_item_id).execute()
 
     # ── Thread tracking: persist outbound message for future reply matching ──
+    # Provider is "smtp" | "gmail" | "none". Gmail returns a real
+    # threadId so we can group future replies; SMTP doesn't, so the
+    # gmail_thread_id stays empty and reply matching falls back to the
+    # token-in-Reply-To routing handled by the inbound webhook.
     gmail_message_id = result.get("message_id", "")
     gmail_thread_id = result.get("thread_id", "")
     thread_db_id = None
@@ -589,20 +606,34 @@ async def send_thread_reply(tenant_id: str, thread_id: str, body: SendReplyReque
         access_token=config.integrations.google_access_token or "",
     )
 
-    result = await send_with_refresh(
-        tenant_id,
-        to=contact_email,
-        subject=subject,
-        html_body=html_body,
-        thread_id=gmail_thread_id,
-        in_reply_to=in_reply_to,
-        inbound_thread_id=thread_id,
-    )
-
-    if result.get("error"):
-        detail = result.get("detail") or result.get("error") or "Gmail send failed"
+    # Route through provider abstraction (SMTP / Gmail / auto). Direct
+    # send_with_refresh() calls broke for any tenant on SMTP -- they
+    # got "Gmail not connected" 401s on every reply attempt.
+    from backend.services.email_provider import send_email as _send_via_provider
+    try:
+        result = await _send_via_provider(
+            tenant_id,
+            to=contact_email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text,
+            in_reply_to=in_reply_to,
+            references=in_reply_to,
+            inbound_thread_id=thread_id,
+            reply_to_gmail_thread_id=gmail_thread_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
         from backend.services.safe_errors import safe_detail
-        raise HTTPException(status_code=500, detail=safe_detail(detail, "Email send failed"))
+        raise HTTPException(status_code=500, detail=safe_detail(e, "Email send failed"))
+
+    if not result.get("success"):
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(
+            status_code=500,
+            detail=safe_detail(result.get("error") or "Send failed", "Email send failed"),
+        )
 
     now_iso = datetime.now(timezone.utc).isoformat()
     sb.table("email_messages").insert({
