@@ -60,16 +60,75 @@ function LoginForm() {
       setGeneralError("Email and password are required.");
       return;
     }
+    const cleanEmail = email.trim().toLowerCase();
     setEmailLoading(true);
+
+    // Check rate limit BEFORE submitting credentials. If the account is
+    // locked out from too many recent failed attempts, refuse to call
+    // Supabase at all -- saves a round-trip and gives the user a clear
+    // "wait N minutes" message instead of a generic auth error.
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
+    try {
+      const statusRes = await fetch(
+        `${apiBase}/api/auth/login-status?email=${encodeURIComponent(cleanEmail)}`,
+        { cache: "no-store" },
+      );
+      if (statusRes.ok) {
+        const s = await statusRes.json();
+        if (s && s.allowed === false) {
+          const mins = Math.max(1, Math.ceil((s.retry_after_seconds || 60) / 60));
+          setGeneralError(
+            `Too many failed login attempts. Try again in ${mins} minute${mins > 1 ? "s" : ""}.`
+          );
+          setEmailLoading(false);
+          return;
+        }
+      }
+    } catch {
+      // If the rate-limit API is down, don't block the user -- fail
+      // open. Supabase still has its own coarse rate limit underneath.
+    }
+
     const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
+      email: cleanEmail,
       password,
     });
     if (error) {
+      // Tell the backend this attempt failed so the counter increments.
+      // Done as fire-and-forget; we don't block the error display on it.
+      try {
+        const r = await fetch(`${apiBase}/api/auth/login-failed`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: cleanEmail }),
+        });
+        if (r.ok) {
+          const fb = await r.json();
+          if (fb && typeof fb.attempts_remaining === "number" && fb.attempts_remaining <= 2 && fb.attempts_remaining > 0) {
+            // Soft warning when nearly locked out — gives a heads-up
+            // before the next attempt fully blocks the account.
+            setGeneralError(
+              `${error.message} (${fb.attempts_remaining} attempt${fb.attempts_remaining > 1 ? "s" : ""} remaining before temporary lockout)`
+            );
+            setEmailLoading(false);
+            return;
+          }
+        }
+      } catch {}
       setGeneralError(error.message);
       setEmailLoading(false);
       return;
     }
+
+    // On success, reset the per-email failure counter so a user who
+    // recovered from typos isn't punished going forward.
+    try {
+      await fetch(`${apiBase}/api/auth/login-success`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: cleanEmail }),
+      });
+    } catch {}
     // Same post-auth routing as the dashboard layout: tenant_id present
     // means onboarding is complete -> /dashboard; otherwise the user
     // needs to finish onboarding at /welcome. Look up the tenant by

@@ -727,6 +727,7 @@ from backend.routers.email import router as email_router
 from backend.routers.admin import router as admin_router
 from backend.routers.tasks import router as tasks_router
 from backend.routers.ceo import router as ceo_router
+from backend.routers.login_rate_limit import router as login_rate_limit_router
 # NOTE: backend/routers/paperclip.py was a webhook receiver for the HTTP
 # adapter experiment — we reverted to claude_local, so Paperclip never
 # calls our webhook anymore. The agents now POST results back to ARIA via
@@ -739,6 +740,7 @@ app.include_router(email_router)
 app.include_router(admin_router)
 app.include_router(tasks_router)
 app.include_router(ceo_router)
+app.include_router(login_rate_limit_router)
 
 app.add_middleware(
     CORSMiddleware,

@@ -178,3 +178,45 @@ def reset(bucket: str, key: str) -> None:
             pass
     with _memory_lock:
         _memory_buckets.pop(full_key, None)
+
+
+def peek(bucket: str, key: str) -> tuple[int, int]:
+    """Return (current_count, ttl_seconds_remaining) without incrementing.
+
+    Different from `hit()` because some flows need to ASK whether a
+    user is rate-limited before doing work, without that check itself
+    counting as an attempt. The login flow uses this:
+      - peek() before submitting password -> if already at limit, refuse
+      - hit() only on actual auth failure -> counts the failed attempt
+      - reset() on success -> clears the counter so a legit user
+        recovering from typos isn't punished after they get in
+
+    Returns (0, 0) if the key doesn't exist or Redis errors. Caller
+    decides what to do with the count. ttl=-1 means "key exists but
+    has no expiry" (shouldn't happen for our rate-limit keys but
+    handled defensively).
+    """
+    if not key:
+        return (0, 0)
+    full_key = f"ratelimit:{bucket}:{key}"
+    r = _get_redis()
+    if r is False:
+        # Memory-fallback path
+        with _memory_lock:
+            timestamps = _memory_buckets.get(full_key, [])
+            if not timestamps:
+                return (0, 0)
+            now = time.time()
+            # Oldest timestamp + window = approx ttl. We don't know the
+            # window here so caller passes it; for peek we just return
+            # the count and 0 (caller can compute ttl if needed).
+            return (len(timestamps), 0)
+    try:
+        v = r.get(full_key)
+        if v is None:
+            return (0, 0)
+        ttl = r.ttl(full_key)
+        return (int(v), int(ttl) if ttl is not None else 0)
+    except Exception as e:
+        logger.debug("[rate_limit] peek error (returning 0): %s", e)
+        return (0, 0)
