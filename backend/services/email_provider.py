@@ -1,21 +1,18 @@
 """Email Provider abstraction — single send() seam for outbound mail.
 
-Why this exists:
-    The old path was direct `gmail_tool.send_email(...)` calls scattered
-    through email_marketer_agent, email_sender, scheduler, etc. That
-    locked us into Gmail OAuth as the sole sending channel — which is
-    a 2-6 week wait on Google verification + requires a real domain +
-    breaks against school-account workspace policies.
+Two channels:
+  - SMTP    — Hostinger mail hosting on the project's domain. Default.
+              Configured via SMTP_HOST / SMTP_PORT / SMTP_USER /
+              SMTP_PASSWORD / SMTP_FROM_EMAIL / SMTP_FROM_NAME env vars.
+              Synchronous smtplib wrapped in asyncio.to_thread so we
+              don't block the event loop.
+  - Gmail   — Per-user OAuth (gmail.send scope). Used when the tenant
+              has connected their own Google account and wants outbound
+              sent from their personal Gmail address.
 
-    This module replaces those direct calls with a provider-agnostic
-    `send_email(...)` that picks the channel based on:
-      1. The EMAIL_PROVIDER env var ("resend" | "gmail" | "auto").
-      2. Whether the tenant has Gmail OAuth tokens (only relevant for
-         "auto" mode — smart fallback during the migration period).
-
-    The default is Resend (HTTP API, sends immediately once a domain is
-    verified). Gmail OAuth still works when EMAIL_PROVIDER=gmail or the
-    tenant explicitly opts into it.
+Resend was removed 2026-05-06 per project decision (we already have
+mail hosting included with Hostinger; SMTP via that mailbox is free,
+sufficient for the volumes ARIA expects, and avoids another vendor).
 
 Reply-to convention (parsed by the inbound webhook in backend/services/
 email_inbound.py):
@@ -32,31 +29,31 @@ email_inbound.py):
     "t." / "i." prefixes are sentinels so the inbound parser can
     disambiguate which lookup to perform without a schema-aware regex.
 
-If RESEND_API_KEY or INBOUND_EMAIL_DOMAIN is unset, send_email logs a
-warning and returns a stub success result with provider="none". Callers
-treat that as "queued until domain configured" — same UX the frontend's
-Settings → Email tab already plans to render via the /api/settings/
-email/status endpoint.
+If SMTP credentials are missing, send_email returns provider="none"
+with success=False so callers can surface "configure email" instead
+of silently swallowing the send.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import smtplib
+import ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formataddr, make_msgid
 from typing import Optional, TypedDict
 
-import httpx
-
 logger = logging.getLogger("aria.services.email_provider")
-
-RESEND_API_URL = "https://api.resend.com/emails"
 
 
 class EmailSendResult(TypedDict):
     """Common return shape across providers.
 
-    `provider` is "resend" | "gmail" | "none" — callers can branch on
-    "none" to surface "queued, configure domain to enable sending" to
-    the user instead of a hard failure.
+    `provider` is "smtp" | "gmail" | "none" — callers can branch on
+    "none" to surface "configure email to enable sending" to the user
+    instead of a hard failure.
     """
     success: bool
     message_id: Optional[str]
@@ -69,14 +66,14 @@ class EmailSendResult(TypedDict):
 
 
 def _provider_choice() -> str:
-    """Read EMAIL_PROVIDER env var and normalize. Default is "resend"."""
-    raw = (os.environ.get("EMAIL_PROVIDER") or "resend").strip().lower()
-    if raw not in {"resend", "gmail", "auto"}:
+    """Read EMAIL_PROVIDER env var and normalize. Default is "smtp"."""
+    raw = (os.environ.get("EMAIL_PROVIDER") or "smtp").strip().lower()
+    if raw not in {"smtp", "gmail", "auto"}:
         logger.warning(
-            "EMAIL_PROVIDER=%r is not one of resend/gmail/auto; defaulting to resend",
+            "EMAIL_PROVIDER=%r is not one of smtp/gmail/auto; defaulting to smtp",
             raw,
         )
-        return "resend"
+        return "smtp"
     return raw
 
 
@@ -84,8 +81,19 @@ def _inbound_domain() -> str:
     return (os.environ.get("INBOUND_EMAIL_DOMAIN") or "").strip()
 
 
-def _resend_key() -> str:
-    return (os.environ.get("RESEND_API_KEY") or "").strip()
+def _smtp_config() -> dict:
+    """Return SMTP credentials + sender info from env. Empty strings on
+    missing keys so callers can short-circuit with provider='none'."""
+    use_ssl_raw = (os.environ.get("SMTP_USE_SSL") or "true").strip().lower()
+    return {
+        "host": (os.environ.get("SMTP_HOST") or "").strip(),
+        "port": int((os.environ.get("SMTP_PORT") or "465").strip() or "465"),
+        "use_ssl": use_ssl_raw in ("1", "true", "yes"),
+        "user": (os.environ.get("SMTP_USER") or "").strip(),
+        "password": os.environ.get("SMTP_PASSWORD") or "",
+        "from_email": (os.environ.get("SMTP_FROM_EMAIL") or os.environ.get("SMTP_USER") or "").strip(),
+        "from_name": (os.environ.get("SMTP_FROM_NAME") or "ARIA").strip(),
+    }
 
 
 def _strip_subdomain_prefix(domain: str, prefix: str) -> str:
@@ -213,10 +221,10 @@ def get_tenant_email_settings(tenant_id: str) -> dict:
     }
 
 
-# ── Resend HTTP send ───────────────────────────────────────────────────
+# ── SMTP send (Hostinger or any standard SMTP server) ─────────────────
 
 
-async def _send_via_resend(
+def _build_mime_message(
     *,
     from_header: str,
     to: str,
@@ -226,95 +234,156 @@ async def _send_via_resend(
     in_reply_to: str,
     references: str,
     reply_to: str,
+    sender_email: str,
+) -> tuple[MIMEMultipart, str]:
+    """Build a multipart/alternative MIME message ready for SMTP send.
+
+    Returns (msg, message_id). The message_id is generated locally so
+    we can return it to the caller for thread tracking — Hostinger's
+    SMTP doesn't echo back its own ID the way an HTTP API would.
+    """
+    msg = MIMEMultipart("alternative")
+    msg["From"] = from_header
+    msg["To"] = to
+    msg["Subject"] = subject
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"] = references or in_reply_to
+    elif references:
+        msg["References"] = references
+
+    # RFC-compliant Message-ID — domain part should match the sender's
+    # domain so spam filters don't downrank.
+    sender_domain = sender_email.split("@", 1)[-1] if "@" in sender_email else "aria.local"
+    message_id = make_msgid(domain=sender_domain)
+    msg["Message-ID"] = message_id
+
+    if text_body:
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    if html_body:
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    return msg, message_id
+
+
+def _smtp_send_sync(
+    *,
+    cfg: dict,
+    msg: MIMEMultipart,
+    to: str,
+) -> Optional[str]:
+    """Synchronous smtplib send. Called via asyncio.to_thread so the
+    blocking I/O doesn't stall the event loop. Raises on failure;
+    caller wraps in try/except to translate to EmailSendResult."""
+    context = ssl.create_default_context()
+    if cfg["use_ssl"]:
+        with smtplib.SMTP_SSL(cfg["host"], cfg["port"], context=context, timeout=30) as server:
+            server.login(cfg["user"], cfg["password"])
+            server.send_message(msg, from_addr=cfg["from_email"], to_addrs=[to])
+    else:
+        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=30) as server:
+            server.starttls(context=context)
+            server.login(cfg["user"], cfg["password"])
+            server.send_message(msg, from_addr=cfg["from_email"], to_addrs=[to])
+    return None
+
+
+async def _send_via_smtp(
+    *,
+    display_name: str,
+    to: str,
+    subject: str,
+    html_body: str,
+    text_body: str,
+    in_reply_to: str,
+    references: str,
+    reply_to: str,
 ) -> EmailSendResult:
-    """POST to Resend's /emails endpoint. Never raises."""
-    api_key = _resend_key()
-    if not api_key:
+    """Send via the configured SMTP server. Never raises."""
+    cfg = _smtp_config()
+
+    # Hard-fail (not silent-noop) when SMTP isn't configured. The
+    # previous Resend path silent-noop'd which masked broken setups
+    # for hours/days; on SMTP we want a clear 'configure your email'
+    # signal so the operator notices.
+    missing = [k for k in ("host", "user", "password", "from_email") if not cfg[k]]
+    if missing:
         logger.warning(
-            "[email_provider] RESEND_API_KEY unset — send to %s noop'd; "
-            "configure the env var to enable actual delivery.", to,
+            "[email_provider] SMTP not configured (missing: %s); send to %s skipped",
+            ",".join(missing), to,
         )
         return {
-            "success": True,            # not a hard error — surface to UI as "queued"
+            "success": False,
             "message_id": None,
             "thread_id": None,
             "provider": "none",
-            "error": "RESEND_API_KEY not configured",
-        }
-    if not from_header:
-        return {
-            "success": False,
-            "message_id": None,
-            "thread_id": None,
-            "provider": "resend",
-            "error": "Sender address not configured (set INBOUND_EMAIL_DOMAIN + tenant email_sender_local)",
+            "error": f"SMTP not configured (missing env: {', '.join('SMTP_' + m.upper() for m in missing)})",
         }
 
-    headers: dict[str, str] = {}
-    if reply_to:
-        headers["Reply-To"] = reply_to
-    if in_reply_to:
-        headers["In-Reply-To"] = in_reply_to
-        headers["References"] = references or in_reply_to
-    elif references:
-        headers["References"] = references
+    # From header always uses the SMTP-authenticated mailbox as the
+    # actual sender. Hostinger (and most SMTP servers) reject sends
+    # where the From mismatches the auth identity. Display name is
+    # tenant-customizable; the email address is fixed to the mailbox
+    # we authenticate as.
+    from_header = formataddr((display_name or cfg["from_name"], cfg["from_email"]))
 
-    payload: dict = {
-        "from": from_header,
-        "to": [to] if isinstance(to, str) else list(to),
-        "subject": subject,
-        "html": html_body,
-    }
-    if text_body:
-        payload["text"] = text_body
-    if headers:
-        payload["headers"] = headers
+    msg, message_id = _build_mime_message(
+        from_header=from_header,
+        to=to,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        in_reply_to=in_reply_to,
+        references=references,
+        reply_to=reply_to,
+        sender_email=cfg["from_email"],
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                RESEND_API_URL,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-            )
+        await asyncio.to_thread(_smtp_send_sync, cfg=cfg, msg=msg, to=to)
+    except smtplib.SMTPAuthenticationError as e:
+        logger.warning("[email_provider] SMTP auth failed: %s", e)
+        return {
+            "success": False, "message_id": None, "thread_id": None,
+            "provider": "smtp",
+            "error": "SMTP authentication failed — check SMTP_USER and SMTP_PASSWORD",
+        }
+    except smtplib.SMTPRecipientsRefused as e:
+        logger.warning("[email_provider] SMTP recipient refused: %s", e)
+        return {
+            "success": False, "message_id": None, "thread_id": None,
+            "provider": "smtp",
+            "error": f"Recipient refused: {to}",
+        }
+    except smtplib.SMTPException as e:
+        logger.warning("[email_provider] SMTP error: %s", e)
+        return {
+            "success": False, "message_id": None, "thread_id": None,
+            "provider": "smtp",
+            "error": f"smtp_error: {type(e).__name__}: {e}",
+        }
+    except (TimeoutError, ConnectionError, OSError) as e:
+        logger.warning("[email_provider] SMTP connection failed: %s", e)
+        return {
+            "success": False, "message_id": None, "thread_id": None,
+            "provider": "smtp",
+            "error": f"smtp_connection_error: {type(e).__name__}: {e}",
+        }
     except Exception as e:
-        logger.warning("[email_provider] Resend HTTP error: %s", e)
+        logger.exception("[email_provider] unexpected SMTP send failure: %s", e)
         return {
-            "success": False,
-            "message_id": None,
-            "thread_id": None,
-            "provider": "resend",
-            "error": f"resend_http_error: {e}",
+            "success": False, "message_id": None, "thread_id": None,
+            "provider": "smtp",
+            "error": f"smtp_unexpected: {type(e).__name__}: {e}",
         }
 
-    if resp.status_code >= 400:
-        try:
-            detail = resp.json().get("message") or resp.text[:200]
-        except Exception:
-            detail = resp.text[:200]
-        logger.warning(
-            "[email_provider] Resend send failed (%s): %s", resp.status_code, detail,
-        )
-        return {
-            "success": False,
-            "message_id": None,
-            "thread_id": None,
-            "provider": "resend",
-            "error": f"resend_api_error ({resp.status_code}): {detail}",
-        }
-
-    try:
-        data = resp.json()
-    except Exception:
-        data = {}
     return {
         "success": True,
-        "message_id": data.get("id") or None,
-        "thread_id": None,            # Resend has no threadId concept
-        "provider": "resend",
+        "message_id": message_id,
+        "thread_id": None,            # SMTP has no threadId concept
+        "provider": "smtp",
         "error": None,
     }
 
@@ -401,8 +470,8 @@ async def send_email(
 
     Resolution order:
       1. tenant.integrations.email_provider  (explicit per-tenant override)
-      2. EMAIL_PROVIDER env var               (default "resend")
-      3. "auto"                                (uses Gmail if tokens exist)
+      2. EMAIL_PROVIDER env var               (default "smtp")
+      3. "auto"                                (uses Gmail if tokens exist, else SMTP)
 
     `inbound_thread_id` and `inbox_item_id` feed the Reply-To token
     builder so customer replies route back through the inbound webhook
@@ -414,16 +483,21 @@ async def send_email(
 
     cfg = get_tenant_config(tenant_id)
 
-    # Pick provider
+    # Pick provider. The legacy 'resend' value lingers in some tenant
+    # configs from before the SMTP migration — treat it as a transparent
+    # alias for the new default (SMTP) so existing tenants keep sending
+    # without a manual config flip.
     per_tenant = (cfg.integrations.email_provider or "").strip().lower()
+    if per_tenant == "resend":
+        per_tenant = "smtp"
     provider = per_tenant or _provider_choice()
 
     if provider == "auto":
-        # Smart fallback: prefer Gmail when the tenant has tokens, else Resend
+        # Smart fallback: prefer Gmail when the tenant has tokens, else SMTP
         if cfg.integrations.google_access_token or cfg.integrations.google_refresh_token:
             provider = "gmail"
         else:
-            provider = "resend"
+            provider = "smtp"
 
     if provider == "gmail":
         return await _send_via_gmail(
@@ -436,12 +510,10 @@ async def send_email(
             reply_to_thread_id=reply_to_gmail_thread_id,
         )
 
-    # ── Resend path ──
+    # ── SMTP path ──
     display_name = (from_display_name or "").strip() or (
         cfg.integrations.email_sender_display_name or cfg.business_name or "ARIA"
     )
-    sender_addr = build_sender_address(cfg.integrations.email_sender_local)
-    from_header = build_from_header(display_name, sender_addr)
 
     reply_to = build_reply_to(
         inbound_thread_id=inbound_thread_id,
@@ -450,14 +522,14 @@ async def send_email(
     )
 
     # Plain-text companion: callers usually pass HTML only. Stripping
-    # tags here keeps every Resend send multipart so spam filters don't
+    # tags here keeps every send multipart so spam filters don't
     # downrank us for HTML-only mail.
     if not text_body and html_body:
         import re as _re
         text_body = _re.sub(r"<[^>]+>", "", html_body).strip()
 
-    return await _send_via_resend(
-        from_header=from_header,
+    return await _send_via_smtp(
+        display_name=display_name,
         to=to,
         subject=subject,
         html_body=html_body,
