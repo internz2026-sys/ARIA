@@ -682,12 +682,19 @@ async def lifespan(app: FastAPI):
     office_sync_task = asyncio.create_task(_paperclip_office_sync_loop())
     followup_task = asyncio.create_task(_followup_nudge_loop())
     repurpose_task = asyncio.create_task(_content_repurpose_loop())
+    # IMAP inbound poller — pulls customer replies from the SMTP mailbox
+    # (aria@<domain>) into ARIA's email_threads / email_messages so the
+    # Conversations page lights up. No-op when IMAP_HOST / SMTP_USER /
+    # SMTP_PASSWORD are not configured.
+    from backend.services.imap_inbound import imap_poll_loop
+    imap_task = asyncio.create_task(imap_poll_loop())
     yield
     sync_task.cancel()
     scheduler_task.cancel()
     office_sync_task.cancel()
     followup_task.cancel()
     repurpose_task.cancel()
+    imap_task.cancel()
     # Close the shared Paperclip httpx client so we don't leak connections
     # on graceful shutdown (uvicorn reload during dev, container stop in prod).
     try:

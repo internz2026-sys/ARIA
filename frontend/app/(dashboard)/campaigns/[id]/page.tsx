@@ -464,7 +464,7 @@ export default function CampaignDetailPage() {
             // Copy-Paste tab only when this campaign was created from an Ad
             // Strategist inbox draft (campaigns mirror sets inbox_item_id).
             if (campaign?.inbox_item_id) {
-              tabs.push({ key: "copypaste", label: "Copy-Paste" });
+              tabs.push({ key: "copypaste", label: "Instructions" });
             }
             // Performance tab for active campaigns OR campaigns that
             // already have a saved performance block. Hidden for

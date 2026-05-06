@@ -255,10 +255,14 @@ def _build_mime_message(
         msg["References"] = references
 
     # RFC-compliant Message-ID — domain part should match the sender's
-    # domain so spam filters don't downrank.
+    # domain so spam filters don't downrank. make_msgid returns the
+    # bracketed form (e.g. "<abc@domain>"). The HEADER needs the
+    # brackets, but for storage / In-Reply-To lookups we want the
+    # bracketless inner part so future inbound match-ups work.
     sender_domain = sender_email.split("@", 1)[-1] if "@" in sender_email else "aria.local"
-    message_id = make_msgid(domain=sender_domain)
-    msg["Message-ID"] = message_id
+    full_message_id = make_msgid(domain=sender_domain)
+    msg["Message-ID"] = full_message_id
+    message_id = full_message_id.strip("<> ")
 
     if text_body:
         msg.attach(MIMEText(text_body, "plain", "utf-8"))

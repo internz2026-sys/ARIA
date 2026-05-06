@@ -966,18 +966,36 @@ async def inbound_email_webhook(request: Request):
 
 @router.post("/api/email/{tenant_id}/sync", dependencies=[Depends(get_verified_tenant)])
 async def trigger_email_sync(tenant_id: str):
-    """Manually trigger Gmail inbound reply sync for a tenant."""
+    """Manually trigger inbound reply sync for a tenant.
+
+    Runs Gmail sync (for tenants with OAuth tokens) AND fires a one-shot
+    IMAP poll of the SMTP mailbox in the same request so the
+    Conversations 'Sync' button picks up replies from either path.
+    """
     from backend.server import _emit_sync_events
     from backend.tools.gmail_sync import sync_tenant_replies
 
     result = await sync_tenant_replies(tenant_id)
     await _emit_sync_events(tenant_id, result)
+
+    try:
+        from backend.services.imap_inbound import poll_once as imap_poll_once
+        imap_processed, imap_errors = await imap_poll_once()
+        result["imap"] = {"processed": imap_processed, "errors": imap_errors}
+    except Exception as e:
+        logger.warning("[email-sync] imap poll failed: %s", e)
+        result["imap"] = {"processed": 0, "errors": 1}
+
     return result
 
 
 @router.post("/api/email/sync-all")
 async def trigger_sync_all():
-    """Trigger Gmail sync for all active tenants. Called by cron."""
+    """Trigger Gmail sync for all active tenants. Called by cron.
+
+    Also fires a one-shot IMAP poll so customer replies sitting in the
+    SMTP mailbox come in the same round-trip as Gmail-tenant syncs.
+    """
     from backend.server import _emit_sync_events
     from backend.tools.gmail_sync import sync_all_tenants
 
@@ -986,4 +1004,33 @@ async def trigger_sync_all():
         tid = r.get("tenant_id", "")
         if tid:
             await _emit_sync_events(tid, r)
-    return {"tenants_synced": len(results), "results": results}
+
+    # IMAP poll runs orthogonally to Gmail sync — different mailbox per
+    # tenant in the Gmail case, but a single shared SMTP mailbox in the
+    # IMAP case. Errors here don't block the response.
+    try:
+        from backend.services.imap_inbound import poll_once as imap_poll_once
+        imap_processed, imap_errors = await imap_poll_once()
+    except Exception as e:
+        logger.warning("[sync-all] imap poll failed: %s", e)
+        imap_processed, imap_errors = 0, 1
+
+    return {
+        "tenants_synced": len(results),
+        "results": results,
+        "imap": {"processed": imap_processed, "errors": imap_errors},
+    }
+
+
+@router.post("/api/email/imap/poll")
+async def trigger_imap_poll():
+    """Manually trigger an IMAP poll of the SMTP inbox.
+
+    Convenient for ops + the Conversations 'Sync' button when the user
+    knows a reply just landed and doesn't want to wait for the next
+    background tick.
+    """
+    from backend.services.imap_inbound import poll_once as imap_poll_once
+
+    processed, errors = await imap_poll_once()
+    return {"processed": processed, "errors": errors}
