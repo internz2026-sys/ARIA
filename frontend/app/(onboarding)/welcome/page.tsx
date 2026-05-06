@@ -65,7 +65,7 @@ export default function WelcomePage() {
   if (hasExisting) {
     return (
       <div className="flex flex-col items-center justify-center px-6 py-16 max-w-xl mx-auto text-center">
-        <img src="/logo.webp" alt="ARIA" className="h-16 w-16 rounded-full object-cover shadow-lg shadow-[#534AB7]/20 mb-6" />
+        <img src="/logo.png" alt="ARIA" className="h-16 w-16 rounded-full object-cover shadow-lg shadow-[#534AB7]/20 mb-6" />
 
         <h1 className="text-[28px] font-bold text-[#2C2C2A] mb-3 leading-tight">
           You&apos;ve already completed onboarding.
@@ -116,7 +116,7 @@ export default function WelcomePage() {
   // New user — standard welcome
   return (
     <div className="flex flex-col items-center justify-center px-6 py-16 max-w-xl mx-auto text-center">
-      <img src="/logo.webp" alt="ARIA" className="h-16 w-16 rounded-full object-cover shadow-lg shadow-[#534AB7]/20 mb-6" />
+      <img src="/logo.png" alt="ARIA" className="h-16 w-16 rounded-full object-cover shadow-lg shadow-[#534AB7]/20 mb-6" />
 
       <h1 className="text-[32px] font-bold text-[#2C2C2A] mb-3 leading-tight">
         Welcome! Let&apos;s set up your<br />AI marketing team.

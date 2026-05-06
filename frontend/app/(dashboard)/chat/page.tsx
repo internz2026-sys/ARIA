@@ -429,7 +429,7 @@ export default function CEOChatPage() {
             <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
               <div className={`max-w-[75%] ${msg.role === "user" ? "" : "flex gap-3"}`}>
                 {msg.role === "assistant" && (
-                  <img src="/logo.webp" alt="ARIA" className="w-8 h-8 rounded-full object-cover shrink-0 mt-1" />
+                  <img src="/logo.png" alt="ARIA" className="w-8 h-8 rounded-full object-cover shrink-0 mt-1" />
                 )}
                 <div>
                   <div
@@ -496,7 +496,7 @@ export default function CEOChatPage() {
           {sending && (
             <div className="flex justify-start">
               <div className="flex gap-3">
-                <img src="/logo.webp" alt="ARIA" className="w-8 h-8 rounded-full object-cover shrink-0" />
+                <img src="/logo.png" alt="ARIA" className="w-8 h-8 rounded-full object-cover shrink-0" />
                 <div className="bg-[#F8F8F6] border border-[#E0DED8] rounded-2xl rounded-bl-md px-4 py-3">
                   <div className="flex items-center gap-2">
                     <div className="flex gap-1">

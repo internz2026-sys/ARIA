@@ -206,7 +206,7 @@ export default function Sidebar() {
       {/* Logo */}
       <div className="h-16 flex items-center px-6 border-b border-[#E0DED8]">
         <div className="flex items-center gap-2.5">
-          <img src="/logo.webp" alt="ARIA" className="h-8 w-8 rounded-full object-cover" />
+          <img src="/logo.png" alt="ARIA" className="h-8 w-8 rounded-full object-cover" />
           <span className="text-[#2C2C2A] font-semibold text-lg tracking-tight">ARIA</span>
         </div>
       </div>
