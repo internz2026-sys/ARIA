@@ -17,8 +17,8 @@ const sections = [
       {
         subtitle: "Google Account Data (when connected)",
         items: [
-          "Basic profile: name, email address, profile picture (via Sign in with Google)",
-          "Gmail (gmail.send scope only): permission to send email on your behalf when you explicitly approve a draft. We do NOT read your inbox, do NOT access your message contents, and do NOT have any other Gmail access.",
+          "Basic profile: name, email address, profile picture (via Sign in with Google).",
+          "We do NOT request access to Gmail, Drive, Calendar, Contacts, or any other Google service. ARIA only uses the non-sensitive openid / email / profile scopes for authentication.",
         ],
       },
       {
@@ -58,10 +58,10 @@ const sections = [
     title: "4. Google User Data — Limited Use Disclosure",
     content: "ARIA's use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements:",
     items: [
-      "We use Google user data only to provide or improve user-facing features prominent in ARIA (Sign in with Google for authentication, gmail.send for sending approved marketing emails on your behalf).",
-      "We do not transfer Google user data to third parties except as necessary to provide or improve those user-facing features, to comply with applicable law, or as part of a merger / acquisition / sale of assets with continued protections.",
+      "We use Google user data only to provide or improve the user-facing Sign in with Google authentication feature in ARIA. We do not request any Gmail, Drive, Calendar, Contacts, or other Google API scopes beyond openid / email / profile.",
+      "We do not transfer Google user data to third parties except as necessary to provide that authentication feature, to comply with applicable law, or as part of a merger / acquisition / sale of assets with continued protections.",
       "We do not use Google user data to serve advertising, including retargeting, personalized, or interest-based advertising.",
-      "We do not allow humans to read your Google user data unless we have your explicit affirmative consent for specific messages, it is necessary for security purposes (such as investigating abuse), or it is required by law.",
+      "We do not allow humans to read your Google user data unless we have your explicit affirmative consent, it is necessary for security purposes (such as investigating abuse), or it is required by law.",
       "We do not use Google user data to train, develop, or improve generalized AI / ML models.",
     ],
   },
@@ -77,7 +77,7 @@ const sections = [
       "Postmark (inbound email parsing) — receives reply emails routed back to your ARIA inbox",
       "Pollinations.ai / Google Gemini (image generation) — generates marketing images based on your prompts",
       "Qdrant (vector search) — stores embeddings of your content for semantic recall",
-      "Connected platforms (Gmail / Google, X/Twitter, LinkedIn, WhatsApp) — only when you explicitly authorize an action",
+      "Connected platforms (Google for sign-in, X/Twitter, LinkedIn, WhatsApp) — only when you explicitly authorize an action",
       "Legal requirements — when required by law or to protect our rights, your safety, or the rights of others",
     ],
   },

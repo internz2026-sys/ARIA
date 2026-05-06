@@ -21,6 +21,9 @@ import { formatDateAgo as timeAgo } from "@/lib/utils";
 import { useNotifications } from "@/lib/use-notifications";
 import { useConfirm } from "@/lib/use-confirm";
 import StatusDropdown from "@/components/shared/StatusDropdown";
+import ImportContactsModal from "@/components/shared/ImportContactsModal";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 // ─── Modal ───
 
@@ -281,6 +284,7 @@ export default function CRMPage() {
   const [contactFilter, setContactFilter] = useState("");
   const [contactLoading, setContactLoading] = useState(true);
   const [showAddContact, setShowAddContact] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   // ─── Companies state ───
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
@@ -716,17 +720,31 @@ export default function CRMPage() {
           <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">CRM</h1>
           <p className="text-sm text-[#5F5E5A]">Manage contacts, companies, and deals</p>
         </div>
-        <button
-          onClick={() => {
-            if (tab === "contacts") setShowAddContact(true);
-            else if (tab === "companies") setShowAddCompany(true);
-            else setShowAddDeal(true);
-          }}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors shrink-0 whitespace-nowrap"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-          Add {tab === "contacts" ? "Contact" : tab === "companies" ? "Company" : "Deal"}
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {tab === "contacts" && (
+            <button
+              onClick={() => setShowImport(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors whitespace-nowrap"
+              title="Import contacts from CSV or XLSX"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+              </svg>
+              Import
+            </button>
+          )}
+          <button
+            onClick={() => {
+              if (tab === "contacts") setShowAddContact(true);
+              else if (tab === "companies") setShowAddCompany(true);
+              else setShowAddDeal(true);
+            }}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors whitespace-nowrap"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+            Add {tab === "contacts" ? "Contact" : tab === "companies" ? "Company" : "Deal"}
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -971,6 +989,17 @@ export default function CRMPage() {
       )}
 
       {/* ════════ ADD CONTACT MODAL ════════ */}
+      <ImportContactsModal
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        tenantId={tenantId}
+        apiUrl={API_URL}
+        onImported={() => {
+          fetchContacts();
+        }}
+        showToast={showToast}
+      />
+
       <Modal open={showAddContact} onClose={() => setShowAddContact(false)} title="Add Contact">
         <div className="space-y-4">
           <FormField label="Name *">

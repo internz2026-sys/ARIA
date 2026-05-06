@@ -5,7 +5,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from backend.auth import get_verified_tenant
@@ -93,6 +93,113 @@ async def delete_contact(tenant_id: str, contact_id: str):
     result = crm_service.delete_contact(tenant_id, contact_id)
     await _emit_crm_update(tenant_id, "crm_contact")
     await _emit_crm_update(tenant_id, "crm_deal")
+    return result
+
+
+# ── Bulk import (CSV / XLSX) ──────────────────────────────────────────────────
+#
+# Two-phase: /contacts/import/preview returns headers + a sample so the
+# frontend can render the column-mapping UI; /contacts/import re-receives
+# the file plus the mapping and writes the rows. Both endpoints accept
+# the file via multipart/form-data so the browser sets Content-Type
+# automatically and we don't have to base64 the file in JSON.
+
+
+@router.post("/contacts/import/preview")
+async def preview_contact_import(tenant_id: str, file: UploadFile = File(...)):
+    """Parse the uploaded file and return its header row + a sample of
+    body rows. Frontend uses this to render the column-mapping form.
+    Nothing is written to the database.
+    """
+    from backend.services import crm_import
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="uploaded file is empty")
+    if len(raw) > 25 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail="file too large (max 25MB) — split it and re-upload",
+        )
+
+    try:
+        rows = crm_import.parse_file(raw, file.filename or "", file.content_type or "")
+    except Exception as e:
+        logger.warning("[crm-import] parse failed: %s", e)
+        raise HTTPException(
+            status_code=400,
+            detail=f"could not parse file — make sure it's a valid CSV or XLSX",
+        )
+
+    return crm_import.build_preview(rows)
+
+
+class ContactImportRequest(BaseModel):
+    """Body for the second-phase import call. The file rides on the
+    same multipart request as a separate 'file' field; this Pydantic
+    shape only documents the JSON 'mapping' field for the OpenAPI
+    schema. In practice we read everything off the form.
+    """
+    mapping: dict[str, str]
+    extra_notes_columns: list[str] = []
+
+
+@router.post("/contacts/import")
+async def import_contacts(
+    tenant_id: str,
+    file: UploadFile = File(...),
+    mapping: str = Form(...),
+    extra_notes_columns: str = Form(default=""),
+):
+    """Apply the operator-supplied column mapping and insert contacts.
+
+    Form fields:
+      file                  - the .csv / .xlsx file
+      mapping               - JSON: {aria_field: source_column_name}
+      extra_notes_columns   - JSON list of source columns to roll up
+                              into the notes field
+    """
+    import json as _json
+    from backend.services import crm_import
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="uploaded file is empty")
+
+    try:
+        mapping_dict = _json.loads(mapping) if mapping else {}
+    except _json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="mapping must be valid JSON")
+    if not isinstance(mapping_dict, dict):
+        raise HTTPException(status_code=400, detail="mapping must be a JSON object")
+    if not mapping_dict.get("email") and not mapping_dict.get("name"):
+        raise HTTPException(
+            status_code=400,
+            detail="map at least one of: email, name (otherwise rows have no identity)",
+        )
+
+    try:
+        extra_cols = _json.loads(extra_notes_columns) if extra_notes_columns else []
+    except _json.JSONDecodeError:
+        extra_cols = []
+    if not isinstance(extra_cols, list):
+        extra_cols = []
+
+    try:
+        rows = crm_import.parse_file(raw, file.filename or "", file.content_type or "")
+    except Exception as e:
+        logger.warning("[crm-import] parse failed during import: %s", e)
+        raise HTTPException(status_code=400, detail="could not parse file")
+
+    result = crm_import.import_contacts(
+        tenant_id, rows, mapping_dict, extra_cols,
+    )
+
+    if result.get("imported"):
+        await _emit_crm_update(tenant_id, "crm_contact")
+        # Auto-created companies surface on the Companies tab too
+        await _emit_crm_update(tenant_id, "crm_company")
+
     return result
 
 
