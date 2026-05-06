@@ -47,6 +47,30 @@ function extractName(emailStr: string): string {
   return emailStr.split("@")[0];
 }
 
+/** Parse an RFC 5322-style sender string into {name, email}.
+ *  Accepts:
+ *    - "John Doe <john@example.com>"  -> name "John Doe", email "john@example.com"
+ *    - "<john@example.com>"           -> name "john", email "john@example.com"
+ *    - "john@example.com"             -> name "john", email "john@example.com"
+ *  Returns blank email if the input is unparseable so the caller can
+ *  detect the failure case instead of saving a junk row.
+ */
+function parseSender(sender: string): { name: string; email: string } {
+  const raw = (sender || "").trim();
+  if (!raw) return { name: "", email: "" };
+  const m = raw.match(/^\s*(?:"?([^"<]*?)"?\s*)?<([^>]+)>\s*$/);
+  if (m) {
+    const name = (m[1] || "").trim();
+    const email = (m[2] || "").trim();
+    return { name: name || email.split("@")[0] || "", email };
+  }
+  // Bare email — derive name from local-part as a sensible default.
+  if (raw.includes("@")) {
+    return { name: raw.split("@")[0], email: raw };
+  }
+  return { name: raw, email: "" };
+}
+
 export default function ConversationsPage() {
   const [threads, setThreads] = useState<EmailThread[]>([]);
   const [selected, setSelected] = useState<EmailThread | null>(null);
@@ -207,19 +231,30 @@ export default function ConversationsPage() {
     }
   };
 
-  // Wire up the add-to-CRM action. Pre-fills name from the email's
-  // local-part (no LLM call — the CRM page already lets the user edit
-  // the name afterwards if they want a friendlier display value).
-  // Marks source='email' so the CRM dashboard's "where leads came from"
-  // breakdown attributes this lead correctly.
+  // Wire up the add-to-CRM action. Pulls name + email from the latest
+  // inbound message's `sender` header (format "Display Name <a@b.c>"),
+  // which is the most authoritative signal for the contact's actual
+  // name. Falls back to the thread's bare contact_email + email
+  // local-part if no inbound exists or the sender header didn't carry
+  // a display name. Marks source='email' so the CRM dashboard's
+  // "where leads came from" breakdown attributes this lead correctly.
   const handleAddToCrm = async () => {
     if (!selected?.contact_email || crmAdding || crmContact) return;
     setCrmAdding(true);
     try {
-      const inferredName = extractName(selected.contact_email);
+      // Find the most recent inbound message. That row's `sender`
+      // field carries the display name set on the customer's mail
+      // client (e.g. "Hanz Uriel Aaron de la Cruz <hdlcruz03@...>"),
+      // which beats parsing the email's local-part for friendliness.
+      const latestInbound = [...messages].reverse().find(m => m.direction === "inbound");
+      const parsed = latestInbound ? parseSender(latestInbound.sender) : { name: "", email: "" };
+
+      const email = (parsed.email || selected.contact_email || "").trim().toLowerCase();
+      const name = parsed.name || extractName(selected.contact_email);
+
       const res = await crmApi.createContact(tenantId, {
-        name: inferredName,
-        email: selected.contact_email,
+        name,
+        email,
         source: "email",
         status: "lead",
       });
@@ -228,7 +263,7 @@ export default function ConversationsPage() {
         setCrmContact(created);
         showToast({
           title: "Added to CRM",
-          body: `${inferredName} saved as a lead`,
+          body: `${name} <${email}> saved as a lead`,
           variant: "success",
         });
       }
