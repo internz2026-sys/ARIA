@@ -866,12 +866,23 @@ export default function InboxPage() {
     if (!tenantId || actionLoading) return;
     setActionLoading("approve");
     try {
-      await inbox.approveSend(tenantId, item.id);
+      const sendResult = await inbox.approveSend(tenantId, item.id);
       setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "sent" } : i)));
       if (selected?.id === item.id) setSelected({ ...item, status: "sent" });
+      // Prefer the recipient the backend actually delivered to. The
+      // closure-captured `item.email_draft.to` is stale immediately
+      // after a save-then-send (the inline "Send" button calls onSave
+      // first, but the React state update doesn't propagate to this
+      // closure), so showing it produced the "delivered to <old
+      // address>" notification on resend flows.
+      const deliveredTo: string | undefined =
+        (sendResult && (sendResult as any).to) ||
+        selected?.email_draft?.to ||
+        item.email_draft?.to ||
+        undefined;
       showToast({
         title: "Email sent",
-        body: item.email_draft?.to ? `Delivered to ${item.email_draft.to}` : undefined,
+        body: deliveredTo ? `Delivered to ${deliveredTo}` : undefined,
         variant: "success",
       });
     } catch (err: any) {

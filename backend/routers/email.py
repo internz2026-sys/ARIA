@@ -280,7 +280,13 @@ async def approve_and_send_email(tenant_id: str, body: EmailApproveRequest):
         category="status", priority="normal",
     )
 
-    return {"status": "sent", "message_id": gmail_message_id, "thread_id": gmail_thread_id}
+    return {
+        "status": "sent",
+        "message_id": gmail_message_id,
+        "thread_id": gmail_thread_id,
+        "to": to,
+        "subject": subject,
+    }
 
 
 # ─── Draft CRUD (update / cancel) ─────────────────────────────────────
