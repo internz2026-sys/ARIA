@@ -1,3 +1,8 @@
+// build-marker: 2026-05-06.add-to-crm.frontend-rebuild-2
+// Touched to invalidate the Docker COPY layer so the prod webhook
+// rebuild picks up the conversations/page.tsx changes that landed in
+// 91030c2 (Add to CRM button) — the previous deploy reused a cached
+// build despite the source change, leaving the bundle stale.
 import { supabase } from "@/lib/supabase";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
