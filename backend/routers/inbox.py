@@ -458,6 +458,119 @@ async def restore_inbox_item(item_id: str, request: Request):
     return {"restored": item_id, "status": restored_to}
 
 
+@router.post("/api/inbox/{item_id}/resend")
+async def resend_inbox_item(item_id: str, request: Request):
+    """Clone a sent (or failed) email inbox row as a fresh draft.
+
+    Use case: user already sent an email but wants to send a follow-up
+    or re-send to a different recipient. Once an inbox row's status
+    flips to 'sent', the EmailEditor's Approve & Send button stops
+    rendering (by design, to prevent accidental double-sends to the
+    same recipient). This endpoint creates a NEW inbox row with the
+    same email_draft cloned across, status reset to
+    'draft_pending_approval' so the user can edit + re-approve.
+
+    Source row stays intact -- this is a duplicate, not a re-activate.
+    The duplicate gets a fresh paperclip_issue_id (None) and a title
+    prefixed 'Resend:' so the user can tell them apart in the list.
+    """
+    # Same ownership gate every other {item_id} route uses
+    src = await _verify_inbox_owner(request, item_id)
+
+    sb = get_db()
+    # Pull the full source row -- need email_draft + agent + tenant + title
+    # so we can clone it faithfully.
+    try:
+        result = (
+            sb.table("inbox_items")
+            .select("tenant_id, agent, type, title, content, email_draft, priority, status")
+            .eq("id", item_id)
+            .single()
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("[inbox-resend] source lookup failed for %s: %s", item_id, e)
+        raise HTTPException(status_code=404, detail="Inbox item not found")
+    row = result.data or {}
+    if not row:
+        raise HTTPException(status_code=404, detail="Inbox item not found")
+
+    # Only resend rows that actually have an email payload. Resending a
+    # non-email row would create a draft with no body -- not useful, so
+    # 400 instead of silently producing a junk row.
+    email_draft = row.get("email_draft") or None
+    if not isinstance(email_draft, dict) or not email_draft:
+        raise HTTPException(
+            status_code=400,
+            detail="This item has no email draft to resend.",
+        )
+
+    # Allow resend from sent / failed / cancelled. Drafts that are still
+    # pending approval shouldn't need resending -- the user can just
+    # edit + send the original.
+    src_status = (row.get("status") or "").strip().lower()
+    if src_status in ("draft_pending_approval", "processing", "sending"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resend — original is still {src_status}. Use the existing draft.",
+        )
+
+    # Reset email_draft.status to draft_pending_approval; preserve every
+    # other field (to/subject/html_body/text_body/preview_snippet/
+    # reply_to_thread_id, etc.) so the clone matches the original
+    # content. Drop any sent-side metadata like provider_message_id since
+    # this is a fresh send.
+    cloned_draft = dict(email_draft)
+    cloned_draft["status"] = "draft_pending_approval"
+    cloned_draft.pop("provider_message_id", None)
+
+    src_title = (row.get("title") or "Email draft").strip()
+    new_title = (
+        src_title if src_title.lower().startswith("resend:")
+        else f"Resend: {src_title}"
+    )[:200]
+
+    new_row = {
+        "tenant_id": row["tenant_id"],
+        "agent": row.get("agent") or "email_marketer",
+        "type": row.get("type") or "email_sequence",
+        "title": new_title,
+        "content": row.get("content") or "",
+        "status": "draft_pending_approval",
+        "priority": row.get("priority") or "normal",
+        "email_draft": cloned_draft,
+        # Don't carry forward paperclip_issue_id -- the original
+        # delegation is closed; this new row stands on its own.
+    }
+
+    try:
+        ins = sb.table("inbox_items").insert(new_row).execute()
+    except Exception as e:
+        logger.exception("[inbox-resend] insert failed: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to create resend draft")
+
+    new_item = (ins.data or [None])[0]
+    if not new_item:
+        raise HTTPException(status_code=500, detail="Resend draft was not created")
+
+    # Best-effort socket notify so the inbox list refreshes the moment
+    # the new draft lands. If this fails the user just sees the new
+    # draft on the next manual refresh.
+    try:
+        await sio.emit("inbox_new_item", {
+            "tenant_id": row["tenant_id"],
+            "item": new_item,
+        }, room=row["tenant_id"])
+    except Exception as e:
+        logger.debug("[inbox-resend] socket emit failed (non-fatal): %s", e)
+
+    return {
+        "ok": True,
+        "source_item_id": item_id,
+        "new_item": new_item,
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # POST /api/inbox/{tenant_id}/items — agent skill-curl create endpoint
 # ──────────────────────────────────────────────────────────────────────────

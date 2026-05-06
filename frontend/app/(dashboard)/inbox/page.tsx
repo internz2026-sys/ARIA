@@ -718,6 +718,36 @@ export default function InboxPage() {
     }
   };
 
+  const handleResend = async (item: InboxItem) => {
+    try {
+      const res = await authFetch(`${API_URL}/api/inbox/${item.id}/resend`, { method: "POST" });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody?.detail || `Resend failed (${res.status})`);
+      }
+      const data = await res.json();
+      const newItem = data?.new_item;
+      if (!newItem) throw new Error("Resend response missing new_item");
+      // Refetch the list so the new draft shows up at the top, then
+      // jump straight to it so the user can edit + approve in one click.
+      await fetchItems();
+      setSelected(newItem);
+      setMobileShowDetail(true);
+      fetchCounts();
+      showToast({
+        title: "Draft created",
+        body: "Edit and approve to send again.",
+        variant: "success",
+      });
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't resend",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    }
+  };
+
   const handleRestore = async (item: InboxItem) => {
     try {
       const res = await authFetch(`${API_URL}/api/inbox/${item.id}/restore`, { method: "POST" });
@@ -1379,12 +1409,24 @@ export default function InboxPage() {
         {/* Action bar — above content */}
         <div className="border-b border-[#E0DED8] px-5 py-3 flex items-center gap-2 bg-[#F8F8F6]">
           {item.status === "sent" && (
-            <span className="flex items-center gap-1.5 text-sm font-medium text-[#1D9E75]">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              Email sent successfully
-            </span>
+            <>
+              <span className="flex items-center gap-1.5 text-sm font-medium text-[#1D9E75]">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Email sent successfully
+              </span>
+              <button
+                onClick={() => handleResend(item)}
+                title="Clone this email as a fresh draft so you can edit and send again"
+                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-[#534AB7] text-[#534AB7] hover:bg-[#EEEDFE] transition-colors flex items-center gap-1.5"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.25} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+                </svg>
+                Resend
+              </button>
+            </>
           )}
           {item.status === "failed" && (
             <>
