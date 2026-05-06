@@ -261,22 +261,6 @@ export default function CRMPage() {
     if (deepLinkTab && deepLinkTab !== tab) setTab(deepLinkTab);
   }, [deepLinkTab]);
 
-  useEffect(() => {
-    if (!deepLinkId) return;
-    setHighlightedId(deepLinkId);
-    const scrollTimer = requestAnimationFrame(() => {
-      const el = document.querySelector(`[data-crm-row="${deepLinkId}"]`);
-      if (el && typeof (el as any).scrollIntoView === "function") {
-        (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
-      }
-    });
-    const t = setTimeout(() => setHighlightedId(null), 1800);
-    return () => {
-      cancelAnimationFrame(scrollTimer);
-      clearTimeout(t);
-    };
-  }, [deepLinkId]);
-
   // ─── Contacts state ───
   const [contacts, setContacts] = useState<CrmContact[]>([]);
   const [contactSearch, setContactSearch] = useState("");
@@ -298,6 +282,35 @@ export default function CRMPage() {
   const [dealLoading, setDealLoading] = useState(true);
   const [showAddDeal, setShowAddDeal] = useState(false);
   const [pipelineSummary, setPipelineSummary] = useState<Record<string, { count: number; value: number }>>({});
+
+  // ─── Deep-link highlight ───
+  // Defer the highlight + scroll until the matching row is actually
+  // in state, otherwise the 1800ms timer races the data fetch and the
+  // highlight expires before the row mounts (caught in 2026-05-06
+  // Playwright run — agent saw the row but no ring class). Re-arms
+  // when the user navigates back via /crm?id=... after loading other
+  // tabs. The 3s window is long enough for the user to spot the row
+  // post-scroll without becoming a permanent visual decoration.
+  useEffect(() => {
+    if (!deepLinkId) return;
+    const inLoaded =
+      contacts.some(c => c.id === deepLinkId) ||
+      companies.some(c => c.id === deepLinkId) ||
+      deals.some(d => d.id === deepLinkId);
+    if (!inLoaded) return;
+    setHighlightedId(deepLinkId);
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-crm-row="${deepLinkId}"]`);
+      if (el && typeof (el as any).scrollIntoView === "function") {
+        (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    });
+    const t = setTimeout(() => setHighlightedId(null), 3000);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(t);
+    };
+  }, [deepLinkId, contacts, companies, deals]);
 
   // ─── Debounce search inputs (300ms) ───
   useEffect(() => {
