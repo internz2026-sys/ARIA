@@ -58,6 +58,21 @@ async def list_contacts(tenant_id: str, search: str = "", status: str = "", page
     return crm_service.list_contacts(tenant_id, search, status, page, page_size)
 
 
+@router.get("/contacts/by-email")
+async def find_contact_by_email(tenant_id: str, email: str = ""):
+    """Look up a CRM contact by email (case-insensitive). Returns
+    {contact: <row>} when found, {contact: null} when not — never
+    raises 404 so the caller can branch in one shot without a try/catch.
+
+    Used by the Conversations page to switch between 'Add to CRM' and
+    'View in CRM' affordances per thread. Path is BEFORE
+    /contacts/{contact_id} so FastAPI doesn't route 'by-email' as an
+    {contact_id} param.
+    """
+    contact = crm_service.find_contact_by_email(tenant_id, email)
+    return {"contact": contact}
+
+
 @router.get("/contacts/{contact_id}")
 async def get_contact(tenant_id: str, contact_id: str):
     return crm_service.get_contact(tenant_id, contact_id)

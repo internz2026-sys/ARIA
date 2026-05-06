@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import { emailThreads, inbox } from "@/lib/api";
+import { emailThreads, inbox, crm as crmApi } from "@/lib/api";
+import { useNotifications } from "@/lib/use-notifications";
 import { formatDateAgo } from "@/lib/utils";
 import { useViewToggle } from "@/lib/use-view-toggle";
 
@@ -73,6 +74,16 @@ export default function ConversationsPage() {
   const [sendingReply, setSendingReply] = useState(false);
   const [replyError, setReplyError] = useState("");
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // CRM cross-link state. When a thread has at least one inbound
+  // message, we surface either an "Add to CRM" button (if the contact
+  // isn't yet a CRM row) or an "In CRM" link (if they are). The lookup
+  // is per-thread; when the user picks a different thread we re-query
+  // because the contact_email is different.
+  const [crmContact, setCrmContact] = useState<{ id: string; name?: string; email?: string } | null>(null);
+  const [crmChecking, setCrmChecking] = useState(false);
+  const [crmAdding, setCrmAdding] = useState(false);
+  const { showToast } = useNotifications();
 
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
@@ -178,6 +189,58 @@ export default function ConversationsPage() {
       setMessages([]);
     }
     setThreadLoading(false);
+
+    // Reset CRM lookup state on every thread switch and refetch only
+    // when the new thread actually has an inbound message — otherwise
+    // we'd render an Add-to-CRM button for outbound-only drafts.
+    setCrmContact(null);
+    if (thread.contact_email) {
+      setCrmChecking(true);
+      try {
+        const res = await crmApi.findContactByEmail(tenantId, thread.contact_email);
+        setCrmContact(res?.contact || null);
+      } catch {
+        setCrmContact(null);
+      } finally {
+        setCrmChecking(false);
+      }
+    }
+  };
+
+  // Wire up the add-to-CRM action. Pre-fills name from the email's
+  // local-part (no LLM call — the CRM page already lets the user edit
+  // the name afterwards if they want a friendlier display value).
+  // Marks source='email' so the CRM dashboard's "where leads came from"
+  // breakdown attributes this lead correctly.
+  const handleAddToCrm = async () => {
+    if (!selected?.contact_email || crmAdding || crmContact) return;
+    setCrmAdding(true);
+    try {
+      const inferredName = extractName(selected.contact_email);
+      const res = await crmApi.createContact(tenantId, {
+        name: inferredName,
+        email: selected.contact_email,
+        source: "email",
+        status: "lead",
+      });
+      const created = res?.contact;
+      if (created) {
+        setCrmContact(created);
+        showToast({
+          title: "Added to CRM",
+          body: `${inferredName} saved as a lead`,
+          variant: "success",
+        });
+      }
+    } catch (err: any) {
+      showToast({
+        title: "Couldn't add to CRM",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    } finally {
+      setCrmAdding(false);
+    }
   };
 
   const handleSendReply = async () => {
@@ -479,6 +542,42 @@ export default function ConversationsPage() {
                         </svg>
                         {draftLoading ? "Generating..." : "Draft with AI"}
                       </button>
+
+                      {/* CRM cross-link. Shows only when the thread has at
+                          least one inbound message — outbound-only drafts
+                          don't represent a real lead yet. After lookup
+                          completes, either offers Add to CRM or links to
+                          the existing contact. */}
+                      {messages.some(m => m.direction === "inbound") && !crmChecking && (
+                        crmContact ? (
+                          <a
+                            href={`/crm?tab=contacts&id=${crmContact.id}`}
+                            title={`Already in CRM as ${crmContact.name || crmContact.email}`}
+                            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                            </svg>
+                            In CRM
+                          </a>
+                        ) : (
+                          <button
+                            onClick={handleAddToCrm}
+                            disabled={crmAdding}
+                            title={`Save ${selected.contact_email} as a lead`}
+                            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors disabled:opacity-50"
+                          >
+                            {crmAdding ? (
+                              <div className="w-3.5 h-3.5 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z" />
+                              </svg>
+                            )}
+                            {crmAdding ? "Adding..." : "Add to CRM"}
+                          </button>
+                        )
+                      )}
                     </div>
                   </div>
 

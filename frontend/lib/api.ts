@@ -146,6 +146,8 @@ export const crm = {
     return fetchAPI(`/api/crm/${tenantId}/contacts?${p.toString()}`);
   },
   getContact: (tenantId: string, id: string) => fetchAPI(`/api/crm/${tenantId}/contacts/${id}`),
+  findContactByEmail: (tenantId: string, email: string) =>
+    fetchAPI(`/api/crm/${tenantId}/contacts/by-email?email=${encodeURIComponent(email)}`),
   createContact: (tenantId: string, data: CrmContactData) =>
     fetchAPI(`/api/crm/${tenantId}/contacts`, { method: "POST", body: JSON.stringify(data) }),
   updateContact: (tenantId: string, id: string, data: Partial<CrmContactData>) =>

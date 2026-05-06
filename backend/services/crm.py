@@ -36,6 +36,29 @@ def get_contact(tenant_id: str, contact_id: str) -> dict:
     return result.data or {}
 
 
+def find_contact_by_email(tenant_id: str, email: str) -> dict | None:
+    """Return the first crm_contacts row whose email matches `email`
+    (case-insensitive) for this tenant, or None.
+
+    Used by the Conversations page to decide whether to render an
+    'Add to CRM' button or 'View in CRM' link for the thread's
+    contact_email.
+    """
+    addr = (email or "").strip().lower()
+    if not addr:
+        return None
+    sb = get_db()
+    res = (
+        sb.table("crm_contacts")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .ilike("email", addr)
+        .limit(1)
+        .execute()
+    )
+    return (res.data or [None])[0]
+
+
 def create_contact(tenant_id: str, data: dict) -> dict:
     sb = get_db()
     row = {"tenant_id": tenant_id, **data}
