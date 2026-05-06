@@ -4,7 +4,7 @@ const sections = [
   {
     icon: Eye,
     title: "1. Introduction",
-    content: `ARIA ("we", "our", "us") is an AI-powered marketing platform that helps developer founders grow their businesses. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our platform and related services.\n\nBy using ARIA, you agree to the collection and use of information in accordance with this policy. If you do not agree, please do not use the platform.`,
+    content: `ARIA ("we", "our", "us") is an AI-powered marketing platform that helps developer founders grow their businesses. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our platform at aria.hoversight.agency and related services.\n\nBy using ARIA, you agree to the collection and use of information in accordance with this policy. If you do not agree, please do not use the platform.`,
   },
   {
     icon: Database,
@@ -12,15 +12,21 @@ const sections = [
     subsections: [
       {
         subtitle: "Account Information",
-        items: ["Name and email address", "Business name and description", "Product information and target audience details", "Brand voice preferences"],
+        items: ["Name and email address", "Business name and description", "Product information and target audience details", "Brand voice preferences", "Authentication credentials (managed by Supabase Auth)"],
       },
       {
-        subtitle: "Connected Services Data",
+        subtitle: "Google Account Data (when connected)",
         items: [
-          "Gmail: Ability to send emails and read inbox for reply drafting. We access email content only to draft replies and send approved messages on your behalf.",
-          "X/Twitter: Ability to post tweets on your behalf. We access your profile information and posting permissions.",
-          "LinkedIn: Ability to publish posts to your profile or company pages. We access your profile and organization admin status.",
-          "WhatsApp: Ability to send and receive business messages. We store your WhatsApp Business API credentials.",
+          "Basic profile: name, email address, profile picture (via Sign in with Google)",
+          "Gmail (gmail.send scope only): permission to send email on your behalf when you explicitly approve a draft. We do NOT read your inbox, do NOT access your message contents, and do NOT have any other Gmail access.",
+        ],
+      },
+      {
+        subtitle: "Other Connected Services (optional, when authorized)",
+        items: [
+          "X/Twitter: ability to post tweets on your behalf (only after explicit approval). We access your profile information and posting permissions.",
+          "LinkedIn: ability to publish posts to your profile or company pages (only after explicit approval). We access your profile and organization admin status.",
+          "WhatsApp Business API: ability to send and receive business messages. We store the credentials you provide.",
         ],
       },
       {
@@ -30,6 +36,7 @@ const sections = [
           "Chat conversation history with the CEO agent",
           "API usage metrics (requests, tokens consumed)",
           "CRM data you create (contacts, companies, deals)",
+          "Marketing content you create or approve",
         ],
       },
     ],
@@ -39,43 +46,68 @@ const sections = [
     title: "3. How We Use Your Information",
     items: [
       "Provide, operate, and maintain the ARIA platform",
-      "Generate personalized marketing content, strategies, and recommendations",
-      "Send emails, publish social posts, and execute marketing actions you approve",
-      "Improve our AI agents and the quality of generated content",
+      "Generate personalized marketing content, strategies, and recommendations using AI",
+      "Send emails, publish social posts, and execute marketing actions you have explicitly approved",
       "Communicate with you about your account and platform updates",
       "Ensure platform security and prevent abuse",
+      "Improve the quality of our AI-generated outputs based on aggregated, anonymized usage patterns",
+    ],
+  },
+  {
+    icon: Shield,
+    title: "4. Google User Data — Limited Use Disclosure",
+    content: "ARIA's use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements:",
+    items: [
+      "We use Google user data only to provide or improve user-facing features prominent in ARIA (Sign in with Google for authentication, gmail.send for sending approved marketing emails on your behalf).",
+      "We do not transfer Google user data to third parties except as necessary to provide or improve those user-facing features, to comply with applicable law, or as part of a merger / acquisition / sale of assets with continued protections.",
+      "We do not use Google user data to serve advertising, including retargeting, personalized, or interest-based advertising.",
+      "We do not allow humans to read your Google user data unless we have your explicit affirmative consent for specific messages, it is necessary for security purposes (such as investigating abuse), or it is required by law.",
+      "We do not use Google user data to train, develop, or improve generalized AI / ML models.",
     ],
   },
   {
     icon: Globe,
-    title: "4. How We Share Your Information",
-    content: "We do not sell your personal information. We share data only with:",
+    title: "5. How We Share Your Information",
+    content: "We do not sell your personal information. We share data only with the following service providers, each acting as a processor under our instructions:",
     items: [
-      "Service providers: Supabase (database), Anthropic (AI processing), Vercel (hosting), Railway (backend hosting)",
-      "Connected platforms: Only when you explicitly authorize actions (e.g., posting a tweet, sending an email)",
-      "Legal requirements: When required by law or to protect our rights",
+      "Supabase (database, authentication) — hosts your account data, CRM rows, and content library",
+      "Anthropic (Claude AI) — processes your prompts to generate marketing content; Anthropic does not train on your data per their Commercial Terms",
+      "Hostinger (cloud infrastructure) — hosts the ARIA platform on a virtual private server",
+      "Resend (transactional email) — delivers approved emails you send via ARIA",
+      "Postmark (inbound email parsing) — receives reply emails routed back to your ARIA inbox",
+      "Pollinations.ai / Google Gemini (image generation) — generates marketing images based on your prompts",
+      "Qdrant (vector search) — stores embeddings of your content for semantic recall",
+      "Connected platforms (Gmail / Google, X/Twitter, LinkedIn, WhatsApp) — only when you explicitly authorize an action",
+      "Legal requirements — when required by law or to protect our rights, your safety, or the rights of others",
     ],
   },
   {
     icon: Lock,
-    title: "5. Data Security",
+    title: "6. Data Security",
     content: "We implement industry-standard security measures including:",
     items: [
-      "JWT-based authentication on all API endpoints",
-      "Tenant isolation — users can only access their own data",
-      "CORS restrictions to authorized domains",
-      "Rate limiting to prevent abuse",
-      "OAuth 2.0 for all third-party integrations (no passwords stored)",
-      "HTTPS encryption for all data in transit",
+      "JWT-based authentication on all API endpoints, with per-tenant authorization checks on every request",
+      "Tenant isolation — users can only access data belonging to their own tenant",
+      "CORS restrictions to authorized origins only",
+      "Per-tenant + per-IP rate limiting (Redis-backed) to prevent abuse",
+      "OAuth 2.0 for all third-party integrations — we never see or store your provider passwords",
+      "HMAC signature verification on all inbound webhooks (Stripe, Postmark, Resend, etc.)",
+      "HTTPS / TLS encryption for all data in transit",
+      "Logging redaction filters to prevent secrets leaking into server logs",
+      "Container-level privilege separation — backend services run as non-root",
     ],
     footer: "While we strive to protect your data, no method of electronic transmission or storage is 100% secure.",
   },
   {
     icon: Globe,
-    title: "6. Third-Party Services",
-    content: "ARIA integrates with third-party services that have their own privacy policies. We encourage you to review:",
+    title: "7. Third-Party Privacy Policies",
+    content: "ARIA integrates with third-party services that have their own privacy policies. We encourage you to review them:",
     links: [
       { label: "Google Privacy Policy", href: "https://policies.google.com/privacy" },
+      { label: "Anthropic Privacy Policy", href: "https://www.anthropic.com/legal/privacy" },
+      { label: "Supabase Privacy Policy", href: "https://supabase.com/privacy" },
+      { label: "Resend Privacy Policy", href: "https://resend.com/legal/privacy-policy" },
+      { label: "Postmark Privacy Policy", href: "https://postmarkapp.com/privacy-policy" },
       { label: "X/Twitter Privacy Policy", href: "https://x.com/en/privacy" },
       { label: "LinkedIn Privacy Policy", href: "https://www.linkedin.com/legal/privacy-policy" },
       { label: "WhatsApp Privacy Policy", href: "https://www.whatsapp.com/legal/privacy-policy" },
@@ -83,41 +115,44 @@ const sections = [
   },
   {
     icon: Clock,
-    title: "7. Data Retention",
-    content: "We retain your data for as long as your account is active or as needed to provide services. You may request deletion of your account and associated data at any time by contacting us. Upon deletion request, we will remove your data within 30 days, except where retention is required by law.",
+    title: "8. Data Retention",
+    content: "We retain your data for as long as your account is active or as needed to provide services. You may request deletion of your account and associated data at any time by contacting us at the address below. Upon a verified deletion request, we will remove your personal data and Google user data within 30 days, except where retention is required by applicable law (e.g., financial records, abuse-investigation logs). Aggregated, fully anonymized data may be retained for analytics.",
   },
   {
     icon: UserCheck,
-    title: "8. Your Rights",
+    title: "9. Your Rights",
+    content: "Depending on your jurisdiction (including the EU/EEA under GDPR and California under CCPA), you may have the following rights:",
     items: [
-      "Access your personal data",
-      "Correct inaccurate data",
-      "Delete your account and data",
-      "Disconnect any third-party integration at any time",
-      "Export your data",
-      "Withdraw consent for data processing",
+      "Access your personal data we hold",
+      "Correct inaccurate or incomplete data",
+      "Delete your account and associated data",
+      "Disconnect any third-party integration at any time from Settings",
+      "Export your data in a machine-readable format",
+      "Withdraw consent for data processing where consent is the legal basis",
+      "Lodge a complaint with your local data protection authority",
+      "Revoke ARIA's access to your Google account at any time via your Google Account settings: https://myaccount.google.com/permissions",
     ],
   },
   {
     icon: Cookie,
-    title: "9. Cookies",
-    content: "We use essential cookies and local storage for authentication and session management. We do not use tracking cookies or third-party advertising cookies.",
+    title: "10. Cookies and Local Storage",
+    content: "We use essential cookies and browser local storage for authentication, session management, and remembering your preferences within the dashboard. We do not use tracking cookies, behavioral profiling cookies, or third-party advertising cookies.",
   },
   {
     icon: Baby,
-    title: "10. Children's Privacy",
-    content: "ARIA is not intended for users under the age of 18. We do not knowingly collect personal information from children.",
+    title: "11. Children's Privacy",
+    content: "ARIA is not intended for users under the age of 18 and is targeted at business operators / founders. We do not knowingly collect personal information from children. If we learn that we have collected personal data from a person under 18, we will delete it.",
   },
   {
     icon: Bell,
-    title: "11. Changes to This Policy",
-    content: 'We may update this Privacy Policy from time to time. We will notify you of any material changes by posting the new policy on this page and updating the "Last updated" date.',
+    title: "12. Changes to This Policy",
+    content: 'We may update this Privacy Policy from time to time to reflect changes in our practices or for legal / regulatory reasons. We will notify you of any material changes by posting the new policy on this page and updating the "Last updated" date below. For significant changes, we will additionally notify registered users by email.',
   },
   {
     icon: Mail,
-    title: "12. Contact Us",
-    content: "If you have questions about this Privacy Policy, please contact us at:",
-    contact: "support@aria.ai",
+    title: "13. Contact Us",
+    content: "If you have questions about this Privacy Policy, want to exercise any of your rights, or wish to request data deletion, please contact us at:",
+    contact: "accounts@zillamedia.co",
   },
 ];
 
@@ -131,7 +166,7 @@ export default function PrivacyPolicyPage() {
             <Shield className="w-7 h-7 text-white" />
           </div>
           <h1 className="text-4xl font-bold mb-3">Privacy Policy</h1>
-          <p className="text-[#9E9C95] text-sm">Last updated: April 1, 2026</p>
+          <p className="text-[#9E9C95] text-sm">Last updated: May 6, 2026</p>
         </div>
       </div>
 

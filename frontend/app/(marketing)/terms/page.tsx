@@ -4,7 +4,7 @@ const sections = [
   {
     icon: FileText,
     title: "1. Acceptance of Terms",
-    content: 'By accessing or using ARIA ("the Platform"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, do not use the Platform. ARIA is operated by ARIA Technologies ("we", "our", "us").',
+    content: 'By accessing or using ARIA at aria.hoversight.agency ("the Platform"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, do not use the Platform. ARIA is operated by Hoversight ("we", "our", "us"). For questions about these Terms, contact us at accounts@zillamedia.co.',
   },
   {
     icon: Bot,
@@ -78,12 +78,11 @@ const sections = [
     icon: CreditCard,
     title: "8. Subscription and Payments",
     items: [
-      "ARIA offers subscription plans with different feature tiers",
-      "Payments are processed securely through Stripe",
-      "Subscriptions renew automatically unless cancelled",
-      "You may cancel your subscription at any time; access continues until the end of the billing period",
-      "Refunds are handled on a case-by-case basis",
-      "We reserve the right to change pricing with 30 days' notice",
+      "ARIA may offer subscription plans with different feature tiers in the future",
+      "If and when paid plans are introduced, payments will be processed by a PCI-compliant third-party payment processor (e.g. Stripe); ARIA does not store full credit card numbers",
+      "Subscription terms, renewal, cancellation, and refund policies will be presented at the point of purchase",
+      "We reserve the right to change pricing with 30 days' notice to active subscribers",
+      "During the current early-access / waitlist period, the Platform may be provided free of charge while we collect feedback",
     ],
   },
   {
@@ -146,7 +145,7 @@ const sections = [
     icon: Mail,
     title: "17. Contact Us",
     content: "If you have questions about these Terms of Service, please contact us at:",
-    contact: "support@aria.ai",
+    contact: "accounts@zillamedia.co",
   },
 ];
 
@@ -160,7 +159,7 @@ export default function TermsOfServicePage() {
             <FileText className="w-7 h-7 text-white" />
           </div>
           <h1 className="text-4xl font-bold mb-3">Terms of Service</h1>
-          <p className="text-[#9E9C95] text-sm">Last updated: April 1, 2026</p>
+          <p className="text-[#9E9C95] text-sm">Last updated: May 6, 2026</p>
         </div>
       </div>
 
