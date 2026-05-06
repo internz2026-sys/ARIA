@@ -284,33 +284,50 @@ export default function CRMPage() {
   const [pipelineSummary, setPipelineSummary] = useState<Record<string, { count: number; value: number }>>({});
 
   // ─── Deep-link highlight ───
-  // Defer the highlight + scroll until the matching row is actually
-  // in state, otherwise the 1800ms timer races the data fetch and the
-  // highlight expires before the row mounts (caught in 2026-05-06
-  // Playwright run — agent saw the row but no ring class). Re-arms
-  // when the user navigates back via /crm?id=... after loading other
-  // tabs. The 3s window is long enough for the user to spot the row
-  // post-scroll without becoming a permanent visual decoration.
+  // Polls the DOM for the [data-crm-row="<id>"] element to appear,
+  // then applies the ring + scrolls into view. DOM polling is the
+  // robust path here — the previous effect depended on
+  // [deepLinkId, contacts, companies, deals] but that broke under
+  // client-side navigation (badge click from Conversations) when
+  // the contacts array reference didn't change between renders, so
+  // the effect never re-fired. Polling sidesteps state-shape
+  // assumptions entirely.
+  //
+  // Up to 5s of polling at 150ms intervals — covers the common case
+  // (50–500ms for the first contacts page to land) plus a buffer for
+  // slow networks. Highlight then visibly pulses for 3s before
+  // clearing.
   useEffect(() => {
     if (!deepLinkId) return;
-    const inLoaded =
-      contacts.some(c => c.id === deepLinkId) ||
-      companies.some(c => c.id === deepLinkId) ||
-      deals.some(d => d.id === deepLinkId);
-    if (!inLoaded) return;
-    setHighlightedId(deepLinkId);
-    const raf = requestAnimationFrame(() => {
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let clearTimer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+
+    const tryHighlight = () => {
+      if (cancelled) return;
       const el = document.querySelector(`[data-crm-row="${deepLinkId}"]`);
-      if (el && typeof (el as any).scrollIntoView === "function") {
+      if (!el) {
+        if (Date.now() - startedAt > 5000) return; // give up after 5s
+        pollTimer = setTimeout(tryHighlight, 150);
+        return;
+      }
+      setHighlightedId(deepLinkId);
+      if (typeof (el as any).scrollIntoView === "function") {
         (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
       }
-    });
-    const t = setTimeout(() => setHighlightedId(null), 3000);
-    return () => {
-      cancelAnimationFrame(raf);
-      clearTimeout(t);
+      clearTimer = setTimeout(() => {
+        if (!cancelled) setHighlightedId(null);
+      }, 3000);
     };
-  }, [deepLinkId, contacts, companies, deals]);
+
+    tryHighlight();
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      if (clearTimer) clearTimeout(clearTimer);
+    };
+  }, [deepLinkId]);
 
   // ─── Debounce search inputs (300ms) ───
   useEffect(() => {
