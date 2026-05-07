@@ -772,13 +772,12 @@ app.add_middleware(
 # previously trusted attacker-supplied user_id from the request, which
 # defeated the /start hardening. user_id is now derived from the JWT.
 #
-# KNOWN GAP: /api/onboarding/save-config-direct is still public. It needs
-# its own audit pass (it writes a tenant config without a session round-
-# trip, so the JWT-binding pattern needs more thought). Tracked separately
-# from this batch — do not regress by adding new public endpoints here.
+# /api/onboarding/save-config-direct was the last public onboarding endpoint
+# and was locked down on 2026-05-07 — owner_email is now derived from the
+# JWT email claim, and writes against an existing_tenant_id verify ownership
+# before overwriting. Body's owner_email field is ignored.
 _PUBLIC_PATHS = {
     "/health",
-    "/api/onboarding/save-config-direct",  # TODO(security): still public — known gap, audit separately
     "/api/whatsapp/webhook",
     "/api/cron/run-scheduled",
 }
@@ -2609,9 +2608,14 @@ async def save_config(body: SaveConfig, user_id: str = Depends(get_user_id_from_
 
 class SaveConfigDirect(BaseModel):
     """Accept the raw extracted config JSON (cached on the frontend) to save
-    directly — no backend session needed."""
+    directly — no backend session needed.
+
+    NOTE: any client-supplied owner_email is IGNORED — owner_email is derived
+    from the JWT email claim. Field kept for backwards-compat with existing
+    frontend code that still sends it (and so 4xx-on-extra isn't tripped).
+    """
     config: dict
-    owner_email: str
+    owner_email: str | None = None  # ignored — derived from JWT
     owner_name: str
     active_agents: list[str] | None = None
     skipped_topics: list[str] | None = None
@@ -2619,11 +2623,40 @@ class SaveConfigDirect(BaseModel):
 
 
 @app.post("/api/onboarding/save-config-direct")
-async def save_config_direct(body: SaveConfigDirect):
+async def save_config_direct(
+    body: SaveConfigDirect,
+    request: Request,
+):
+    """Save a tenant config directly from the cached frontend extraction.
+
+    JWT-bound (2026-05-07): owner_email is derived from the JWT email claim,
+    NOT trusted from the request body. Previously this endpoint was public
+    and accepted whatever owner_email the client sent, which let any caller
+    overwrite any user's tenant config (or impersonate a brand-new tenant
+    under someone else's email). Now:
+
+      - owner_email comes from the JWT (`email` claim)
+      - if existing_tenant_id is set, the JWT user must own that tenant
+        (ownership check via `get_verified_tenant`)
+    """
     from backend.config.tenant_schema import (
         TenantConfig, ICPConfig, ProductConfig, GTMPlaybook, BrandVoice, GTMProfile,
     )
     from backend.config.brief import generate_agent_brief
+
+    # Derive owner identity from the JWT — ignore body fields entirely.
+    user = await get_current_user(request)
+    jwt_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
+    if not jwt_email:
+        # Dev-mode fallthrough has email="dev@localhost"; real prod tokens
+        # always carry an email claim. If we got here without one, fail.
+        raise HTTPException(status_code=401, detail="Invalid token: no email claim")
+
+    # If the caller is overwriting an existing tenant, verify ownership
+    # before letting them clobber it. Reuses the same predicate everything
+    # else in the system uses (`tenant_configs.owner_email` match).
+    if body.existing_tenant_id:
+        await get_verified_tenant(request, body.existing_tenant_id)
 
     extracted = body.config
     has_skips = bool(body.skipped_topics)
@@ -2659,7 +2692,7 @@ async def save_config_direct(body: SaveConfigDirect):
         active_agents=body.active_agents or extracted.get("recommended_agents", ["ceo", "content_writer"]),
         channels=extracted.get("channels", []),
         gtm_profile=gtm_profile,
-        owner_email=body.owner_email,
+        owner_email=jwt_email,
         owner_name=body.owner_name,
         plan="starter",
         onboarding_status="completed" if not has_skips else "in_progress",
