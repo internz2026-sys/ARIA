@@ -126,6 +126,57 @@ async def admin_set_status(target_user_id: str, request: Request):
     return result
 
 
+@router.post("/users/{target_user_id}/ban")
+async def admin_ban_user(target_user_id: str, request: Request):
+    """Auth-layer ban — revokes login at Supabase. Body:
+    { "duration_hours": int (default 8760), "reason": "..." (optional) }.
+
+    Distinct from /status (pause/suspend), which is a soft middleware
+    gate that still allows login. This calls Supabase Auth Admin so the
+    user can't sign in or refresh an existing session.
+
+    Server-side guards (also in profiles_service.ban_user):
+      - admin can only ban role='user'
+      - only super_admin can ban another admin
+      - users can never ban themselves (anti-lockout)
+    """
+    actor_id, actor_role = _actor_from_request(request)
+    body = await request.json() or {}
+    duration_hours = body.get("duration_hours", 8760)
+    reason = (body.get("reason") or "").strip()
+
+    result = profiles_service.ban_user(
+        target_user_id=target_user_id,
+        actor_role=actor_role,
+        actor_id=actor_id,
+        duration_hours=duration_hours,
+        reason=reason,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=403, detail=result.get("error") or "Forbidden")
+    return result
+
+
+@router.post("/users/{target_user_id}/unban")
+async def admin_unban_user(target_user_id: str, request: Request):
+    """Lift an auth-layer ban — restores login for the target user.
+
+    Server-side guards (also in profiles_service.unban_user):
+      - admin can only unban role='user'
+      - only super_admin can unban another admin
+      - users can never unban themselves
+    """
+    actor_id, actor_role = _actor_from_request(request)
+    result = profiles_service.unban_user(
+        target_user_id=target_user_id,
+        actor_role=actor_role,
+        actor_id=actor_id,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=403, detail=result.get("error") or "Forbidden")
+    return result
+
+
 @router.post("/users/{target_user_id}/reset-password")
 async def admin_reset_password(target_user_id: str, request: Request):
     """Trigger a password recovery email for the target user. Supabase

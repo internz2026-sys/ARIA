@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from backend.services.supabase import get_db
@@ -228,7 +229,7 @@ def list_profiles(
         sb = get_db()
         q = (
             sb.table("profiles")
-            .select("user_id, email, full_name, role, status, created_at, updated_at")
+            .select("user_id, email, full_name, role, status, banned_at, created_at, updated_at")
             .order("created_at", desc=True)
             .range(offset, offset + max(0, limit - 1))
         )
@@ -472,6 +473,143 @@ def delete_user(*, target_user_id: str, actor_role: str, actor_id: str) -> dict:
         actor_id, actor_role, target_user_id, target_email or "no-email", cleanup,
     )
     return {"ok": True, "email": target_email, "cleanup": cleanup}
+
+
+_DEFAULT_BAN_HOURS = 8760  # one year — Supabase's recommended "indefinite" sentinel
+_MAX_BAN_HOURS = 24 * 365 * 10  # 10 years; defensive upper bound on caller input
+
+
+def ban_user(*, target_user_id: str, actor_role: str, actor_id: str, duration_hours: int = _DEFAULT_BAN_HOURS, reason: str = "") -> dict:
+    """Ban a user at the Supabase auth layer (revokes login).
+
+    Unlike `set_user_status` (a soft pause that still allows login),
+    this calls `auth.admin.update_user_by_id` with a `ban_duration` so
+    Supabase rejects new sign-ins and invalidates existing sessions on
+    the next refresh. The default duration is 8760h (one year) per the
+    spec — Supabase has no true "forever" so we use a long sentinel.
+
+    We also stamp `profiles.banned_at = now()` so the admin UI can
+    render a Banned badge without having to call the Auth Admin API on
+    every page load (and so list views can sort/filter on it).
+
+    Guards mirror set_user_status (and the other admin mutations):
+      - actor must be admin or super_admin
+      - admin can only ban role='user'; only super_admin may ban another admin
+      - users can never ban themselves (anti-lockout)
+    """
+    if not target_user_id:
+        return {"ok": False, "error": "target_user_id required"}
+    if not is_admin(actor_role):
+        return {"ok": False, "error": "Forbidden"}
+    if target_user_id == actor_id:
+        return {"ok": False, "error": "You can't ban your own account"}
+
+    try:
+        hours = int(duration_hours) if duration_hours is not None else _DEFAULT_BAN_HOURS
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "duration_hours must be an integer"}
+    if hours <= 0:
+        return {"ok": False, "error": "duration_hours must be positive"}
+    if hours > _MAX_BAN_HOURS:
+        hours = _MAX_BAN_HOURS
+
+    target_role = get_user_role(target_user_id)
+    if not is_super_admin(actor_role) and target_role != "user":
+        return {"ok": False, "error": "Only a super_admin can ban another admin"}
+
+    sb = get_db()
+
+    # 1. Auth-layer ban via the Admin API. Supabase accepts a duration
+    #    string like "8760h" — this is the gate that actually prevents
+    #    login. Failures here are fatal: we don't update the profile
+    #    row if auth wasn't actually banned (otherwise the badge lies).
+    try:
+        sb.auth.admin.update_user_by_id(
+            target_user_id,
+            {"ban_duration": f"{hours}h"},
+        )
+    except Exception as e:
+        logger.error("[profiles] ban_user (auth update) failed for %s: %s", target_user_id, e)
+        return {"ok": False, "error": "Could not ban user at auth layer"}
+
+    banned_at = datetime.now(timezone.utc)
+    banned_until = banned_at + timedelta(hours=hours)
+
+    # 2. Mirror the ban onto the profiles row so the admin UI sees it
+    #    without a separate Auth Admin call. Non-fatal — auth is the
+    #    source of truth for whether login works; this column is just a
+    #    badge hint.
+    try:
+        sb.table("profiles").upsert(
+            {"user_id": target_user_id, "banned_at": banned_at.isoformat()},
+            on_conflict="user_id",
+        ).execute()
+    except Exception as e:
+        logger.warning("[profiles] ban_user profile upsert failed (auth ban succeeded): %s", e)
+
+    # The status cache is keyed on the `status` column which we don't
+    # touch here, but invalidating role/status caches keeps any future
+    # gate that consults them from serving stale data after a ban.
+    invalidate_status_cache(target_user_id)
+
+    logger.warning(
+        "[admin] %s (%s) BANNED user %s for %sh%s",
+        actor_id, actor_role, target_user_id, hours,
+        f" (reason: {reason})" if reason else "",
+    )
+    return {
+        "ok": True,
+        "banned_until": banned_until.isoformat(),
+        "duration_hours": hours,
+    }
+
+
+def unban_user(*, target_user_id: str, actor_role: str, actor_id: str) -> dict:
+    """Lift an auth-layer ban — restores login for the target user.
+
+    Supabase's convention is to set `ban_duration: "none"` to clear an
+    existing ban. We also clear `profiles.banned_at` so the badge
+    disappears from the admin UI.
+
+    Guards mirror ban_user:
+      - actor must be admin or super_admin
+      - admin can only unban role='user'; only super_admin may unban another admin
+      - users can never unban themselves (no-op anyway — they can't log in)
+    """
+    if not target_user_id:
+        return {"ok": False, "error": "target_user_id required"}
+    if not is_admin(actor_role):
+        return {"ok": False, "error": "Forbidden"}
+    if target_user_id == actor_id:
+        return {"ok": False, "error": "You can't unban your own account"}
+
+    target_role = get_user_role(target_user_id)
+    if not is_super_admin(actor_role) and target_role != "user":
+        return {"ok": False, "error": "Only a super_admin can unban another admin"}
+
+    sb = get_db()
+
+    try:
+        sb.auth.admin.update_user_by_id(
+            target_user_id,
+            {"ban_duration": "none"},
+        )
+    except Exception as e:
+        logger.error("[profiles] unban_user (auth update) failed for %s: %s", target_user_id, e)
+        return {"ok": False, "error": "Could not unban user at auth layer"}
+
+    try:
+        sb.table("profiles").upsert(
+            {"user_id": target_user_id, "banned_at": None},
+            on_conflict="user_id",
+        ).execute()
+    except Exception as e:
+        logger.warning("[profiles] unban_user profile upsert failed (auth unban succeeded): %s", e)
+
+    invalidate_status_cache(target_user_id)
+
+    logger.warning("[admin] %s (%s) UNBANNED user %s", actor_id, actor_role, target_user_id)
+    return {"ok": True}
 
 
 def list_recent_agent_logs(limit: int = 50) -> list[dict]:
