@@ -168,8 +168,25 @@ async def get_current_user(request: Request) -> dict:
     """
     secret = _get_jwt_secret()
 
-    # If JWT secret is not configured, allow unauthenticated access (dev mode)
+    # If JWT secret is not configured, allow unauthenticated access (dev mode).
+    #
+    # Audit fix 2026-05-07 (HIGH): refuse to fall through to "dev-user" in
+    # production. Previously this branch fired regardless of environment,
+    # so a misconfigured prod deploy (env var typo, secret rotation lost
+    # the value, etc.) would silently allow every request through as the
+    # synthetic dev-user — a complete auth bypass. Now we hard-fail with
+    # 500 in prod so the misconfiguration is loud instead of silent.
     if not secret:
+        env = os.environ.get("ARIA_ENV", "").lower()
+        if env in ("prod", "production"):
+            logger.error(
+                "SUPABASE_JWT_SECRET unset in ARIA_ENV=%s — refusing dev-mode fallthrough",
+                env,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Auth misconfigured: SUPABASE_JWT_SECRET required in production",
+            )
         return {"sub": "dev-user", "email": "dev@localhost", "role": "authenticated"}
 
     token = _extract_token(request)
