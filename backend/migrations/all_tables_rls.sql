@@ -116,8 +116,8 @@ create policy agent_logs_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -128,8 +128,8 @@ create policy agent_logs_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -140,15 +140,15 @@ create policy agent_logs_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -159,8 +159,8 @@ create policy agent_logs_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -182,8 +182,8 @@ create policy inbox_items_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -194,8 +194,8 @@ create policy inbox_items_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -206,15 +206,15 @@ create policy inbox_items_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -225,8 +225,8 @@ create policy inbox_items_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -248,8 +248,8 @@ create policy email_threads_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -260,8 +260,8 @@ create policy email_threads_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -272,15 +272,15 @@ create policy email_threads_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -291,8 +291,8 @@ create policy email_threads_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -314,8 +314,8 @@ create policy email_messages_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -326,8 +326,8 @@ create policy email_messages_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -338,15 +338,15 @@ create policy email_messages_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -357,8 +357,8 @@ create policy email_messages_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -380,8 +380,8 @@ create policy crm_contacts_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -392,8 +392,8 @@ create policy crm_contacts_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -404,15 +404,15 @@ create policy crm_contacts_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -423,8 +423,8 @@ create policy crm_contacts_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -446,8 +446,8 @@ create policy crm_companies_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -458,8 +458,8 @@ create policy crm_companies_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -470,15 +470,15 @@ create policy crm_companies_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -489,8 +489,8 @@ create policy crm_companies_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -512,8 +512,8 @@ create policy crm_deals_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -524,8 +524,8 @@ create policy crm_deals_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -536,15 +536,15 @@ create policy crm_deals_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -555,8 +555,8 @@ create policy crm_deals_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -578,8 +578,8 @@ create policy crm_activities_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -590,8 +590,8 @@ create policy crm_activities_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -602,15 +602,15 @@ create policy crm_activities_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -621,8 +621,8 @@ create policy crm_activities_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -644,8 +644,8 @@ create policy campaigns_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -656,8 +656,8 @@ create policy campaigns_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -668,15 +668,15 @@ create policy campaigns_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -687,8 +687,8 @@ create policy campaigns_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -710,8 +710,8 @@ create policy campaign_reports_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -722,8 +722,8 @@ create policy campaign_reports_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -734,15 +734,15 @@ create policy campaign_reports_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -753,8 +753,8 @@ create policy campaign_reports_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -776,8 +776,8 @@ create policy notifications_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -788,8 +788,8 @@ create policy notifications_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -800,15 +800,15 @@ create policy notifications_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -819,8 +819,8 @@ create policy notifications_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -842,8 +842,8 @@ create policy tasks_tenant_select
   for select
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -854,8 +854,8 @@ create policy tasks_tenant_insert
   for insert
   to authenticated
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -866,15 +866,15 @@ create policy tasks_tenant_update
   for update
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
   )
   with check (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
@@ -885,8 +885,8 @@ create policy tasks_tenant_delete
   for delete
   to authenticated
   using (
-    tenant_id in (
-      select tc.tenant_id
+    tenant_id::text in (
+      select tc.tenant_id::text
       from public.tenant_configs tc
       where lower(tc.owner_email) = lower(auth.jwt() ->> 'email')
     )
