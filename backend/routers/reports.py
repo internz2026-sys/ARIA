@@ -49,10 +49,22 @@ async def generate_report(tenant_id: str, body: GenerateReportRequest = Generate
             row = await reports_service.generate_state_of_union(tenant_id)
         elif rt == "agent_productivity":
             row = await reports_service.generate_agent_productivity(tenant_id)
+        elif rt == "campaign_roi":
+            from backend.services.reports_campaign_roi import generate_campaign_roi
+            row = await generate_campaign_roi(tenant_id)
+        elif rt == "channel_spend":
+            from backend.services.reports_channel_spend import generate_channel_spend
+            row = await generate_channel_spend(tenant_id)
+        elif rt == "daily_pulse":
+            from backend.services.reports_daily_pulse import generate_daily_pulse
+            row = await generate_daily_pulse(tenant_id)
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unknown report_type '{rt}'. Supported: state_of_union, agent_productivity.",
+                detail=(
+                    f"Unknown report_type '{rt}'. Supported: state_of_union, "
+                    "agent_productivity, campaign_roi, channel_spend, daily_pulse."
+                ),
             )
     except HTTPException:
         raise
