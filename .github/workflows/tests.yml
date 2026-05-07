@@ -41,4 +41,4 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: test-service-role-key
           SUPABASE_ANON_KEY: test-anon-key
         run: |
-          pytest backend/tests/ -v
+          pytest backend/tests/ -v -s --tb=short -o log_cli=true -o log_cli_level=INFO
