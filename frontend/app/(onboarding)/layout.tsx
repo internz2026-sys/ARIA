@@ -48,8 +48,16 @@ export default function OnboardingLayout({ children }: { children: React.ReactNo
           <span className="text-lg font-bold text-[#2C2C2A] tracking-tight">ARIA</span>
         </a>
 
-        {/* Progress dots */}
-        <div className="flex items-center gap-2">
+        {/* Progress dots — desktop only. On mobile the chat panel
+            already renders a "Q8 of 8" progress bar + green answered-
+            topic dots, so the header stepper is redundant noise that
+            takes ~320px and pushes the Exit link off-screen. The fix
+            in 5da31c2 (`whitespace-nowrap` + `<span class="hidden
+            sm:inline">Save & </span>Exit`) shrinks the link text but
+            this stepper had no flex constraint, so even "Exit" got
+            clipped to ~1px on iPhone width. Hiding it on mobile is
+            cleaner than trying to compact it. */}
+        <div className="hidden sm:flex items-center gap-2 min-w-0">
           {steps.map((step, i) => (
             <div key={step.path} className="flex items-center gap-2">
               <div className="flex flex-col items-center">
