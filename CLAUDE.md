@@ -401,7 +401,7 @@ The fix self-heals on every container restart and on every mid-runtime failure. 
 
 ## Production deployment (Hostinger VPS)
 
-The frontend lives in Docker on the VPS (not Vercel — `aria-frontend` is a real container in the stack). Backend auto-deploys via a GitHub webhook the moment you push to `main`.
+The frontend lives in Docker on the VPS (not Vercel — `aria-frontend` is a real container in the stack). Backend auto-deploys after a `git push origin main`, but **only if the `pytest` job in CI passes** — the deploy is gated on a green test run as of 2026-05-08.
 
 ### Stack
 - **VPS:** `72.61.126.188` (hostname `srv1551345`), `/opt/aria` is the checkout
@@ -409,15 +409,20 @@ The frontend lives in Docker on the VPS (not Vercel — `aria-frontend` is a rea
 - **Webhook listener:** [adnanh/webhook](https://github.com/adnanh/webhook) 2.8.0 running on `0.0.0.0:9000`, systemd unit `webhook.service`
 - **Hook config:** `/etc/webhook.conf` — one hook `deploy-aria` that executes `/opt/aria/deploy.sh`, validates `X-Hub-Signature-256` HMAC against secret `absolutemadness`, and requires `ref == refs/heads/main`
 - **Systemd override:** `/etc/systemd/system/webhook.service.d/override.conf` runs webhook with `-hooks /etc/webhook.conf -port 9000 -verbose` so `journalctl -u webhook -f` shows every incoming request
-- **GitHub webhook:** configured on the ARIA repo → Settings → Webhooks → `http://72.61.126.188:9000/hooks/deploy-aria`, content-type `application/json`, secret `absolutemadness`, trigger on `push` only
+- **CI as gatekeeper:** [.github/workflows/tests.yml](.github/workflows/tests.yml) runs `pytest` first; only on green does its `Deploy to VPS` job curl the webhook URL above. Repo secret `VPS_WEBHOOK_SECRET` (= `absolutemadness`) signs the body. The original GitHub repo-level push webhook was deleted on 2026-05-08 as part of the cutover, so there is no longer a direct push-to-deploy path.
 
-### Deploy flow
+### Deploy flow (CI-gated)
 1. `git push origin main` from your laptop
-2. GitHub fires webhook POST to the VPS with HMAC-signed payload
-3. `webhook` binary validates the signature + ref, runs `/opt/aria/deploy.sh`
-4. Deploy script does: `git pull origin main` → `docker compose up -d --build backend frontend`
-5. Redis, qdrant, nginx are left alone (only backend + frontend rebuild)
-6. Typical cycle time: ~4 seconds when nothing changed, ~20-40s for a backend-only edit, ~1-3min if `requirements.txt` / `package.json` changes
+2. GitHub Actions runs the `pytest` job (~30s incl. setup, ~1.25s for the 25 test cases)
+3. **If pytest fails, the deploy job is skipped — the push does NOT ship.** Fix the test, push again.
+4. On green, the `Deploy to VPS` job builds a GitHub-style HMAC-signed payload (`X-Hub-Signature-256: sha256=<hmac>`, `ref: refs/heads/main`) and curls `http://72.61.126.188:9000/hooks/deploy-aria`
+5. The VPS `webhook` binary validates the signature + ref, runs `/opt/aria/deploy.sh`
+6. Deploy script does: `git pull origin main` → `docker compose up -d --build backend frontend`
+7. Redis, qdrant, nginx are left alone (only backend + frontend rebuild)
+8. Typical cycle time: pytest ~30s + deploy 4s (no-op) to ~3min (cold rebuild after `requirements.txt`/`package.json` churn)
+
+### Why CI is the gatekeeper
+Before the gate, a push with a broken backend (e.g. the TS strict mode build error episode) auto-deployed via the webhook and broke prod within ~30s. Now any pre-existing bug in the test suite catches the regression before the curl-to-webhook ever fires. **Never propose adding a "skip CI" toggle or a side-channel deploy** — if a hotfix needs to ship and a test is broken, fix or skip the test in the same commit. The whole point of the gate is that there is no second path.
 
 ### `/opt/aria/deploy.sh` (canonical version — do not let it drift)
 ```bash
