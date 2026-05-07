@@ -88,7 +88,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!session) {
-        router.replace("/login");
+        // Unauthenticated users land on the marketing page, not the
+        // login form — matches the explicit sign-out destination set
+        // in sidebar.tsx / settings/page.tsx. The landing nav still
+        // exposes a Login link one click away.
+        router.replace("/");
         return;
       }
 
@@ -124,7 +128,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!session) {
-        router.replace("/login");
+        // This listener fires immediately after sidebar/settings
+        // signOut() — its router.replace would beat the sign-out
+        // handler's own redirect to '/' otherwise, dumping the user
+        // on /login. Same destination here so both paths agree.
+        router.replace("/");
       }
     });
 
