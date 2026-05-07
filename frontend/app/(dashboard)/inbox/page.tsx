@@ -2182,8 +2182,51 @@ export default function InboxPage() {
 
       {/* Content */}
       {loading ? (
-        <div className="bg-white rounded-xl border border-[#E0DED8] min-h-[400px] flex items-center justify-center">
-          <div className="animate-pulse text-sm text-[#5F5E5A]">Loading inbox...</div>
+        /* Skeleton rows — shown only during initial load (loading=true, items=[]).
+           Each skeleton mirrors the real card shape:
+             row 1: agent-dot + agent-name pill + time-ago chip (right)
+             row 2: title bar + 2-line snippet
+             row 3: type pill + priority dot + status pill
+           Uses animate-pulse + bg-[#F0EFEC] blocks; no extra deps. */
+        <div className="@container/inbox">
+          <div className="flex flex-col @3xl/inbox:flex-row gap-4 @3xl/inbox:min-h-[500px] @3xl/inbox:h-[calc(100dvh-220px)]">
+            <div className="flex w-full @3xl/inbox:w-[380px] shrink-0 flex-col gap-2">
+              {/* Spacer matching the delete-mode toolbar height */}
+              <div className="min-h-[34px]" />
+              <div className="flex-1 space-y-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="animate-pulse flex items-start gap-2 p-4 rounded-xl border border-[#E0DED8] bg-white"
+                  >
+                    <div className="flex-1 min-w-0">
+                      {/* Row 1: agent dot + name pill + time-ago chip */}
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <div className="w-2 h-2 rounded-full bg-[#F0EFEC] shrink-0" />
+                        <div className="h-3 w-20 rounded-full bg-[#F0EFEC]" />
+                        <div className="h-3 w-10 rounded-full bg-[#F0EFEC] ml-auto" />
+                      </div>
+                      {/* Row 2: title + snippet */}
+                      <div className="flex items-start gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="h-4 w-3/4 rounded bg-[#F0EFEC] mb-1.5" />
+                          <div className="h-3 w-full rounded bg-[#F0EFEC] mb-1" />
+                          <div className="h-3 w-2/3 rounded bg-[#F0EFEC]" />
+                        </div>
+                      </div>
+                      {/* Row 3: footer chip row */}
+                      <div className="flex items-center gap-2 mt-2">
+                        <div className="h-4 w-16 rounded-full bg-[#F0EFEC]" />
+                        <div className="w-1.5 h-1.5 rounded-full bg-[#F0EFEC]" />
+                        <div className="h-3 w-10 rounded bg-[#F0EFEC]" />
+                        <div className="h-4 w-14 rounded-full bg-[#F0EFEC] ml-auto" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       ) : filteredItems.length === 0 ? (
         <div className="bg-white rounded-xl border border-[#E0DED8] min-h-[400px] flex items-center justify-center">
