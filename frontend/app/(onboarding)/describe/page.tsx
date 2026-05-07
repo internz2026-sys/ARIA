@@ -111,6 +111,13 @@ export default function DescribePage() {
         }
       })
       .catch(() => {
+        // If sessionId is still empty here, /start returned a 401 — session expired.
+        // Redirect rather than showing a fake greeting that would break on the next call.
+        if (!sessionId && typeof window !== "undefined") {
+          console.warn("[describe/start] no session after /start failed, redirecting to /login");
+          window.location.href = "/login";
+          return;
+        }
         setMessages([{ role: "aria", text: "Hi! I'm ARIA, your AI marketing team. I need to ask you 8 quick questions to set up your marketing strategy. Let's start — what did you build?" }]);
       });
   }, []);

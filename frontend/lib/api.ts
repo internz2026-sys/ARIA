@@ -17,17 +17,55 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
   return {};
 }
 
+/**
+ * Returns the session's access token, or null if no session exists.
+ * Null means getSession() resolved and confirmed there is no active session —
+ * distinct from a transient error which still returns null but without redirect intent.
+ */
+async function _getAccessToken(): Promise<string | null> {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    return session?.access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Redirect helper — full page reload so the auth state resets cleanly. */
+function _redirectToLogin(source: string): void {
+  if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+    console.warn(`[${source}] no session, redirecting to /login`);
+    window.location.href = "/login";
+  }
+}
+
 /** Authenticated fetch wrapper for direct URL calls (use fetchAPI for /api endpoints) */
 export async function authFetch(url: string, options?: RequestInit): Promise<Response> {
-  const authHeaders = await getAuthHeaders();
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...authHeaders, ...options?.headers as Record<string, string> };
+  const token = await _getAccessToken();
+  if (!token) {
+    _redirectToLogin("authFetch");
+    return new Response(null, { status: 401, statusText: "No session" });
+  }
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+    ...options?.headers as Record<string, string>,
+  };
   return fetch(url, { ...options, headers });
 }
 
 async function fetchAPI(endpoint: string, options?: RequestInit) {
-  const authHeaders = await getAuthHeaders();
+  const token = await _getAccessToken();
+  if (!token) {
+    _redirectToLogin("fetchAPI");
+    throw new Error("No session");
+  }
   const res = await fetch(`${API_URL}${endpoint}`, {
-    headers: { "Content-Type": "application/json", ...authHeaders, ...options?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      ...options?.headers,
+    },
     ...options,
   });
   if (!res.ok) {
