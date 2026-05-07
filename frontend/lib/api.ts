@@ -396,3 +396,22 @@ export const reports = {
   remove: (tenantId: string, reportId: string) =>
     fetchAPI(`/api/reports/${tenantId}/${reportId}`, { method: "DELETE" }),
 };
+
+export const admin = {
+  /**
+   * Ban a user. Default duration is 8760 hours (1 year).
+   * Returns { ok: true, banned_until: "<iso>" }
+   */
+  banUser: (userId: string, durationHours: number = 8760, reason: string = "") =>
+    fetchAPI(`/api/admin/users/${userId}/ban`, {
+      method: "POST",
+      body: JSON.stringify({ duration_hours: durationHours, reason }),
+    }),
+
+  /**
+   * Lift a ban on a user.
+   * Returns { ok: true }
+   */
+  unbanUser: (userId: string) =>
+    fetchAPI(`/api/admin/users/${userId}/unban`, { method: "POST" }),
+};
