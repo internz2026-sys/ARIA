@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { renderMarkdown } from "@/lib/render-markdown";
 import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 
 interface ChatMessage {
   role: "aria" | "user";
@@ -72,21 +72,41 @@ export default function DescribePage() {
     if (localStorage.getItem("aria_reonboarding_tenant_id")) {
       setIsRestart(true);
     }
-    fetch(`${API_URL}/api/onboarding/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+    // Pass any existing session_id so the backend can resume from
+    // onboarding_drafts (Postgres-backed) instead of creating a fresh
+    // session. Backend reads it from the body, looks up by the
+    // authenticated user_id, and returns is_resumed=true with the
+    // last assistant message if a draft exists.
+    const existingSessionId =
+      typeof window !== "undefined"
+        ? localStorage.getItem("aria_onboarding_session") || ""
+        : "";
+    authFetch(`${API_URL}/api/onboarding/start`, {
+      method: "POST",
+      body: JSON.stringify({ session_id: existingSessionId }),
+    })
       .then(r => r.json())
       .then(data => {
         setSessionId(data.session_id);
-        // Persist the session id immediately. Each /api/onboarding/message
-        // call writes the answer server-side keyed by this id, so even
-        // an accidental tab close or "Save & exit" mid-flow doesn't
-        // lose the answers — the backend has them all. This localStorage
-        // entry is the breadcrumb for a future /api/onboarding/resume
-        // path; the /review page already reads it to extract the config
-        // when /describe finishes.
+        // Always persist the (possibly new, possibly existing) session
+        // id so subsequent /describe loads can keep resuming.
         if (data.session_id && typeof window !== "undefined") {
           localStorage.setItem("aria_onboarding_session", data.session_id);
         }
-        if (data.message) {
+        if (data.is_resumed) {
+          // Backend rehydrated from the draft. The `message` field
+          // here is the LAST assistant turn — which is the question
+          // the user was on when they bailed. Prefix a soft welcome-
+          // back so they understand the context.
+          setMessages([
+            {
+              role: "aria",
+              text:
+                "Welcome back — picking up where you left off.\n\n" +
+                (data.message || ""),
+            },
+          ]);
+        } else if (data.message) {
           setMessages([{ role: "aria", text: data.message }]);
         }
       })
@@ -115,9 +135,8 @@ export default function DescribePage() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/api/onboarding/message`, {
+      const res = await authFetch(`${API_URL}/api/onboarding/message`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, message: text }),
       });
       const data = await res.json();
@@ -129,9 +148,8 @@ export default function DescribePage() {
         // Eagerly extract and cache config so /review has data even if the
         // backend session is lost on Railway redeploy before the user navigates.
         localStorage.setItem("aria_onboarding_session", sessionId);
-        fetch(`${API_URL}/api/onboarding/extract-config`, {
+        authFetch(`${API_URL}/api/onboarding/extract-config`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: sessionId }),
         })
           .then(r => r.ok ? r.json() : null)
@@ -168,9 +186,8 @@ export default function DescribePage() {
     if (!sessionId || skipping) return;
     setSkipping(true);
     try {
-      const res = await fetch(`${API_URL}/api/onboarding/skip`, {
+      const res = await authFetch(`${API_URL}/api/onboarding/skip`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
       });
       const data = await res.json();
