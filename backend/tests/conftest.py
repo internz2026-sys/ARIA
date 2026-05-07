@@ -154,7 +154,73 @@ class _MockSupabase(MagicMock):
     .insert / .update / .upsert returning specific data, or a
     .table("foo").execute() that raises) reach into the underlying
     MagicMock directly.
+
+    Plus three recording APIs for tests that need to assert the agent
+    handshake / admin-ban write paths landed in the right shape:
+
+      * `inserts_for(table)`  — list of every dict passed to
+        `.table(<table>).insert(payload)` during the test.
+      * `updates_for(table)`  — list of every dict passed to
+        `.table(<table>).update(payload)`.
+      * `auth_admin_update_user_by_id_calls` — list of (user_id, attrs)
+        tuples passed to `sb.auth.admin.update_user_by_id(...)`. Mirrored
+        as `mock.auth.admin.update_user_by_id_calls` for the test
+        introspection style in test_admin_ban.py.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # Per-table insert/update payload buffers. Plain attribute set
+        # would be intercepted by MagicMock's __setattr__; using
+        # object.__setattr__ side-steps that and stores the lists on the
+        # underlying object dict so `mock.<attr>` returns the list, not
+        # a fresh MagicMock.
+        object.__setattr__(self, "_inserts_by_table", {})
+        object.__setattr__(self, "_updates_by_table", {})
+        object.__setattr__(self, "_auth_admin_update_user_calls", [])
+
+        # Wire the auth.admin.update_user_by_id recorder. The production
+        # code path (services/profiles.ban_user) calls it as a sync
+        # function: sb.auth.admin.update_user_by_id(uid, {"ban_duration": ...}).
+        # We store calls on a real list AND expose two access patterns
+        # (snake_case attribute on the recorder + .called / .call_args
+        # via MagicMock's call recording) so test code that uses either
+        # works.
+        calls_list = self._auth_admin_update_user_calls
+
+        def _record_update_user_by_id(user_id: Any, attrs: Any = None, *_args: Any, **_kwargs: Any) -> Any:
+            calls_list.append((user_id, attrs))
+            # Mirror onto the object's recorder list so test code can
+            # introspect via `mock.auth.admin.update_user_by_id_calls`.
+            return MagicMock(user=MagicMock(id=user_id))
+
+        # Force the chain `auth.admin.update_user_by_id` to be a real
+        # callable that records, not the auto-generated MagicMock.
+        # Doing it on __init__ means every fresh _MockSupabase is wired
+        # before the first ban_user call.
+        self.auth.admin.update_user_by_id.side_effect = _record_update_user_by_id
+        # Expose the recorder list at the canonical attribute path the
+        # tests look for: mock.auth.admin.update_user_by_id_calls.
+        self.auth.admin.update_user_by_id_calls = calls_list
+        # Also expose the recorder list at the top level so tests can
+        # introspect via `mock.auth_admin_update_user_by_id_calls` per
+        # the conftest contract documented in the class docstring.
+        self.auth_admin_update_user_by_id_calls = calls_list
+
+    def inserts_for(self, table: str) -> list[dict]:
+        """Return all dicts ever passed to `.table(<table>).insert(...).execute()`.
+
+        Records the payload at the moment `.insert()` is called on the
+        chain, BEFORE `.execute()`. That's intentional — supabase-py
+        executes the insert at `.execute()` time, but for assertion
+        purposes the payload shape is what matters and it never changes
+        between `.insert(payload)` and `.execute()`.
+        """
+        return list(self._inserts_by_table.get(table, []))
+
+    def updates_for(self, table: str) -> list[dict]:
+        """Return all dicts ever passed to `.table(<table>).update(...).execute()`."""
+        return list(self._updates_by_table.get(table, []))
 
     def set_response(self, table_name: str, data: Any) -> None:
         """Configure `.table(<table_name>).<chain>.execute()` to return data."""
@@ -166,6 +232,8 @@ class _MockSupabase(MagicMock):
         # branch on the argument.
         existing_side_effect = getattr(self.table, "_test_side_effect", None) or {}
         existing_side_effect[table_name] = data
+        inserts_buffer = self._inserts_by_table
+        updates_buffer = self._updates_by_table
 
         def _table_dispatch(name: str, *args: Any, **kwargs: Any) -> MagicMock:
             chain = MagicMock()
@@ -182,15 +250,59 @@ class _MockSupabase(MagicMock):
             # (fluent builder), with .execute() and .single() resolving
             # to the result.
             chain.execute.return_value = result
-            chain.single.return_value.execute.return_value = result
-            chain.maybe_single.return_value.execute.return_value = result
+            # `.single()` and `.maybe_single()` return ONE row, not a
+            # list — the production code paths unwrap with
+            # `result.data["field"]` not `result.data[0]["field"]`. Mirror
+            # the real supabase-py shape: `.data` is the dict, or None.
+            single_result = MagicMock()
+            single_result.data = (
+                chain_data[0] if isinstance(chain_data, list) and chain_data else (
+                    chain_data if isinstance(chain_data, dict) else None
+                )
+            )
+            single_result.count = None
+            single_result.error = None
+            chain.single.return_value.execute.return_value = single_result
+            chain.maybe_single.return_value.execute.return_value = single_result
             # Common chain methods all return self so they can be chained
             # in any order before .execute().
-            for method in ("select", "insert", "upsert", "update", "delete",
+            for method in ("select", "upsert", "delete",
                            "eq", "neq", "in_", "ilike", "like", "lt", "lte",
                            "gt", "gte", "order", "limit", "range", "match",
                            "is_", "or_", "filter"):
                 getattr(chain, method).return_value = chain
+
+            # `.insert(payload)` and `.update(payload)` need to record
+            # the payload into the per-table buffer before returning
+            # the chain so tests can assert on what was written. `.insert`
+            # additionally needs to echo the row back from `.execute()`
+            # so the create handler can read `result.data[0]["id"]` and
+            # return a non-null `item` to the caller — supabase-py does
+            # the same when you call .insert(...).execute() against a
+            # real DB. Auto-assign an id if the payload didn't carry one.
+            import uuid as _uuid_mod
+
+            def _record_insert(payload: Any = None, *_a: Any, **_kw: Any) -> MagicMock:
+                inserts_buffer.setdefault(name, []).append(payload)
+                if isinstance(payload, dict):
+                    echoed = dict(payload)
+                    if "id" not in echoed or not echoed.get("id"):
+                        echoed["id"] = f"mock-{name}-{_uuid_mod.uuid4().hex[:8]}"
+                    insert_result = MagicMock()
+                    insert_result.data = [echoed]
+                    insert_result.count = 1
+                    insert_result.error = None
+                    insert_chain = MagicMock()
+                    insert_chain.execute.return_value = insert_result
+                    return insert_chain
+                return chain
+
+            def _record_update(payload: Any = None, *_a: Any, **_kw: Any) -> MagicMock:
+                updates_buffer.setdefault(name, []).append(payload)
+                return chain
+
+            chain.insert.side_effect = _record_insert
+            chain.update.side_effect = _record_update
             return chain
 
         self.table._test_side_effect = existing_side_effect
