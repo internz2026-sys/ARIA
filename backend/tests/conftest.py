@@ -182,13 +182,21 @@ class _MockSupabase(MagicMock):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        # Per-table insert/update payload buffers. Plain attribute set
-        # would be intercepted by MagicMock's __setattr__; using
-        # object.__setattr__ side-steps that and stores the lists on the
-        # underlying object dict so `mock.<attr>` returns the list, not
-        # a fresh MagicMock.
+        # Per-table insert/update payload buffers AND per-table response
+        # registry. Plain attribute set would be intercepted by
+        # MagicMock's __setattr__; using object.__setattr__ side-steps
+        # that and stores the dicts on the underlying object dict so
+        # `mock.<attr>` returns the dict, not a fresh MagicMock.
+        # Critically, `_test_table_responses` MUST be a real dict and
+        # NOT a MagicMock — set_response and _table_dispatch both rely
+        # on real dict.get / dict.__setitem__ semantics. Storing it on a
+        # MagicMock attribute would auto-create another MagicMock (truthy)
+        # and `existing.get(name, [])` would yield a MagicMock the chain
+        # treats as "no rows", silently returning .data=None for every
+        # lookup.
         object.__setattr__(self, "_inserts_by_table", {})
         object.__setattr__(self, "_updates_by_table", {})
+        object.__setattr__(self, "_test_table_responses", {})
         object.__setattr__(self, "_auth_admin_update_user_calls", [])
 
         # Wire the auth.admin.update_user_by_id recorder. The production
@@ -214,6 +222,15 @@ class _MockSupabase(MagicMock):
         # Expose the recorder list at the canonical attribute path the
         # tests look for: mock.auth.admin.update_user_by_id_calls.
         self.auth.admin.update_user_by_id_calls = calls_list
+        # ALSO expose at `mock.auth.admin.calls`. Tests use
+        #   `getattr(auth_admin, "update_user_by_id_calls", None) or
+        #    getattr(auth_admin, "calls", None) or []`
+        # to be lenient about which name the conftest picks. Without
+        # this, when no ban happened the `update_user_by_id_calls`
+        # is `[]` (falsy), the `or` falls through to `auth_admin.calls`
+        # which auto-creates a child MagicMock (truthy), the test reads
+        # *that* as the recorded calls, and `assert not calls` fails.
+        self.auth.admin.calls = calls_list
         # Also expose the recorder list at the top level so tests can
         # introspect via `mock.auth_admin_update_user_by_id_calls` per
         # the conftest contract documented in the class docstring.
@@ -236,13 +253,17 @@ class _MockSupabase(MagicMock):
 
     def set_response(self, table_name: str, data: Any) -> None:
         """Configure `.table(<table_name>).<chain>.execute()` to return data."""
-        # MagicMock's side_effect isn't ideal here because the chain is
-        # not predictable (order of .select / .eq / .order varies). The
-        # cleaner approach: when `.table(name)` is called with the
-        # specific name, return a mock whose terminal .execute() yields
-        # a result with .data == data. We use side_effect on .table to
-        # branch on the argument.
-        existing_side_effect = getattr(self.table, "_test_side_effect", None) or {}
+        # Store the per-table response on the real dict we created in
+        # __init__ via object.__setattr__. We CANNOT use
+        # `getattr(self.table, "_test_side_effect", None) or {}` here —
+        # MagicMock auto-creates a child mock for any unknown attribute,
+        # so the getattr returns a MagicMock (truthy), the `or` short-
+        # circuits, and `existing_side_effect` is a MagicMock instead of
+        # a dict. Any subsequent `.get(name, [])` then returns yet
+        # another MagicMock, fails the isinstance(..., list) check in
+        # the chain dispatch, and `single_result.data` silently becomes
+        # None — exactly the symptom we hit in CI.
+        existing_side_effect = self._test_table_responses
         existing_side_effect[table_name] = data
         inserts_buffer = self._inserts_by_table
         updates_buffer = self._updates_by_table
@@ -317,30 +338,105 @@ class _MockSupabase(MagicMock):
             chain.update.side_effect = _record_update
             return chain
 
-        self.table._test_side_effect = existing_side_effect
         self.table.side_effect = _table_dispatch
+
+
+# Modules that imported `get_db` at module load via
+# `from backend.services.supabase import get_db`. Each one holds a local
+# reference to the original function; patching only the source module's
+# attribute leaves all of these dangling at the real client. Discovered
+# the hard way when test_agent_handshake hit
+#     httpx.ConnectError: [Errno -2] Name or service not known
+# from backend/routers/inbox.py:1046 because `inbox.get_db` still pointed
+# at the real Supabase factory. Keep this list in sync with
+#     grep -rn "^from backend\.services\.supabase import get_db" backend
+_GET_DB_IMPORT_SITES = (
+    "backend.ceo_actions",
+    "backend.paperclip_office_sync",
+    "backend.orchestrator",
+    "backend.routers.ceo",
+    "backend.routers.crm",
+    "backend.routers.tasks",
+    "backend.routers.email",
+    "backend.routers.inbox",
+    "backend.agents.media_agent",
+    "backend.services.campaigns",
+    "backend.services.chat",
+    "backend.services.crm",
+    "backend.services.content_library",
+    "backend.services.email_inbound",
+    "backend.services.email_sender",
+    "backend.services.imap_inbound",
+    "backend.services.inbox",
+    "backend.services.reports",
+    "backend.services.projects",
+    "backend.services.profiles",
+    "backend.services.reports_campaign_roi",
+    "backend.services.reports_channel_spend",
+    "backend.services.reports_daily_pulse",
+    "backend.services.scheduler",
+    "backend.services.visualizer",
+)
 
 
 @pytest.fixture
 def mock_supabase(monkeypatch: pytest.MonkeyPatch) -> _MockSupabase:
-    """Patch backend.services.supabase.get_db to return an in-memory mock.
+    """Patch every Supabase client accessor to return an in-memory mock.
 
     Default behavior: every `.table(...).<chain>.execute()` returns
     `data=[]`. Tests configure per-table responses via
     `mock_supabase.set_response("table_name", [...])`.
 
-    The patch is applied to BOTH module references (services.supabase
-    and config.loader._get_supabase) because some routers call one and
-    some call the other. Without the second patch, get_tenant_config
-    would still hit the real `create_client(...)` and crash on the
-    fake SUPABASE_URL.
+    Patch surface:
+      * `backend.services.supabase.get_db` — canonical source
+      * `backend.config.loader._get_supabase` — config loader's private
+        accessor (separate caching path; without this, get_tenant_config
+        crashes on the real create_client(SUPABASE_URL) lookup)
+      * `backend.server._get_supabase` — server.py imports under an alias
+      * Every entry in _GET_DB_IMPORT_SITES — modules that did
+        `from backend.services.supabase import get_db` at module load
+        and now have their own stale reference. Without patching these
+        the routers/services bypass the mock entirely and hit the real
+        network.
     """
     mock = _MockSupabase()
     # Default: empty result set on any unconfigured table.
     mock.set_response("__default__", [])
 
-    monkeypatch.setattr("backend.services.supabase.get_db", lambda: mock)
-    monkeypatch.setattr("backend.config.loader._get_supabase", lambda: mock)
+    _factory = lambda: mock  # noqa: E731 — readable as a one-liner
+
+    monkeypatch.setattr("backend.services.supabase.get_db", _factory)
+    monkeypatch.setattr("backend.config.loader._get_supabase", _factory)
+    # server.py: `from backend.services.supabase import get_db as _get_supabase`
+    monkeypatch.setattr("backend.server._get_supabase", _factory, raising=False)
+
+    for module_path in _GET_DB_IMPORT_SITES:
+        # raising=False: tolerate modules that aren't importable in a
+        # slimmed test build (e.g. media_agent depends on optional deps).
+        monkeypatch.setattr(f"{module_path}.get_db", _factory, raising=False)
+
+    # Clear get_tenant_config's TTL cache. Without this, a tenant_configs
+    # row set up via mock.set_response("tenant_configs", ...) is shadowed
+    # by whatever stale TenantConfig was cached by an earlier test (or
+    # an earlier real-network call before the patch landed). Tests like
+    # test_unbanned_user_can_access use only mock_supabase (no
+    # mock_tenant_lookup) and rely on the loader actually reading from
+    # the mock — the cache short-circuits that read.
+    try:
+        from backend.config.loader import _config_cache
+        _config_cache.clear()
+    except Exception:
+        pass
+
+    # Same story for the role/status caches in profiles.py — without
+    # invalidation, a real-network failure caches "user" + "active"
+    # defaults that override the mock's `set_response("profiles", ...)`.
+    try:
+        from backend.services import profiles as _profiles_mod
+        _profiles_mod.invalidate_role_cache()
+        _profiles_mod.invalidate_status_cache()
+    except Exception:
+        pass
 
     return mock
 
@@ -384,18 +480,38 @@ def mock_tenant_lookup(monkeypatch: pytest.MonkeyPatch):
     # Patch every call site that resolves the function. The auth module
     # imports get_tenant_config via a local `from ... import` inside
     # get_verified_tenant, so the canonical patch target is the original
-    # module (config.loader); but routers import it at module-load via
-    # `from backend.config.loader import get_tenant_config`, so we also
-    # patch the routers that reference it directly.
+    # module (config.loader); but most routers and services import it at
+    # module-load via `from backend.config.loader import get_tenant_config`,
+    # so each one has its own stale local reference that the source-module
+    # patch cannot reach. Keep this list in sync with
+    #     grep -rn "^from backend\.config\.loader import .*get_tenant_config" backend
     monkeypatch.setattr("backend.config.loader.get_tenant_config", fake_get_tenant_config)
-    # The routers import the symbol at module load — patch those too.
-    # Use a try/except so this fixture stays usable even when a router
-    # is missing in a slimmed test build.
-    for module_path in ("backend.routers.crm", "backend.routers.inbox"):
-        try:
-            monkeypatch.setattr(f"{module_path}.get_tenant_config", fake_get_tenant_config, raising=False)
-        except Exception:
-            pass
+    for module_path in (
+        "backend.agents.base",
+        "backend.ceo_actions",
+        "backend.orchestrator",
+        "backend.server",
+        "backend.routers.ceo",
+        "backend.routers.crm",
+        "backend.routers.email",
+        "backend.routers.inbox",
+        "backend.tools.campaign_analyzer",
+        "backend.agents.media_agent",
+        "backend.services.email_sender",
+    ):
+        # raising=False: tolerate optional modules that don't import in a
+        # slimmed test build.
+        monkeypatch.setattr(
+            f"{module_path}.get_tenant_config", fake_get_tenant_config, raising=False
+        )
+
+    # Clear loader's TTL cache so a value set up by an earlier test (or
+    # an earlier fixture invocation) doesn't shadow this test's mock.
+    try:
+        from backend.config.loader import _config_cache
+        _config_cache.clear()
+    except Exception:
+        pass
 
     register.registry = registry  # type: ignore[attr-defined]
     return register
