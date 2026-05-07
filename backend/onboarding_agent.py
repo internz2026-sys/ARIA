@@ -239,6 +239,56 @@ class OnboardingAgent:
         self._complete = False
         self._extracted_config: dict | None = None
 
+    # ── Serialization (resume support) ─────────────────────────────────────
+    # to_dict / from_dict round-trip the agent's full state into JSON so
+    # an in-progress session can be persisted to onboarding_drafts and
+    # rehydrated after a container restart, tab close, or device switch.
+
+    def to_dict(self) -> dict:
+        """Serialize full agent state for persistence."""
+        return {
+            "messages": self.messages,
+            "field_state": self.field_state,
+            "field_answers": self.field_answers,
+            "attempts": self.attempts,
+            "complete": self._complete,
+            "extracted_config": self._extracted_config,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "OnboardingAgent":
+        """Rehydrate an OnboardingAgent from a previously-serialized dict.
+
+        Tolerant of missing keys / unknown fields so an older snapshot
+        from before a code change can still be loaded; missing fields
+        fall back to fresh defaults.
+        """
+        agent = cls()
+        if not isinstance(data, dict):
+            return agent
+        msgs = data.get("messages")
+        if isinstance(msgs, list):
+            agent.messages = msgs
+        fs = data.get("field_state")
+        if isinstance(fs, dict):
+            # Only keep keys we still know about; unknown legacy fields are dropped.
+            agent.field_state = {
+                f: fs.get(f, "pending") if fs.get(f) in ("pending", "validated", "skipped") else "pending"
+                for f in ONBOARDING_FIELDS
+            }
+        fa = data.get("field_answers")
+        if isinstance(fa, dict):
+            agent.field_answers = {k: v for k, v in fa.items() if isinstance(v, str)}
+        att = data.get("attempts")
+        if isinstance(att, dict):
+            agent.attempts = {f: int(att.get(f, 0) or 0) for f in ONBOARDING_FIELDS}
+        agent._complete = bool(data.get("complete", False))
+        ec = data.get("extracted_config")
+        agent._extracted_config = ec if isinstance(ec, dict) else None
+        # Recompute completion in case the snapshot is stale.
+        agent._maybe_complete()
+        return agent
+
     # ── Legacy-compatible properties used by server.py ──────────────────────
 
     @property

@@ -179,6 +179,24 @@ async def get_current_user(request: Request) -> dict:
     return verify_jwt(token)
 
 
+async def get_user_id_from_jwt(request: Request) -> str:
+    """Thin helper for endpoints that need ONLY the Supabase auth user_id
+    (the `sub` claim) without a tenant ownership check.
+
+    Used by the onboarding endpoints — first-time users don't have a tenant
+    yet, so `get_verified_tenant` doesn't apply, but we still want to bind
+    the in-progress session to their JWT identity so a stolen `session_id`
+    can't be replayed by a different user.
+
+    Returns the user_id string. Raises 401 if no/invalid JWT.
+    """
+    user = await get_current_user(request)
+    user_id = user.get("sub") or ""
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user identity")
+    return user_id
+
+
 async def check_user_active(request: Request) -> dict:
     """FastAPI dependency: ensure the caller's account isn't paused/suspended.
 
