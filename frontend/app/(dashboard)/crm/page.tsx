@@ -598,14 +598,16 @@ export default function CRMPage() {
         companyMap[co.id] = co.name;
       }
 
-      // RFC 4180 cell escaping: wrap in quotes, double internal quotes
-      function csvCell(val: unknown): string {
+      // RFC 4180 cell escaping: wrap in quotes, double internal quotes.
+      // Arrow form (not `function`) because TS strict-mode + ES5 target
+      // rejects function declarations inside blocks.
+      const csvCell = (val: unknown): string => {
         const s = val == null ? "" : String(val);
         if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
           return '"' + s.replace(/"/g, '""') + '"';
         }
         return s;
-      }
+      };
 
       const headers = ["Name", "Email", "Phone", "Title", "Company", "Status", "Source", "Tags", "Notes", "Created At"];
       const rows = allContacts.map(c => [
