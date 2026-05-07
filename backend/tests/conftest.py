@@ -168,6 +168,18 @@ class _MockSupabase(MagicMock):
         introspection style in test_admin_ban.py.
     """
 
+    def _get_child_mock(self, **kw: Any) -> MagicMock:
+        """Force child attribute mocks to be plain MagicMock, NOT _MockSupabase.
+
+        MagicMock's default `_get_child_mock` reuses the parent class for
+        children, which means accessing `self.auth` on a `_MockSupabase`
+        would create another `_MockSupabase` whose __init__ again accesses
+        `self.auth.admin.update_user_by_id` — infinite recursion. Returning
+        a plain MagicMock breaks the cycle while still letting the fluent
+        builder pattern work for child attributes.
+        """
+        return MagicMock(**kw)
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         # Per-table insert/update payload buffers. Plain attribute set
