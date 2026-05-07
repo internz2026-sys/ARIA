@@ -14,6 +14,15 @@ sentry-sdk[fastapi]>=2.14.0
 pinecone-client>=5.0.0
 tenacity>=9.0.0
 qdrant-client>=1.9.0
+# CPU-only PyTorch — sentence-transformers pulls in `torch` as a
+# transitive dep. The default torch wheel includes ~7GB of NVIDIA CUDA
+# libraries (cublas, cudnn, cusparselt, etc.) we never use on this
+# CPU-only Hostinger VPS. Pin the CPU build via the dedicated index so
+# pip resolves to the lean ~200MB wheel instead of the 3GB+ CUDA one.
+# Must come BEFORE sentence-transformers so the CPU wheel is already
+# installed when sentence-transformers' resolver runs.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0
 sentence-transformers>=3.0.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
