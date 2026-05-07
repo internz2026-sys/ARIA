@@ -85,4 +85,20 @@ async def get_report(tenant_id: str, report_id: str):
 
 @router.delete("/{report_id}")
 async def delete_report(tenant_id: str, report_id: str):
-    return reports_service.delete_report(tenant_id, report_id)
+    # Pre-check so the 404 path is explicit instead of a silent 200 on
+    # an already-deleted (or wrong-tenant) row. `get_report` already
+    # returns None on miss / tenant mismatch — no need to re-implement.
+    if not reports_service.get_report(tenant_id, report_id):
+        raise HTTPException(status_code=404, detail="Report not found")
+    try:
+        result = reports_service.delete_report(tenant_id, report_id)
+    except Exception as e:
+        logger.exception("[reports] delete %s failed: %s", report_id, e)
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(status_code=500, detail=safe_detail(e, "Report delete failed"))
+    # Race: row vanished between the get_report check and the delete.
+    # Treat as 404 so the client retries cleanly instead of seeing a 200
+    # that didn't actually do anything.
+    if result.get("found") is False:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return result

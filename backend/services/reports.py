@@ -31,6 +31,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from backend.services.realtime import agent_display_name
 from backend.services.supabase import get_db
 from backend.services.visualizer import (
     render_chart_from_block,
@@ -40,17 +41,12 @@ from backend.services.visualizer import (
 logger = logging.getLogger("aria.services.reports")
 
 
-# Agent slug → display name map for the bar-chart x-axis. Mirrors the
-# frontend AGENT_NAMES dict in inbox/page.tsx — keep in sync if a new
-# agent is added.
-AGENT_DISPLAY_NAMES: dict[str, str] = {
-    "ceo": "CEO",
-    "content_writer": "Content Writer",
-    "email_marketer": "Email Marketer",
-    "social_manager": "Social Manager",
-    "ad_strategist": "Ad Strategist",
-    "media": "Media Designer",
-}
+# Agent slug → display name. Single source of truth lives in
+# backend/services/realtime.py:_AGENT_DISPLAY_NAMES (also used by the
+# task-completed toast so labels stay consistent across the app). The
+# frontend mirror is `AGENT_NAMES` in
+# frontend/lib/agent-config.ts / frontend/app/(dashboard)/inbox/page.tsx
+# — update both sides when a new agent is added.
 
 
 # ── Aggregation helpers ──────────────────────────────────────────────
@@ -183,7 +179,7 @@ def _render_agent_productivity_chart(
         return None
     # Re-key with display names so the x-axis reads cleanly
     display_data = {
-        AGENT_DISPLAY_NAMES.get(k, k): v
+        agent_display_name(k): v
         for k, v in agent_counts.items()
         if v > 0
     }
@@ -242,7 +238,7 @@ def _deterministic_narrative(metrics: dict[str, Any]) -> tuple[str, str]:
         f"{received} repl{'ies' if received != 1 else 'y'} received in the last 7 days."
     )
     per_agent_lines = "\n".join(
-        f"- {AGENT_DISPLAY_NAMES.get(k, k)}: {v} task{'s' if v != 1 else ''}"
+        f"- {agent_display_name(k)}: {v} task{'s' if v != 1 else ''}"
         for k, v in sorted(agents.items(), key=lambda kv: -kv[1])
     ) or "- No agent runs recorded."
     body = (
@@ -368,7 +364,7 @@ async def generate_agent_productivity(tenant_id: str) -> dict[str, Any]:
     total = sum(tasks_by_agent.values())
     if total > 0:
         top_agent_slug, top_count = max(tasks_by_agent.items(), key=lambda kv: kv[1])
-        top_display = AGENT_DISPLAY_NAMES.get(top_agent_slug, top_agent_slug)
+        top_display = agent_display_name(top_agent_slug)
         summary = (
             f"{total} task{'s' if total != 1 else ''} completed in 7 days — "
             f"{top_display} led with {top_count}."
@@ -406,7 +402,11 @@ async def generate_agent_productivity(tenant_id: str) -> dict[str, Any]:
     }
 
     sb = get_db()
-    ins = sb.table("marketing_reports").insert(row).execute()
+    try:
+        ins = sb.table("marketing_reports").insert(row).execute()
+    except Exception as e:
+        logger.exception("[reports] insert agent_productivity failed: %s", e)
+        raise
     return (ins.data or [row])[0]
 
 
@@ -443,6 +443,15 @@ def get_report(tenant_id: str, report_id: str) -> dict[str, Any] | None:
 
 
 def delete_report(tenant_id: str, report_id: str) -> dict[str, Any]:
+    """Delete a report. Returns {deleted, found} so the router can map
+    a no-op delete (already gone / wrong tenant) to a 404 instead of a
+    silent 200."""
     sb = get_db()
-    sb.table("marketing_reports").delete().eq("id", report_id).eq("tenant_id", tenant_id).execute()
-    return {"deleted": report_id}
+    res = (
+        sb.table("marketing_reports")
+        .delete()
+        .eq("id", report_id)
+        .eq("tenant_id", tenant_id)
+        .execute()
+    )
+    return {"deleted": report_id, "found": bool(res.data)}
