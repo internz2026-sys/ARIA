@@ -765,13 +765,20 @@ app.add_middleware(
 # session_id can't be replayed by another user. The session is now bound
 # to the JWT user_id at /start time, and every subsequent /message,
 # /skip, /extract-config, /save-config call verifies the JWT user matches
-# the session's bound user. /save-config-direct, /save-draft, /draft remain
-# public for now (legacy frontend paths still depend on them).
+# the session's bound user.
+#
+# The /save-draft, /draft (GET), /draft (DELETE) endpoints were ALSO moved
+# behind JWT auth on 2026-05-07 (CRITICAL audit findings #1-3): they
+# previously trusted attacker-supplied user_id from the request, which
+# defeated the /start hardening. user_id is now derived from the JWT.
+#
+# KNOWN GAP: /api/onboarding/save-config-direct is still public. It needs
+# its own audit pass (it writes a tenant config without a session round-
+# trip, so the JWT-binding pattern needs more thought). Tracked separately
+# from this batch — do not regress by adding new public endpoints here.
 _PUBLIC_PATHS = {
     "/health",
-    "/api/onboarding/save-config-direct",
-    "/api/onboarding/save-draft",
-    "/api/onboarding/draft",
+    "/api/onboarding/save-config-direct",  # TODO(security): still public — known gap, audit separately
     "/api/whatsapp/webhook",
     "/api/cron/run-scheduled",
 }
@@ -816,7 +823,24 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
 
     secret = _get_jwt_secret()
     if not secret:
-        # Auth not configured (dev mode) — allow through
+        # Auth not configured. Audit fix 2026-05-07 (HIGH): refuse to
+        # fall through in production. A missing JWT secret in prod
+        # almost always means the env var rotation lost the value; we'd
+        # rather 500 every request than silently disable auth. Dev mode
+        # (ARIA_ENV unset / "dev" / "local") still allows through so
+        # local development without Supabase keeps working.
+        env = os.environ.get("ARIA_ENV", "").lower()
+        if env in ("prod", "production"):
+            from starlette.responses import JSONResponse
+            logger.error(
+                "SUPABASE_JWT_SECRET unset in ARIA_ENV=%s — middleware refusing dev-mode fallthrough",
+                env,
+            )
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Auth misconfigured: SUPABASE_JWT_SECRET required in production"},
+            )
+        # Dev mode — allow through
         return await call_next(request)
 
     token = _extract_token(request)
@@ -2399,13 +2423,33 @@ def _load_onboarding_draft(user_id: str) -> dict | None:
         sb = _get_supabase()
         result = (
             sb.table("onboarding_drafts")
-            .select("session_id,extracted_config,skipped_topics,conversation_history")
+            .select("user_id,session_id,extracted_config,skipped_topics,conversation_history")
             .eq("user_id", user_id)
             .limit(1)
             .execute()
         )
         if result.data:
-            return result.data[0]
+            row = result.data[0]
+            # Defense-in-depth (2026-05-07, HIGH audit fix): the .eq()
+            # filter above already restricts the query, but we still
+            # explicitly assert the returned row's user_id matches the
+            # caller's user_id before handing it back. Catches any
+            # future regression where the filter is removed/refactored
+            # without updating callers, plus defends against a hostile
+            # row injected via a different code path.
+            row_user_id = row.get("user_id")
+            if row_user_id and str(row_user_id) != str(user_id):
+                logger.error(
+                    "Onboarding draft load rejected: row user_id=%s != caller=%s",
+                    row_user_id, user_id,
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail="Draft does not belong to this user",
+                )
+            return row
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("Failed to load onboarding draft for user=%s: %s", user_id, e)
     return None
@@ -2648,7 +2692,10 @@ async def save_config_direct(body: SaveConfigDirect):
 #   3. After successful /save-config, frontend calls DELETE to clean up
 
 class OnboardingDraftPayload(BaseModel):
-    user_id: str
+    # NOTE: any client-supplied user_id is IGNORED — we always derive
+    # user_id from the JWT. Field kept here only for backwards-compat
+    # with existing frontend code that still sends it.
+    user_id: str | None = None
     session_id: str | None = None
     extracted_config: dict
     skipped_topics: list | None = None
@@ -2656,18 +2703,22 @@ class OnboardingDraftPayload(BaseModel):
 
 
 @app.post("/api/onboarding/save-draft")
-async def save_onboarding_draft(body: OnboardingDraftPayload):
-    """Upsert the user's in-progress onboarding draft.
+async def save_onboarding_draft(
+    body: OnboardingDraftPayload,
+    user_id: str = Depends(get_user_id_from_jwt),
+):
+    """Upsert the authenticated user's in-progress onboarding draft.
 
-    Public (no JWT required) because the user is mid-onboarding and may
-    not have a tenant yet -- but the user_id MUST come from the
-    authenticated Supabase session on the client side. This endpoint
-    just trusts that and writes the row.
+    JWT-bound (2026-05-07, CRITICAL audit fix): user_id always comes from
+    the JWT. Any user_id field in the request body is ignored. Previously
+    this endpoint was public and trusted whatever user_id the client sent,
+    which defeated the /start auth-binding (an attacker could overwrite
+    any user's draft by knowing their UUID).
     """
     try:
         sb = _get_supabase()
         row = {
-            "user_id": body.user_id,
+            "user_id": user_id,
             "session_id": body.session_id,
             "extracted_config": body.extracted_config,
             "skipped_topics": body.skipped_topics,
@@ -2678,17 +2729,20 @@ async def save_onboarding_draft(body: OnboardingDraftPayload):
         sb.table("onboarding_drafts").upsert(row, on_conflict="user_id").execute()
         return {"saved": True}
     except Exception as e:
-        logger.warning("Failed to save onboarding draft: %s", e)
+        logger.warning("Failed to save onboarding draft for user=%s: %s", user_id, e)
         return {"saved": False, "error": str(e)[:200]}
 
 
 @app.get("/api/onboarding/draft")
-async def get_onboarding_draft(user_id: str):
-    """Return the user's most recent in-progress onboarding draft, or 404
-    if none exists. Used by /select-agents on mount before falling back
-    to localStorage."""
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
+async def get_onboarding_draft(user_id: str = Depends(get_user_id_from_jwt)):
+    """Return the authenticated user's most recent in-progress onboarding
+    draft, or 404 if none exists. Used by /select-agents on mount before
+    falling back to localStorage.
+
+    JWT-bound (2026-05-07, CRITICAL audit fix): user_id always comes from
+    the JWT. Any ?user_id= query param is ignored. Previously this was
+    public and let any caller read any user's draft by guessing UUIDs.
+    """
     try:
         sb = _get_supabase()
         result = (
@@ -2704,20 +2758,26 @@ async def get_onboarding_draft(user_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Failed to load onboarding draft: %s", e)
+        logger.warning("Failed to load onboarding draft for user=%s: %s", user_id, e)
         raise HTTPException(status_code=500, detail="Could not load draft")
 
 
 @app.delete("/api/onboarding/draft")
-async def delete_onboarding_draft(user_id: str):
-    """Clean up the user's draft after successful save-config. Best-effort:
-    if the delete fails the row will just expire naturally over time."""
+async def delete_onboarding_draft(user_id: str = Depends(get_user_id_from_jwt)):
+    """Clean up the authenticated user's draft after successful save-config.
+    Best-effort: if the delete fails the row will just expire naturally
+    over time.
+
+    JWT-bound (2026-05-07, CRITICAL audit fix): user_id always comes from
+    the JWT. Any ?user_id= query param is ignored. Previously this was
+    public and let any caller delete any user's draft.
+    """
     try:
         sb = _get_supabase()
         sb.table("onboarding_drafts").delete().eq("user_id", user_id).execute()
         return {"deleted": True}
     except Exception as e:
-        logger.warning("Failed to delete onboarding draft: %s", e)
+        logger.warning("Failed to delete onboarding draft for user=%s: %s", user_id, e)
         return {"deleted": False}
 
 
