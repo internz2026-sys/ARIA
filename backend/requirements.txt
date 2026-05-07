@@ -14,16 +14,21 @@ sentry-sdk[fastapi]>=2.14.0
 pinecone-client>=5.0.0
 tenacity>=9.0.0
 qdrant-client>=1.9.0
-# CPU-only PyTorch — sentence-transformers pulls in `torch` as a
-# transitive dep. The default torch wheel includes ~7GB of NVIDIA CUDA
-# libraries (cublas, cudnn, cusparselt, etc.) we never use on this
-# CPU-only Hostinger VPS. Pin the CPU build via the dedicated index so
-# pip resolves to the lean ~200MB wheel instead of the 3GB+ CUDA one.
-# Must come BEFORE sentence-transformers so the CPU wheel is already
-# installed when sentence-transformers' resolver runs.
---extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.0
-sentence-transformers>=3.0.0
+# sentence-transformers + torch were dropped 2026-05-07 to slim the
+# backend image from ~9.6GB to ~800MB on the Hostinger VPS. The two
+# callers — services/semantic_cache.py and services/content_index.py —
+# both have optional-embedder paths that return None / no-op when
+# the package isn't installed, so the system degrades gracefully:
+#   - Semantic cache becomes a permanent miss (every prompt hits
+#     Claude directly). Per CLAUDE.md the cache was already disabled
+#     for CEO chat anyway, so the operational impact is minimal.
+#   - Content index falls back to non-semantic asset lookup.
+# To re-enable, restore sentence-transformers>=3.0.0 here AND pin the
+# CPU-only torch wheel via:
+#   --extra-index-url https://download.pytorch.org/whl/cpu
+#   torch>=2.0
+# Better long-term: swap content_index to OpenAI / Anthropic API
+# embeddings (HTTP call, no local model) — kills the dep entirely.
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 # matplotlib renders branded chart PNGs for Ad Strategist [GRAPH_DATA]
