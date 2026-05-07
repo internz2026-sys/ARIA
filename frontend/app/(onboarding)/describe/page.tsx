@@ -76,6 +76,16 @@ export default function DescribePage() {
       .then(r => r.json())
       .then(data => {
         setSessionId(data.session_id);
+        // Persist the session id immediately. Each /api/onboarding/message
+        // call writes the answer server-side keyed by this id, so even
+        // an accidental tab close or "Save & exit" mid-flow doesn't
+        // lose the answers — the backend has them all. This localStorage
+        // entry is the breadcrumb for a future /api/onboarding/resume
+        // path; the /review page already reads it to extract the config
+        // when /describe finishes.
+        if (data.session_id && typeof window !== "undefined") {
+          localStorage.setItem("aria_onboarding_session", data.session_id);
+        }
         if (data.message) {
           setMessages([{ role: "aria", text: data.message }]);
         }
@@ -363,6 +373,30 @@ export default function DescribePage() {
                 Send
               </button>
             </form>
+
+            {/* Mobile-only Continue / Review button. The right sidebar
+                that hosts this CTA on desktop is `hidden lg:block`, so
+                without this block phones had no way to advance once
+                ARIA said "ready for review". Mirrors the desktop
+                button label + disabled rule (>= 3 questions answered),
+                but lives inside the chat panel so it's reachable on
+                small viewports. lg:hidden hides it on desktop where
+                the sidebar version is already visible. */}
+            <div className="lg:hidden mt-3">
+              <button
+                onClick={handleContinue}
+                disabled={questionsAnswered < 3}
+                className="w-full flex items-center justify-center gap-2 h-11 rounded-lg bg-[#534AB7] text-white font-semibold text-sm hover:bg-[#433AA0] transition shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isComplete ? "Review & finish" : "Continue to review"}
+                <svg width="16" height="16" fill="none" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </button>
+              {questionsAnswered < 3 && (
+                <p className="text-[10px] text-[#B0AFA8] text-center mt-2">
+                  Answer at least 3 questions to continue
+                </p>
+              )}
+            </div>
           </div>
         </div>
 

@@ -75,9 +75,15 @@ export default function OnboardingLayout({ children }: { children: React.ReactNo
           ))}
         </div>
 
-        {/* Save & exit */}
-        <a href="/dashboard" className="text-sm text-[#5F5E5A] hover:text-[#2C2C2A] font-medium transition">
-          Save &amp; exit
+        {/* Save & exit — answers already persist server-side per
+            /api/onboarding/message, so this is just a navigation
+            shortcut. whitespace-nowrap stops the link from collapsing
+            into a 3-line "Save / & / exit" stack on narrow viewports. */}
+        <a
+          href="/dashboard"
+          className="text-sm text-[#5F5E5A] hover:text-[#2C2C2A] font-medium transition whitespace-nowrap shrink-0"
+        >
+          <span className="hidden sm:inline">Save &amp; </span>Exit
         </a>
       </header>
 
