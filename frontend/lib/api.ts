@@ -381,3 +381,18 @@ export const notificationsApi = {
       body: JSON.stringify({ ids: ids || [] }),
     }),
 };
+
+
+export const reports = {
+  list: (tenantId: string, limit = 50) =>
+    fetchAPI(`/api/reports/${tenantId}?limit=${limit}`),
+  get: (tenantId: string, reportId: string) =>
+    fetchAPI(`/api/reports/${tenantId}/${reportId}`),
+  generate: (tenantId: string, reportType = "state_of_union") =>
+    fetchAPI(`/api/reports/${tenantId}/generate`, {
+      method: "POST",
+      body: JSON.stringify({ report_type: reportType }),
+    }),
+  remove: (tenantId: string, reportId: string) =>
+    fetchAPI(`/api/reports/${tenantId}/${reportId}`, { method: "DELETE" }),
+};
