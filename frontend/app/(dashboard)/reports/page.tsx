@@ -183,7 +183,7 @@ export default function ReportsPage() {
       </div>
 
       {/* Generate tiles */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <button
           onClick={() => handleGenerate("state_of_union")}
           disabled={!!generating}
@@ -221,6 +221,66 @@ export default function ReportsPage() {
           </p>
           <span className="text-[11px] text-[#9E9C95] mt-2">
             {generating === "agent_productivity" ? "Rendering chart..." : "Takes ~2–4s · no Claude tokens"}
+          </span>
+        </button>
+
+        <button
+          onClick={() => handleGenerate("campaign_roi")}
+          disabled={!!generating}
+          className="bg-white rounded-xl border border-[#E0DED8] p-5 text-left hover:border-emerald-400/40 hover:shadow-sm transition disabled:opacity-50 disabled:cursor-wait flex flex-col gap-2"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-600">Ad Strategist</span>
+            {generating === "campaign_roi" && (
+              <div className="w-3.5 h-3.5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+            )}
+          </div>
+          <p className="text-base font-semibold text-[#2C2C2A]">Campaign ROI</p>
+          <p className="text-xs text-[#5F5E5A] leading-relaxed">
+            Funnel chart — Impressions → Clicks → Conversions. Lifetime totals across uploaded Meta Ads reports.
+          </p>
+          <span className="text-[11px] text-[#9E9C95] mt-2">
+            {generating === "campaign_roi" ? "Building funnel chart..." : "Takes ~2–4s · no Claude tokens"}
+          </span>
+        </button>
+
+        <button
+          onClick={() => handleGenerate("channel_spend")}
+          disabled={!!generating}
+          className="bg-white rounded-xl border border-[#E0DED8] p-5 text-left hover:border-blue-400/40 hover:shadow-sm transition disabled:opacity-50 disabled:cursor-wait flex flex-col gap-2"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-blue-600">ARIA CEO</span>
+            {generating === "channel_spend" && (
+              <div className="w-3.5 h-3.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            )}
+          </div>
+          <p className="text-base font-semibold text-[#2C2C2A]">Channel Spend</p>
+          <p className="text-xs text-[#5F5E5A] leading-relaxed">
+            Pie chart split by channel — Meta Ads, Email, Social. 30-day spend split across paid + owned channels.
+          </p>
+          <span className="text-[11px] text-[#9E9C95] mt-2">
+            {generating === "channel_spend" ? "Calculating spend split..." : "Takes ~2–4s · no Claude tokens"}
+          </span>
+        </button>
+
+        <button
+          onClick={() => handleGenerate("daily_pulse")}
+          disabled={!!generating}
+          className="bg-white rounded-xl border border-[#E0DED8] p-5 text-left hover:border-rose-400/40 hover:shadow-sm transition disabled:opacity-50 disabled:cursor-wait flex flex-col gap-2"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-rose-600">ARIA CEO</span>
+            {generating === "daily_pulse" && (
+              <div className="w-3.5 h-3.5 border-2 border-rose-600 border-t-transparent rounded-full animate-spin" />
+            )}
+          </div>
+          <p className="text-base font-semibold text-[#2C2C2A]">Daily Pulse</p>
+          <p className="text-xs text-[#5F5E5A] leading-relaxed">
+            24-hour activity snapshot — tasks done, emails, replies, active campaigns.
+          </p>
+          <span className="text-[11px] text-[#9E9C95] mt-2">
+            {generating === "daily_pulse" ? "Compiling daily snapshot..." : "Takes ~2–4s · no Claude tokens"}
           </span>
         </button>
       </div>
