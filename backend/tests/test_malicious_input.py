@@ -65,7 +65,11 @@ async def test_csv_import_oversized_rejected(
     that as 200 with ``errors[0].reason`` mentioning "max" and "split".
     """
     user_email = "oversize@aria.local"
-    tenant_id = "test-tenant-oversize"
+    # tenant_id MUST be a real UUID — get_verified_tenant builds a
+    # TenantConfig(tenant_id=...) under the hood, and Pydantic rejects
+    # non-UUID strings, which auth.py collapses to 403 before the
+    # handler ever runs. Use a fresh uuid4 per test.
+    tenant_id = str(uuid.uuid4())
     mock_tenant_lookup(tenant_id, user_email)
     headers = auth_headers_factory(user_id="oversize-user", email=user_email)
 
@@ -114,7 +118,7 @@ async def test_csv_import_prompt_injection_in_cell(
     is sit in the database — verify it does exactly that.
     """
     user_email = "injection@aria.local"
-    tenant_id = "test-tenant-injection"
+    tenant_id = str(uuid.uuid4())  # UUID required by TenantConfig validator
     mock_tenant_lookup(tenant_id, user_email)
     headers = auth_headers_factory(user_id="injection-user", email=user_email)
 
@@ -199,7 +203,7 @@ async def test_xlsx_with_long_string_rejected(
     one row. 500 / hang fails the test.
     """
     user_email = "longstring@aria.local"
-    tenant_id = "test-tenant-longstring"
+    tenant_id = str(uuid.uuid4())  # UUID required by TenantConfig validator
     mock_tenant_lookup(tenant_id, user_email)
     headers = auth_headers_factory(user_id="longstring-user", email=user_email)
 
