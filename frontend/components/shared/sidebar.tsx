@@ -198,7 +198,11 @@ export default function Sidebar() {
     if (!ok) return;
     await supabase.auth.signOut();
     clearRoleCache();
-    router.replace("/login");
+    // Send the user back to the public landing page rather than /login
+    // so the experience matches typical SaaS sign-out (the marketing
+    // surface, not a credentials prompt). Login link is still one
+    // click away from the landing nav.
+    router.replace("/");
   }
 
   return (

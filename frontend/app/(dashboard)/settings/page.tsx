@@ -66,7 +66,9 @@ export default function SettingsPage() {
     });
     if (!ok) return;
     await supabase.auth.signOut();
-    window.location.href = "/login";
+    // Match sidebar sign-out behavior — land on the marketing page,
+    // not the login form.
+    window.location.href = "/";
   };
   const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
   const [gmailEmail, setGmailEmail] = useState<string>("");
