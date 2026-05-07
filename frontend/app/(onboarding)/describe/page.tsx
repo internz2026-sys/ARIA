@@ -310,7 +310,14 @@ export default function DescribePage() {
                 </button>
               </div>
             )}
-            <form onSubmit={handleSend} className="flex items-end gap-3">
+            {/* Mobile stacks the textarea above its action buttons so
+                the input gets full width — on mobile the row layout
+                squeezed the textarea to ~60px, rendering placeholder
+                text vertically (each letter on its own line). Desktop
+                keeps the inline row. The button row uses a separate
+                flex container so the 4 actions stay aligned + same
+                gap on both breakpoints. */}
+            <form onSubmit={handleSend} className="flex flex-col sm:flex-row sm:items-end gap-2 sm:gap-3">
               <textarea
                 ref={textareaRef}
                 value={stt.listening && stt.transcript ? stt.transcript : input}
@@ -319,8 +326,9 @@ export default function DescribePage() {
                 placeholder={stt.listening ? "Listening... (sends after 3s of silence)" : "Type your answer..."}
                 disabled={loading}
                 rows={1}
-                className="flex-1 min-h-[44px] max-h-[240px] rounded-lg border border-[#E0DED8] px-4 py-2.5 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60 resize-none"
+                className="flex-1 min-w-0 min-h-[44px] max-h-[240px] rounded-lg border border-[#E0DED8] px-4 py-2.5 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60 resize-none"
               />
+              <div className="flex items-end gap-2 sm:gap-3">
               {tts.supported && (
                 <button
                   type="button"
@@ -372,6 +380,7 @@ export default function DescribePage() {
               >
                 Send
               </button>
+              </div>
             </form>
 
             {/* Mobile-only Continue / Review button. The right sidebar
