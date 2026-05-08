@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 
 export default function ReviewPage() {
@@ -52,9 +52,8 @@ export default function ReviewPage() {
       try { fallbackCfg = JSON.parse(cached); } catch { /* ignore */ }
     }
 
-    fetch(`${API_URL}/api/onboarding/extract-config`, {
+    authFetch(`${API_URL}/api/onboarding/extract-config`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId }),
     })
       .then(r => {

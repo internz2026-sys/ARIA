@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
-from backend.auth import get_current_user, get_verified_tenant, check_rate_limit
+from backend.auth import get_current_user, get_verified_tenant, check_rate_limit, get_user_id_from_jwt
 
 load_dotenv()
 
@@ -44,7 +44,7 @@ def _safe_oauth_error(message: str) -> str:
 from backend.approval import requires_approval, validate_execution, ACTION_POLICIES
 from backend.config.loader import get_tenant_config, save_tenant_config
 from backend.services.supabase import get_db as _get_supabase
-from backend.onboarding_agent import OnboardingAgent
+from backend.onboarding_agent import OnboardingAgent, FIELD_QUESTIONS
 from backend.orchestrator import (
     dispatch_agent,
     get_agent_status,
@@ -760,15 +760,24 @@ app.add_middleware(
 )
 
 # ── Public paths that don't require authentication ────────────────────────
+# NOTE: the /api/onboarding/* endpoints USED to be public. They were moved
+# behind JWT auth on 2026-05-07 (security audit MEDIUM finding) so a stolen
+# session_id can't be replayed by another user. The session is now bound
+# to the JWT user_id at /start time, and every subsequent /message,
+# /skip, /extract-config, /save-config call verifies the JWT user matches
+# the session's bound user.
+#
+# The /save-draft, /draft (GET), /draft (DELETE) endpoints were ALSO moved
+# behind JWT auth on 2026-05-07 (CRITICAL audit findings #1-3): they
+# previously trusted attacker-supplied user_id from the request, which
+# defeated the /start hardening. user_id is now derived from the JWT.
+#
+# /api/onboarding/save-config-direct was the last public onboarding endpoint
+# and was locked down on 2026-05-07 — owner_email is now derived from the
+# JWT email claim, and writes against an existing_tenant_id verify ownership
+# before overwriting. Body's owner_email field is ignored.
 _PUBLIC_PATHS = {
     "/health",
-    "/api/onboarding/start",
-    "/api/onboarding/message",
-    "/api/onboarding/extract-config",
-    "/api/onboarding/save-config",
-    "/api/onboarding/save-config-direct",
-    "/api/onboarding/save-draft",
-    "/api/onboarding/draft",
     "/api/whatsapp/webhook",
     "/api/cron/run-scheduled",
 }
@@ -813,7 +822,24 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
 
     secret = _get_jwt_secret()
     if not secret:
-        # Auth not configured (dev mode) — allow through
+        # Auth not configured. Audit fix 2026-05-07 (HIGH): refuse to
+        # fall through in production. A missing JWT secret in prod
+        # almost always means the env var rotation lost the value; we'd
+        # rather 500 every request than silently disable auth. Dev mode
+        # (ARIA_ENV unset / "dev" / "local") still allows through so
+        # local development without Supabase keeps working.
+        env = os.environ.get("ARIA_ENV", "").lower()
+        if env in ("prod", "production"):
+            from starlette.responses import JSONResponse
+            logger.error(
+                "SUPABASE_JWT_SECRET unset in ARIA_ENV=%s — middleware refusing dev-mode fallthrough",
+                env,
+            )
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Auth misconfigured: SUPABASE_JWT_SECRET required in production"},
+            )
+        # Dev mode — allow through
         return await call_next(request)
 
     token = _extract_token(request)
@@ -1117,7 +1143,12 @@ async def leave_tenant(sid, data):
 
 
 # Active onboarding sessions
-onboarding_sessions: dict[str, OnboardingAgent] = {}
+# Maps session_id -> (user_id, OnboardingAgent). user_id is the Supabase auth
+# `sub` claim from the JWT bound at /start time. Every subsequent endpoint
+# (message, skip, extract-config, save-config) verifies the caller's JWT
+# user_id matches the bound user_id before touching the agent — anti-replay
+# defense per security audit (2026-05-07).
+onboarding_sessions: dict[str, tuple[str, OnboardingAgent]] = {}
 
 # ─── Virtual Office Agent Definitions (matches AGENT_REGISTRY) ───
 VIRTUAL_OFFICE_AGENTS = [
@@ -2319,21 +2350,190 @@ async def tenant_by_email(email: str):
         return {"tenant_id": None}
 
 
+# ── Onboarding session helpers (auth-bound + resumable) ──────────────────
+# These endpoints are now JWT-bound (removed from _PUBLIC_PATHS on
+# 2026-05-07). Two new behaviors:
+#   1. Each session is bound to the JWT user_id at /start time. Subsequent
+#      calls verify the caller's JWT matches the session's bound user, so
+#      a leaked session_id can't be replayed by a different user.
+#   2. /start can resume from a persisted onboarding_drafts row keyed by
+#      user_id. If a row with conversation_history exists, the agent is
+#      rehydrated via OnboardingAgent.from_dict and the LAST AI message
+#      is replayed so the user picks up at the same question.
+#   3. /message persists the agent's full state to onboarding_drafts on
+#      every turn so progress survives restarts and tab closures.
+#   4. /save-config deletes the draft row once the tenant config is saved.
+
+
+def _get_session_for_user(session_id: str, user_id: str) -> OnboardingAgent:
+    """Look up the agent by session_id and verify the JWT user owns it.
+
+    Raises 404 if the session_id is unknown (in-memory store wiped on
+    restart — frontend should call /start to rehydrate from the DB row),
+    403 if the JWT user_id doesn't match the bound user.
+    """
+    entry = onboarding_sessions.get(session_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Session not found")
+    bound_user_id, agent = entry
+    # Allow dev-mode fallthrough — get_current_user returns "dev-user"
+    # when SUPABASE_JWT_SECRET isn't set; the bound user_id will also be
+    # "dev-user" in that case, so the equality check still holds.
+    if bound_user_id != user_id:
+        logger.warning(
+            "Onboarding session replay rejected: session=%s bound_to=%s but caller=%s",
+            session_id, bound_user_id, user_id,
+        )
+        raise HTTPException(status_code=403, detail="Session does not belong to this user")
+    return agent
+
+
+def _persist_onboarding_draft(user_id: str, session_id: str, agent: OnboardingAgent) -> None:
+    """Best-effort persistence of the agent's state to onboarding_drafts.
+
+    Called on every /message turn. Failures are logged but don't break the
+    chat flow — losing a snapshot is preferable to 500ing the user mid-
+    conversation. The DB row is keyed by user_id (UNIQUE), so this is an
+    UPSERT that always points at the same row per user.
+    """
+    try:
+        sb = _get_supabase()
+        row = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "extracted_config": agent._extracted_config or {},
+            "skipped_topics": agent.skipped_topics,
+            "conversation_history": agent.to_dict(),
+        }
+        sb.table("onboarding_drafts").upsert(row, on_conflict="user_id").execute()
+    except Exception as e:
+        logger.warning("Failed to persist onboarding draft for user=%s: %s", user_id, e)
+
+
+def _load_onboarding_draft(user_id: str) -> dict | None:
+    """Fetch the user's persisted onboarding draft row, or None if absent.
+
+    Returns the raw row dict (with conversation_history, session_id,
+    extracted_config, skipped_topics). Any error is logged and treated
+    as "no draft" so a transient DB blip falls through to fresh-start
+    instead of breaking onboarding entirely.
+    """
+    try:
+        sb = _get_supabase()
+        result = (
+            sb.table("onboarding_drafts")
+            .select("user_id,session_id,extracted_config,skipped_topics,conversation_history")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            row = result.data[0]
+            # Defense-in-depth (2026-05-07, HIGH audit fix): the .eq()
+            # filter above already restricts the query, but we still
+            # explicitly assert the returned row's user_id matches the
+            # caller's user_id before handing it back. Catches any
+            # future regression where the filter is removed/refactored
+            # without updating callers, plus defends against a hostile
+            # row injected via a different code path.
+            row_user_id = row.get("user_id")
+            if row_user_id and str(row_user_id) != str(user_id):
+                logger.error(
+                    "Onboarding draft load rejected: row user_id=%s != caller=%s",
+                    row_user_id, user_id,
+                )
+                raise HTTPException(
+                    status_code=403,
+                    detail="Draft does not belong to this user",
+                )
+            return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Failed to load onboarding draft for user=%s: %s", user_id, e)
+    return None
+
+
+def _delete_onboarding_draft(user_id: str) -> None:
+    """Best-effort delete of the user's draft row after save-config."""
+    try:
+        sb = _get_supabase()
+        sb.table("onboarding_drafts").delete().eq("user_id", user_id).execute()
+    except Exception as e:
+        logger.warning("Failed to delete onboarding draft for user=%s: %s", user_id, e)
+
+
+def _last_assistant_message(agent: OnboardingAgent) -> str:
+    """Return the last 'assistant' role message from the agent's history,
+    or fall back to the next-question prompt if the history is empty."""
+    for msg in reversed(agent.messages):
+        if msg.get("role") == "assistant":
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+    # Fallback: ask the current pending question.
+    cur = agent.current_field
+    if cur:
+        return FIELD_QUESTIONS[cur]
+    return agent._build_final_summary()
+
+
 @app.post("/api/onboarding/start")
-async def start_onboarding(body: OnboardingStart):
+async def start_onboarding(body: OnboardingStart, user_id: str = Depends(get_user_id_from_jwt)):
+    # Try to resume from a persisted draft first.
+    # Note: only the new from_dict snapshot shape (a dict with messages/
+    # field_state keys, written by this server's _persist_onboarding_draft)
+    # supports resume. Legacy drafts written by /api/onboarding/save-draft
+    # store conversation_history as a list of chat messages — those don't
+    # carry enough state to rehydrate, so we let those users start fresh.
+    draft = _load_onboarding_draft(user_id)
+    history = (draft or {}).get("conversation_history")
+    if isinstance(history, dict) and history.get("messages"):
+        try:
+            agent = OnboardingAgent.from_dict(history)
+            # Reuse stored session_id if present, else mint a new one.
+            session_id = draft.get("session_id") or str(uuid.uuid4())
+            onboarding_sessions[session_id] = (user_id, agent)
+            resumed_message = _last_assistant_message(agent)
+            return {
+                "session_id": session_id,
+                "message": resumed_message,
+                "is_resumed": True,
+                "is_complete": agent.is_complete(),
+                "questions_answered": agent.questions_answered,
+                "validated_fields": sorted(agent.validated_fields),
+                "skipped_topics": agent.skipped_topics,
+            }
+        except Exception as e:
+            logger.warning(
+                "Failed to rehydrate onboarding session for user=%s: %s — starting fresh",
+                user_id, e,
+            )
+
+    # Fresh start.
     session_id = body.session_id or str(uuid.uuid4())
     agent = OnboardingAgent()
     greeting = agent.start_conversation()
-    onboarding_sessions[session_id] = agent
-    return {"session_id": session_id, "message": greeting}
+    onboarding_sessions[session_id] = (user_id, agent)
+    # Persist the empty draft so /draft GET / future /start calls see it.
+    _persist_onboarding_draft(user_id, session_id, agent)
+    return {
+        "session_id": session_id,
+        "message": greeting,
+        "is_resumed": False,
+        "is_complete": False,
+        "questions_answered": 0,
+        "validated_fields": [],
+        "skipped_topics": [],
+    }
 
 
 @app.post("/api/onboarding/message")
-async def onboarding_message(body: OnboardingMessage):
-    agent = onboarding_sessions.get(body.session_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def onboarding_message(body: OnboardingMessage, user_id: str = Depends(get_user_id_from_jwt)):
+    agent = _get_session_for_user(body.session_id, user_id)
     response = await agent.process_message(body.message)
+    # Persist after every turn so progress survives restarts/tab closes.
+    _persist_onboarding_draft(user_id, body.session_id, agent)
     return {
         "message": response,
         "is_complete": agent.is_complete(),
@@ -2343,12 +2543,14 @@ async def onboarding_message(body: OnboardingMessage):
 
 
 @app.post("/api/onboarding/skip")
-async def onboarding_skip(body: OnboardingStart):
-    agent = onboarding_sessions.get(body.session_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def onboarding_skip(body: OnboardingStart, user_id: str = Depends(get_user_id_from_jwt)):
+    if not body.session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+    agent = _get_session_for_user(body.session_id, user_id)
     skipped = agent.skip_current_topic()
     current = agent.get_current_topic()
+    # Persist skip immediately.
+    _persist_onboarding_draft(user_id, body.session_id, agent)
     return {
         "skipped_topic": skipped,
         "current_topic": current,
@@ -2359,16 +2561,18 @@ async def onboarding_skip(body: OnboardingStart):
 
 
 @app.post("/api/onboarding/extract-config")
-async def extract_config(body: OnboardingStart):
-    agent = onboarding_sessions.get(body.session_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def extract_config(body: OnboardingStart, user_id: str = Depends(get_user_id_from_jwt)):
+    if not body.session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+    agent = _get_session_for_user(body.session_id, user_id)
     try:
         config_data = await agent.extract_config()
     except Exception as e:
         logger.error("extract_config failed: %s", e)
         # Return the fallback config so the frontend still works
         config_data = agent._fallback_config_from_messages()
+    # Persist the fresh extracted_config snapshot too.
+    _persist_onboarding_draft(user_id, body.session_id, agent)
     return {"config": config_data}
 
 
@@ -2381,12 +2585,10 @@ class SaveConfig(BaseModel):
 
 
 @app.post("/api/onboarding/save-config")
-async def save_config(body: SaveConfig):
+async def save_config(body: SaveConfig, user_id: str = Depends(get_user_id_from_jwt)):
     from backend.config.brief import generate_agent_brief
 
-    agent = onboarding_sessions.get(body.session_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Session not found")
+    agent = _get_session_for_user(body.session_id, user_id)
     tenant_id = body.existing_tenant_id or str(uuid.uuid4())
     config = await agent.build_tenant_config(tenant_id, body.owner_email, body.owner_name, body.active_agents)
 
@@ -2397,15 +2599,23 @@ async def save_config(body: SaveConfig):
         logger.warning("Brief generation failed (will use full context): %s", e)
 
     save_tenant_config(config)
-    del onboarding_sessions[body.session_id]
+    # Drop the in-memory session and the persisted draft row so future
+    # /start calls for this user begin from scratch.
+    onboarding_sessions.pop(body.session_id, None)
+    _delete_onboarding_draft(user_id)
     return {"tenant_id": tenant_id, "config": config.model_dump(mode="json")}
 
 
 class SaveConfigDirect(BaseModel):
     """Accept the raw extracted config JSON (cached on the frontend) to save
-    directly — no backend session needed."""
+    directly — no backend session needed.
+
+    NOTE: any client-supplied owner_email is IGNORED — owner_email is derived
+    from the JWT email claim. Field kept for backwards-compat with existing
+    frontend code that still sends it (and so 4xx-on-extra isn't tripped).
+    """
     config: dict
-    owner_email: str
+    owner_email: str | None = None  # ignored — derived from JWT
     owner_name: str
     active_agents: list[str] | None = None
     skipped_topics: list[str] | None = None
@@ -2413,11 +2623,40 @@ class SaveConfigDirect(BaseModel):
 
 
 @app.post("/api/onboarding/save-config-direct")
-async def save_config_direct(body: SaveConfigDirect):
+async def save_config_direct(
+    body: SaveConfigDirect,
+    request: Request,
+):
+    """Save a tenant config directly from the cached frontend extraction.
+
+    JWT-bound (2026-05-07): owner_email is derived from the JWT email claim,
+    NOT trusted from the request body. Previously this endpoint was public
+    and accepted whatever owner_email the client sent, which let any caller
+    overwrite any user's tenant config (or impersonate a brand-new tenant
+    under someone else's email). Now:
+
+      - owner_email comes from the JWT (`email` claim)
+      - if existing_tenant_id is set, the JWT user must own that tenant
+        (ownership check via `get_verified_tenant`)
+    """
     from backend.config.tenant_schema import (
         TenantConfig, ICPConfig, ProductConfig, GTMPlaybook, BrandVoice, GTMProfile,
     )
     from backend.config.brief import generate_agent_brief
+
+    # Derive owner identity from the JWT — ignore body fields entirely.
+    user = await get_current_user(request)
+    jwt_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
+    if not jwt_email:
+        # Dev-mode fallthrough has email="dev@localhost"; real prod tokens
+        # always carry an email claim. If we got here without one, fail.
+        raise HTTPException(status_code=401, detail="Invalid token: no email claim")
+
+    # If the caller is overwriting an existing tenant, verify ownership
+    # before letting them clobber it. Reuses the same predicate everything
+    # else in the system uses (`tenant_configs.owner_email` match).
+    if body.existing_tenant_id:
+        await get_verified_tenant(request, body.existing_tenant_id)
 
     extracted = body.config
     has_skips = bool(body.skipped_topics)
@@ -2453,7 +2692,7 @@ async def save_config_direct(body: SaveConfigDirect):
         active_agents=body.active_agents or extracted.get("recommended_agents", ["ceo", "content_writer"]),
         channels=extracted.get("channels", []),
         gtm_profile=gtm_profile,
-        owner_email=body.owner_email,
+        owner_email=jwt_email,
         owner_name=body.owner_name,
         plan="starter",
         onboarding_status="completed" if not has_skips else "in_progress",
@@ -2486,7 +2725,10 @@ async def save_config_direct(body: SaveConfigDirect):
 #   3. After successful /save-config, frontend calls DELETE to clean up
 
 class OnboardingDraftPayload(BaseModel):
-    user_id: str
+    # NOTE: any client-supplied user_id is IGNORED — we always derive
+    # user_id from the JWT. Field kept here only for backwards-compat
+    # with existing frontend code that still sends it.
+    user_id: str | None = None
     session_id: str | None = None
     extracted_config: dict
     skipped_topics: list | None = None
@@ -2494,18 +2736,22 @@ class OnboardingDraftPayload(BaseModel):
 
 
 @app.post("/api/onboarding/save-draft")
-async def save_onboarding_draft(body: OnboardingDraftPayload):
-    """Upsert the user's in-progress onboarding draft.
+async def save_onboarding_draft(
+    body: OnboardingDraftPayload,
+    user_id: str = Depends(get_user_id_from_jwt),
+):
+    """Upsert the authenticated user's in-progress onboarding draft.
 
-    Public (no JWT required) because the user is mid-onboarding and may
-    not have a tenant yet -- but the user_id MUST come from the
-    authenticated Supabase session on the client side. This endpoint
-    just trusts that and writes the row.
+    JWT-bound (2026-05-07, CRITICAL audit fix): user_id always comes from
+    the JWT. Any user_id field in the request body is ignored. Previously
+    this endpoint was public and trusted whatever user_id the client sent,
+    which defeated the /start auth-binding (an attacker could overwrite
+    any user's draft by knowing their UUID).
     """
     try:
         sb = _get_supabase()
         row = {
-            "user_id": body.user_id,
+            "user_id": user_id,
             "session_id": body.session_id,
             "extracted_config": body.extracted_config,
             "skipped_topics": body.skipped_topics,
@@ -2516,17 +2762,20 @@ async def save_onboarding_draft(body: OnboardingDraftPayload):
         sb.table("onboarding_drafts").upsert(row, on_conflict="user_id").execute()
         return {"saved": True}
     except Exception as e:
-        logger.warning("Failed to save onboarding draft: %s", e)
+        logger.warning("Failed to save onboarding draft for user=%s: %s", user_id, e)
         return {"saved": False, "error": str(e)[:200]}
 
 
 @app.get("/api/onboarding/draft")
-async def get_onboarding_draft(user_id: str):
-    """Return the user's most recent in-progress onboarding draft, or 404
-    if none exists. Used by /select-agents on mount before falling back
-    to localStorage."""
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
+async def get_onboarding_draft(user_id: str = Depends(get_user_id_from_jwt)):
+    """Return the authenticated user's most recent in-progress onboarding
+    draft, or 404 if none exists. Used by /select-agents on mount before
+    falling back to localStorage.
+
+    JWT-bound (2026-05-07, CRITICAL audit fix): user_id always comes from
+    the JWT. Any ?user_id= query param is ignored. Previously this was
+    public and let any caller read any user's draft by guessing UUIDs.
+    """
     try:
         sb = _get_supabase()
         result = (
@@ -2542,20 +2791,26 @@ async def get_onboarding_draft(user_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Failed to load onboarding draft: %s", e)
+        logger.warning("Failed to load onboarding draft for user=%s: %s", user_id, e)
         raise HTTPException(status_code=500, detail="Could not load draft")
 
 
 @app.delete("/api/onboarding/draft")
-async def delete_onboarding_draft(user_id: str):
-    """Clean up the user's draft after successful save-config. Best-effort:
-    if the delete fails the row will just expire naturally over time."""
+async def delete_onboarding_draft(user_id: str = Depends(get_user_id_from_jwt)):
+    """Clean up the authenticated user's draft after successful save-config.
+    Best-effort: if the delete fails the row will just expire naturally
+    over time.
+
+    JWT-bound (2026-05-07, CRITICAL audit fix): user_id always comes from
+    the JWT. Any ?user_id= query param is ignored. Previously this was
+    public and let any caller delete any user's draft.
+    """
     try:
         sb = _get_supabase()
         sb.table("onboarding_drafts").delete().eq("user_id", user_id).execute()
         return {"deleted": True}
     except Exception as e:
-        logger.warning("Failed to delete onboarding draft: %s", e)
+        logger.warning("Failed to delete onboarding draft for user=%s: %s", user_id, e)
         return {"deleted": False}
 
 

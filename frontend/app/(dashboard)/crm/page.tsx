@@ -269,6 +269,7 @@ export default function CRMPage() {
   const [contactLoading, setContactLoading] = useState(true);
   const [showAddContact, setShowAddContact] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
 
   // ─── Companies state ───
   const [companies, setCompanies] = useState<CrmCompany[]>([]);
@@ -579,6 +580,73 @@ export default function CRMPage() {
     }
   }
 
+  // ─── CSV Export ───
+  async function handleExportContacts() {
+    if (!tenantId) return;
+    setExportLoading(true);
+    try {
+      const [contactData, companyData] = await Promise.all([
+        crm.listContacts(tenantId, "", "", 1, 1000),
+        crm.listCompanies(tenantId),
+      ]);
+      const allContacts: CrmContact[] = contactData.contacts || [];
+      const allCompanies: CrmCompany[] = companyData.companies || [];
+
+      // Build id → name lookup for company join
+      const companyMap: Record<string, string> = {};
+      for (const co of allCompanies) {
+        companyMap[co.id] = co.name;
+      }
+
+      // RFC 4180 cell escaping: wrap in quotes, double internal quotes.
+      // Arrow form (not `function`) because TS strict-mode + ES5 target
+      // rejects function declarations inside blocks.
+      const csvCell = (val: unknown): string => {
+        const s = val == null ? "" : String(val);
+        if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
+          return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+      };
+
+      const headers = ["Name", "Email", "Phone", "Title", "Company", "Status", "Source", "Tags", "Notes", "Created At"];
+      const rows = allContacts.map(c => [
+        csvCell(c.name),
+        csvCell(c.email),
+        csvCell(c.phone),
+        csvCell((c as any).title ?? ""),
+        csvCell(c.company_id ? (companyMap[c.company_id] ?? "") : (c.company_name ?? "")),
+        csvCell(c.status),
+        csvCell(c.source),
+        csvCell(Array.isArray(c.tags) ? c.tags.join(";") : ""),
+        csvCell(c.notes),
+        csvCell(c.created_at ? new Date(c.created_at).toISOString().slice(0, 10) : ""),
+      ]);
+
+      const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\r\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const today = new Date().toISOString().slice(0, 10);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `aria-contacts-${today}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      showToast({ title: `Exported ${allContacts.length} contact${allContacts.length !== 1 ? "s" : ""}`, variant: "success" });
+    } catch (err: any) {
+      showToast({
+        title: "Export failed",
+        body: err?.message || "Network error -- please try again.",
+        variant: "error",
+      });
+    } finally {
+      setExportLoading(false);
+    }
+  }
+
   // ─── Company CRUD ───
   const [newCompany, setNewCompany] = useState({ name: "", domain: "", industry: "", size: "", notes: "" });
 
@@ -743,25 +811,47 @@ export default function CRMPage() {
   ];
 
   return (
-    <div className="max-w-screen-2xl mx-auto space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="max-w-screen-2xl mx-auto space-y-4 min-w-0">
+      {/* Header — stacks vertically on mobile so buttons never overflow the viewport */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">CRM</h1>
           <p className="text-sm text-[#5F5E5A]">Manage contacts, companies, and deals</p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Action buttons: on mobile, all three sit in one evenly-spaced row (flex + flex-1 per button)
+            so each button is ~⅓ of the available width and nothing escapes the viewport */}
+        <div className="flex items-center gap-2 sm:shrink-0">
           {tab === "contacts" && (
-            <button
-              onClick={() => setShowImport(true)}
-              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors whitespace-nowrap"
-              title="Import contacts from CSV or XLSX"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-              </svg>
-              Import
-            </button>
+            <>
+              <button
+                onClick={handleExportContacts}
+                disabled={exportLoading}
+                className="flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-3 py-2 min-h-[40px] text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Export all contacts to CSV"
+              >
+                {exportLoading ? (
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M12 3v13.5m0 0l-4.5-4.5M12 16.5l4.5-4.5" />
+                  </svg>
+                )}
+                Export
+              </button>
+              <button
+                onClick={() => setShowImport(true)}
+                className="flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-3 py-2 min-h-[40px] text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors whitespace-nowrap"
+                title="Import contacts from CSV or XLSX"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                </svg>
+                Import
+              </button>
+            </>
           )}
           <button
             onClick={() => {
@@ -769,7 +859,7 @@ export default function CRMPage() {
               else if (tab === "companies") setShowAddCompany(true);
               else setShowAddDeal(true);
             }}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors whitespace-nowrap"
+            className="flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-4 py-2 min-h-[40px] text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors whitespace-nowrap"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
             Add {tab === "contacts" ? "Contact" : tab === "companies" ? "Company" : "Deal"}

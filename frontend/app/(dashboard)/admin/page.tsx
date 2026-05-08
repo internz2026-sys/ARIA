@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { authFetch, API_URL } from "@/lib/api";
+import { authFetch, API_URL, admin as adminApi } from "@/lib/api";
 import { useConfirm } from "@/lib/use-confirm";
 import { Panel } from "@/components/ui/panel";
 
@@ -13,7 +13,7 @@ import { Panel } from "@/components/ui/panel";
 // ARIA's session lives in localStorage (Supabase implicit flow) and
 // can't be read server-side without migrating to cookie auth.
 
-type Role = "user" | "admin" | "super_admin";
+type Role = "user" | "admin" | "super_admin" | "banned";
 type Status = "active" | "paused" | "suspended";
 
 type AdminUser = {
@@ -22,9 +22,82 @@ type AdminUser = {
   full_name: string | null;
   role: Role;
   status: Status;
+  /** Non-null when the user is currently banned (ISO timestamp). */
+  banned_at?: string | null;
   created_at: string;
   updated_at: string;
 };
+
+// ── Ban reason dialog ────────────────────────────────────────────────────────
+// useConfirm doesn't support a textarea, so we use a small inline modal for
+// the Ban flow. The Unban flow is simpler and reuses useConfirm as-is.
+
+interface BanDialogProps {
+  target: AdminUser;
+  onConfirm: (reason: string) => void;
+  onCancel: () => void;
+}
+
+function BanDialog({ target, onConfirm, onCancel }: BanDialogProps) {
+  const [reason, setReason] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { textareaRef.current?.focus(); }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl max-w-md w-full mx-4 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-6 pt-6 pb-2">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center flex-shrink-0">
+              <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+              </svg>
+            </div>
+            <h3 className="text-lg font-semibold text-[#2C2C2A]">Ban this user?</h3>
+          </div>
+        </div>
+        <div className="px-6 py-4 space-y-3">
+          <p className="text-sm text-[#5F5E5A] leading-relaxed">
+            <strong>{target.email || target.user_id}</strong> will be unable to log in for 1 year (8,760 hours). You can lift the ban at any time using the Unban button.
+          </p>
+          <div>
+            <label className="block text-xs font-medium text-[#5F5E5A] mb-1">
+              Reason <span className="text-[#9E9C95] font-normal">(optional)</span>
+            </label>
+            <textarea
+              ref={textareaRef}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={3}
+              placeholder="e.g. Abuse of service, repeated ToS violations..."
+              className="w-full text-sm px-3 py-2 rounded-lg border border-[#E0DED8] focus:outline-none focus:ring-2 focus:ring-red-400/30 focus:border-red-400/60 resize-none"
+            />
+          </div>
+        </div>
+        <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-3">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm(reason)}
+            className="px-4 py-2 text-sm font-medium rounded-lg text-white bg-red-500 hover:bg-red-600 transition-colors"
+          >
+            Ban user
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 type Stats = {
   users_total: number;
@@ -38,13 +111,19 @@ const ROLE_LABELS: Record<Role, string> = {
   user: "User",
   admin: "Admin",
   super_admin: "Super Admin",
+  banned: "Banned",
 };
 
 const ROLE_BADGE: Record<Role, string> = {
   user: "bg-[#F0F0EE] text-[#5F5E5A] border-[#E0DED8]",
   admin: "bg-[#EEEDFE] text-[#534AB7] border-[#534AB7]/30",
   super_admin: "bg-[#FFF4D6] text-[#8A6D00] border-[#D4B24C]/40",
+  banned: "bg-[#FDEEE8] text-[#B8491F] border-[#D85A30]/30",
 };
+
+// Badge used for the Banned status indicator in the Status column,
+// separate from role badge so it works even when role !== "banned".
+const BANNED_BADGE_CLS = "bg-[#FDEEE8] text-[#B8491F] border-[#D85A30]/30";
 
 const STATUS_BADGE: Record<Status, string> = {
   active: "bg-[#E6F5ED] text-[#157A5A] border-[#1D9E75]/30",
@@ -68,9 +147,11 @@ export default function AdminPage() {
   const [roleFilter, setRoleFilter] = useState<"" | Role>("");
   const [loading, setLoading] = useState(true);
   const [pendingChange, setPendingChange] = useState<string | null>(null);
-  const [pendingAction, setPendingAction] = useState<{ user_id: string; kind: "reset" | "delete" } | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ user_id: string; kind: "reset" | "delete" | "ban" | "unban" } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
   const [successMsg, setSuccessMsg] = useState<string>("");
+  /** Non-null while the ban reason dialog is open for a specific user. */
+  const [banTarget, setBanTarget] = useState<AdminUser | null>(null);
   const { confirm } = useConfirm();
 
   // Initial role check — single source of truth for whether this page
@@ -253,6 +334,51 @@ export default function AdminPage() {
     setPendingAction(null);
   };
 
+  const handleBanUser = async (target: AdminUser, reason: string) => {
+    setBanTarget(null);
+    setPendingAction({ user_id: target.user_id, kind: "ban" });
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const body = await adminApi.banUser(target.user_id, 8760, reason);
+      // Reflect the ban locally — mark role as "banned" and store banned_at
+      setUsers((prev) => prev.map((u) =>
+        u.user_id === target.user_id
+          ? { ...u, role: "banned" as Role, banned_at: body.banned_until ?? new Date().toISOString() }
+          : u,
+      ));
+      setSuccessMsg(`Banned ${target.email || "user"} until ${body.banned_until ? new Date(body.banned_until).toLocaleDateString() : "1 year from now"}.`);
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Couldn't ban user");
+    }
+    setPendingAction(null);
+  };
+
+  const handleUnbanUser = async (target: AdminUser) => {
+    const ok = await confirm({
+      title: "Unban this user?",
+      message: `${target.email || target.user_id} will immediately regain the ability to log in.`,
+      confirmLabel: "Unban",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    setPendingAction({ user_id: target.user_id, kind: "unban" });
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      await adminApi.unbanUser(target.user_id);
+      setUsers((prev) => prev.map((u) =>
+        u.user_id === target.user_id
+          ? { ...u, role: "user" as Role, banned_at: null }
+          : u,
+      ));
+      setSuccessMsg(`Unbanned ${target.email || "user"}.`);
+    } catch (e: any) {
+      setErrorMsg(e?.message || "Couldn't unban user");
+    }
+    setPendingAction(null);
+  };
+
   if (authState === "checking") {
     return (
       <div className="min-h-[60vh] flex items-center justify-center">
@@ -284,7 +410,19 @@ export default function AdminPage() {
 
   const isSuper = me?.role === "super_admin";
 
+  /** True when a user row indicates a ban, via either signal the backend may provide. */
+  const isBanned = (u: AdminUser) => Boolean(u.banned_at) || u.role === "banned";
+
   return (
+    <>
+    {/* Ban reason dialog — rendered outside the table so it can centre-overlay */}
+    {banTarget && (
+      <BanDialog
+        target={banTarget}
+        onConfirm={(reason) => handleBanUser(banTarget, reason)}
+        onCancel={() => setBanTarget(null)}
+      />
+    )}
     <div className="max-w-screen-2xl mx-auto space-y-6">
       <div>
         <div className="flex items-center gap-3 mb-1">
@@ -388,9 +526,17 @@ export default function AdminPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${STATUS_BADGE[u.status || "active"]}`}>
-                        {STATUS_LABELS[u.status || "active"].toUpperCase()}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${STATUS_BADGE[u.status || "active"]}`}>
+                          {STATUS_LABELS[u.status || "active"].toUpperCase()}
+                        </span>
+                        {isBanned(u) && (
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${BANNED_BADGE_CLS}`}
+                            title={u.banned_at ? `Banned until ${new Date(u.banned_at).toLocaleDateString()}` : "Banned"}>
+                            {u.banned_at ? `BANNED UNTIL ${new Date(u.banned_at).toLocaleDateString()}` : "BANNED"}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-[#9E9C95] text-xs">
                       {u.created_at ? new Date(u.created_at).toLocaleDateString() : "—"}
@@ -449,6 +595,28 @@ export default function AdminPage() {
                         >
                           {pendingAction?.user_id === u.user_id && pendingAction.kind === "reset" ? "Sending..." : "Reset password"}
                         </button>
+                        {/* Ban / Unban — destructive; only super_admins can ban */}
+                        {canEdit && isSuper && (
+                          isBanned(u) ? (
+                            <button
+                              onClick={() => handleUnbanUser(u)}
+                              disabled={pendingAction?.user_id === u.user_id}
+                              className="text-xs px-2 py-1 rounded-md border border-[#FBC9B9] text-[#D85A30] bg-white hover:bg-[#FDEEE8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Lift the ban — user will be able to log in again"
+                            >
+                              {pendingAction?.user_id === u.user_id && pendingAction.kind === "unban" ? "Unbanning..." : "Unban"}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => setBanTarget(u)}
+                              disabled={pendingAction?.user_id === u.user_id}
+                              className="text-xs px-2 py-1 rounded-md border border-[#FBC9B9] text-[#D85A30] bg-white hover:bg-[#FDEEE8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Ban this user — blocks login for 1 year"
+                            >
+                              {pendingAction?.user_id === u.user_id && pendingAction.kind === "ban" ? "Banning..." : "Ban"}
+                            </button>
+                          )
+                        )}
                         <button
                           onClick={() => handleDeleteUser(u)}
                           disabled={!canEdit || pendingAction?.user_id === u.user_id}
@@ -467,5 +635,6 @@ export default function AdminPage() {
         </div>
       </Panel>
     </div>
+    </>
   );
 }

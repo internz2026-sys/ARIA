@@ -35,18 +35,36 @@ def _get_client() -> QdrantClient:
 
 
 def _get_embedder():
+    """Lazy-load the SentenceTransformer model. Returns None when the
+    `sentence_transformers` package isn't installed (production opted
+    out of the heavy torch dep on 2026-05-07 to slim the backend image
+    from ~9.6GB to ~800MB). Callers handle None as "skip cache" — every
+    call becomes a cache miss + a normal Claude call. Mirrors the
+    optional-embedder pattern already used by services/content_index.py.
+    """
     global _embedder
     if _embedder is None:
-        from sentence_transformers import SentenceTransformer
-        _embedder = SentenceTransformer(EMBEDDING_MODEL)
-        logger.info("Loaded embedding model: %s", EMBEDDING_MODEL)
+        try:
+            from sentence_transformers import SentenceTransformer
+            _embedder = SentenceTransformer(EMBEDDING_MODEL)
+            logger.info("Loaded embedding model: %s", EMBEDDING_MODEL)
+        except Exception as e:
+            logger.debug("[semantic_cache] embedder init skipped: %s", e)
+            _embedder = None
     return _embedder
 
 
-def _embed(text: str) -> list[float]:
-    """Embed a text string into a vector."""
+def _embed(text: str) -> list[float] | None:
+    """Embed a text string into a vector. Returns None when the
+    embedder isn't available (sentence_transformers not installed)."""
     model = _get_embedder()
-    return model.encode(text, normalize_embeddings=True).tolist()
+    if not model:
+        return None
+    try:
+        return model.encode(text, normalize_embeddings=True).tolist()
+    except Exception as e:
+        logger.debug("[semantic_cache] embed failed: %s", e)
+        return None
 
 
 def _prompt_key(system_prompt: str, user_message: str, model: str) -> str:
@@ -80,9 +98,13 @@ def ensure_collection():
 def search_cache(system_prompt: str, user_message: str, model: str, agent_id: str = "") -> str | None:
     """Search for a semantically similar cached prompt. Returns cached response or None."""
     try:
-        client = _get_client()
         query_text = _prompt_key(system_prompt, user_message, model)
         vector = _embed(query_text)
+        if vector is None:
+            # Embedder unavailable → cache lookup impossible. Fall
+            # through to a normal Claude call by returning None.
+            return None
+        client = _get_client()
 
         # Filter by agent_id if provided
         query_filter = None
@@ -122,9 +144,14 @@ def search_cache(system_prompt: str, user_message: str, model: str, agent_id: st
 def store_cache(system_prompt: str, user_message: str, model: str, response: str, agent_id: str = ""):
     """Store a prompt-response pair in the semantic cache."""
     try:
-        client = _get_client()
         query_text = _prompt_key(system_prompt, user_message, model)
         vector = _embed(query_text)
+        if vector is None:
+            # Embedder unavailable → can't index this response.
+            # Skip the upsert; this becomes a no-op so callers don't
+            # crash when sentence_transformers isn't installed.
+            return
+        client = _get_client()
 
         point_id = hashlib.md5(query_text.encode()).hexdigest()
 

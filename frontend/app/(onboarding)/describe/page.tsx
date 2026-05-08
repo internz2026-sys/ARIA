@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { renderMarkdown } from "@/lib/render-markdown";
 import { useSpeechToText, useTTS, sttErrorMessage } from "@/lib/use-voice";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 
 interface ChatMessage {
   role: "aria" | "user";
@@ -72,25 +72,52 @@ export default function DescribePage() {
     if (localStorage.getItem("aria_reonboarding_tenant_id")) {
       setIsRestart(true);
     }
-    fetch(`${API_URL}/api/onboarding/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+    // Pass any existing session_id so the backend can resume from
+    // onboarding_drafts (Postgres-backed) instead of creating a fresh
+    // session. Backend reads it from the body, looks up by the
+    // authenticated user_id, and returns is_resumed=true with the
+    // last assistant message if a draft exists.
+    const existingSessionId =
+      typeof window !== "undefined"
+        ? localStorage.getItem("aria_onboarding_session") || ""
+        : "";
+    authFetch(`${API_URL}/api/onboarding/start`, {
+      method: "POST",
+      body: JSON.stringify({ session_id: existingSessionId }),
+    })
       .then(r => r.json())
       .then(data => {
         setSessionId(data.session_id);
-        // Persist the session id immediately. Each /api/onboarding/message
-        // call writes the answer server-side keyed by this id, so even
-        // an accidental tab close or "Save & exit" mid-flow doesn't
-        // lose the answers — the backend has them all. This localStorage
-        // entry is the breadcrumb for a future /api/onboarding/resume
-        // path; the /review page already reads it to extract the config
-        // when /describe finishes.
+        // Always persist the (possibly new, possibly existing) session
+        // id so subsequent /describe loads can keep resuming.
         if (data.session_id && typeof window !== "undefined") {
           localStorage.setItem("aria_onboarding_session", data.session_id);
         }
-        if (data.message) {
+        if (data.is_resumed) {
+          // Backend rehydrated from the draft. The `message` field
+          // here is the LAST assistant turn — which is the question
+          // the user was on when they bailed. Prefix a soft welcome-
+          // back so they understand the context.
+          setMessages([
+            {
+              role: "aria",
+              text:
+                "Welcome back — picking up where you left off.\n\n" +
+                (data.message || ""),
+            },
+          ]);
+        } else if (data.message) {
           setMessages([{ role: "aria", text: data.message }]);
         }
       })
       .catch(() => {
+        // If sessionId is still empty here, /start returned a 401 — session expired.
+        // Redirect rather than showing a fake greeting that would break on the next call.
+        if (!sessionId && typeof window !== "undefined") {
+          console.warn("[describe/start] no session after /start failed, redirecting to /login");
+          window.location.href = "/login";
+          return;
+        }
         setMessages([{ role: "aria", text: "Hi! I'm ARIA, your AI marketing team. I need to ask you 8 quick questions to set up your marketing strategy. Let's start — what did you build?" }]);
       });
   }, []);
@@ -115,9 +142,8 @@ export default function DescribePage() {
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/api/onboarding/message`, {
+      const res = await authFetch(`${API_URL}/api/onboarding/message`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, message: text }),
       });
       const data = await res.json();
@@ -129,9 +155,8 @@ export default function DescribePage() {
         // Eagerly extract and cache config so /review has data even if the
         // backend session is lost on Railway redeploy before the user navigates.
         localStorage.setItem("aria_onboarding_session", sessionId);
-        fetch(`${API_URL}/api/onboarding/extract-config`, {
+        authFetch(`${API_URL}/api/onboarding/extract-config`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: sessionId }),
         })
           .then(r => r.ok ? r.json() : null)
@@ -168,9 +193,8 @@ export default function DescribePage() {
     if (!sessionId || skipping) return;
     setSkipping(true);
     try {
-      const res = await fetch(`${API_URL}/api/onboarding/skip`, {
+      const res = await authFetch(`${API_URL}/api/onboarding/skip`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
       });
       const data = await res.json();
@@ -310,7 +334,14 @@ export default function DescribePage() {
                 </button>
               </div>
             )}
-            <form onSubmit={handleSend} className="flex items-end gap-3">
+            {/* Mobile stacks the textarea above its action buttons so
+                the input gets full width — on mobile the row layout
+                squeezed the textarea to ~60px, rendering placeholder
+                text vertically (each letter on its own line). Desktop
+                keeps the inline row. The button row uses a separate
+                flex container so the 4 actions stay aligned + same
+                gap on both breakpoints. */}
+            <form onSubmit={handleSend} className="flex flex-col sm:flex-row sm:items-end gap-2 sm:gap-3">
               <textarea
                 ref={textareaRef}
                 value={stt.listening && stt.transcript ? stt.transcript : input}
@@ -319,8 +350,9 @@ export default function DescribePage() {
                 placeholder={stt.listening ? "Listening... (sends after 3s of silence)" : "Type your answer..."}
                 disabled={loading}
                 rows={1}
-                className="flex-1 min-h-[44px] max-h-[240px] rounded-lg border border-[#E0DED8] px-4 py-2.5 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60 resize-none"
+                className="flex-1 min-w-0 min-h-[44px] max-h-[240px] rounded-lg border border-[#E0DED8] px-4 py-2.5 text-sm text-[#2C2C2A] placeholder:text-[#B0AFA8] outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] transition disabled:opacity-60 resize-none"
               />
+              <div className="flex items-end gap-2 sm:gap-3">
               {tts.supported && (
                 <button
                   type="button"
@@ -372,6 +404,7 @@ export default function DescribePage() {
               >
                 Send
               </button>
+              </div>
             </form>
 
             {/* Mobile-only Continue / Review button. The right sidebar

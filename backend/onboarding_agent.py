@@ -239,6 +239,91 @@ class OnboardingAgent:
         self._complete = False
         self._extracted_config: dict | None = None
 
+    # ── Serialization (resume support) ─────────────────────────────────────
+    # to_dict / from_dict round-trip the agent's full state into JSON so
+    # an in-progress session can be persisted to onboarding_drafts and
+    # rehydrated after a container restart, tab close, or device switch.
+
+    def to_dict(self) -> dict:
+        """Serialize full agent state for persistence."""
+        return {
+            "messages": self.messages,
+            "field_state": self.field_state,
+            "field_answers": self.field_answers,
+            "attempts": self.attempts,
+            "complete": self._complete,
+            "extracted_config": self._extracted_config,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "OnboardingAgent":
+        """Rehydrate an OnboardingAgent from a previously-serialized dict.
+
+        Tolerant of missing keys / unknown fields so an older snapshot
+        from before a code change can still be loaded; missing fields
+        fall back to fresh defaults.
+
+        Audit fix 2026-05-07 (MEDIUM): bounded inputs. The DB-stored
+        snapshot is user-controlled (it's their conversation history),
+        so we cap the rehydrated state to prevent a malicious / runaway
+        draft from blowing up memory or producing oversized prompts:
+          - messages list capped to last MAX_REHYDRATED_MESSAGES (500)
+          - field_answers values capped at MAX_FIELD_ANSWER_LEN (4096
+            chars); oversized values are dropped silently with a debug
+            log so the rest of the snapshot still loads.
+        """
+        # Tunable caps — kept local so the constants don't leak into
+        # the public module surface or tempt other call sites to reuse
+        # them for unrelated bounds.
+        MAX_REHYDRATED_MESSAGES = 500
+        MAX_FIELD_ANSWER_LEN = 4096
+
+        agent = cls()
+        if not isinstance(data, dict):
+            return agent
+        msgs = data.get("messages")
+        if isinstance(msgs, list):
+            # Keep only the most recent messages — earlier turns have
+            # already been distilled into field_answers / field_state
+            # so trimming the tail is safe.
+            if len(msgs) > MAX_REHYDRATED_MESSAGES:
+                logger.debug(
+                    "Truncating rehydrated messages from %d to last %d",
+                    len(msgs), MAX_REHYDRATED_MESSAGES,
+                )
+                msgs = msgs[-MAX_REHYDRATED_MESSAGES:]
+            agent.messages = msgs
+        fs = data.get("field_state")
+        if isinstance(fs, dict):
+            # Only keep keys we still know about; unknown legacy fields are dropped.
+            agent.field_state = {
+                f: fs.get(f, "pending") if fs.get(f) in ("pending", "validated", "skipped") else "pending"
+                for f in ONBOARDING_FIELDS
+            }
+        fa = data.get("field_answers")
+        if isinstance(fa, dict):
+            cleaned: dict[str, str] = {}
+            for k, v in fa.items():
+                if not isinstance(v, str):
+                    continue
+                if len(v) > MAX_FIELD_ANSWER_LEN:
+                    logger.debug(
+                        "Dropping oversized field_answers[%s] (len=%d > %d)",
+                        k, len(v), MAX_FIELD_ANSWER_LEN,
+                    )
+                    continue
+                cleaned[k] = v
+            agent.field_answers = cleaned
+        att = data.get("attempts")
+        if isinstance(att, dict):
+            agent.attempts = {f: int(att.get(f, 0) or 0) for f in ONBOARDING_FIELDS}
+        agent._complete = bool(data.get("complete", False))
+        ec = data.get("extracted_config")
+        agent._extracted_config = ec if isinstance(ec, dict) else None
+        # Recompute completion in case the snapshot is stale.
+        agent._maybe_complete()
+        return agent
+
     # ── Legacy-compatible properties used by server.py ──────────────────────
 
     @property

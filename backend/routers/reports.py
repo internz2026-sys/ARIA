@@ -49,10 +49,22 @@ async def generate_report(tenant_id: str, body: GenerateReportRequest = Generate
             row = await reports_service.generate_state_of_union(tenant_id)
         elif rt == "agent_productivity":
             row = await reports_service.generate_agent_productivity(tenant_id)
+        elif rt == "campaign_roi":
+            from backend.services.reports_campaign_roi import generate_campaign_roi
+            row = await generate_campaign_roi(tenant_id)
+        elif rt == "channel_spend":
+            from backend.services.reports_channel_spend import generate_channel_spend
+            row = await generate_channel_spend(tenant_id)
+        elif rt == "daily_pulse":
+            from backend.services.reports_daily_pulse import generate_daily_pulse
+            row = await generate_daily_pulse(tenant_id)
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unknown report_type '{rt}'. Supported: state_of_union, agent_productivity.",
+                detail=(
+                    f"Unknown report_type '{rt}'. Supported: state_of_union, "
+                    "agent_productivity, campaign_roi, channel_spend, daily_pulse."
+                ),
             )
     except HTTPException:
         raise
@@ -73,4 +85,20 @@ async def get_report(tenant_id: str, report_id: str):
 
 @router.delete("/{report_id}")
 async def delete_report(tenant_id: str, report_id: str):
-    return reports_service.delete_report(tenant_id, report_id)
+    # Pre-check so the 404 path is explicit instead of a silent 200 on
+    # an already-deleted (or wrong-tenant) row. `get_report` already
+    # returns None on miss / tenant mismatch — no need to re-implement.
+    if not reports_service.get_report(tenant_id, report_id):
+        raise HTTPException(status_code=404, detail="Report not found")
+    try:
+        result = reports_service.delete_report(tenant_id, report_id)
+    except Exception as e:
+        logger.exception("[reports] delete %s failed: %s", report_id, e)
+        from backend.services.safe_errors import safe_detail
+        raise HTTPException(status_code=500, detail=safe_detail(e, "Report delete failed"))
+    # Race: row vanished between the get_report check and the delete.
+    # Treat as 404 so the client retries cleanly instead of seeing a 200
+    # that didn't actually do anything.
+    if result.get("found") is False:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return result

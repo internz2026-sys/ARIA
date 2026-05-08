@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { API_URL, getAuthHeaders } from "@/lib/api";
+import { API_URL, getAuthHeaders, authFetch } from "@/lib/api";
 
 const agents = [
   { slug: "ceo", name: "ARIA CEO", role: "Chief Marketing Strategist", description: "Builds your GTM playbook, coordinates all agents, reviews outputs, adjusts strategy", color: "#534AB7", required: true },
@@ -118,9 +118,8 @@ export default function SelectAgentsPage() {
       // Try the session-based endpoint first
       if (sessionId) {
         try {
-          res = await fetch(`${API_URL}/api/onboarding/save-config`, {
+          res = await authFetch(`${API_URL}/api/onboarding/save-config`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               session_id: sessionId,
               owner_email: ownerEmail,
