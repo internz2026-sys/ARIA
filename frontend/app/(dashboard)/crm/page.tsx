@@ -811,20 +811,22 @@ export default function CRMPage() {
   ];
 
   return (
-    <div className="max-w-screen-2xl mx-auto space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="max-w-screen-2xl mx-auto space-y-4 min-w-0">
+      {/* Header — stacks vertically on mobile so buttons never overflow the viewport */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">CRM</h1>
           <p className="text-sm text-[#5F5E5A]">Manage contacts, companies, and deals</p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        {/* Action buttons: on mobile, all three sit in one evenly-spaced row (flex + flex-1 per button)
+            so each button is ~⅓ of the available width and nothing escapes the viewport */}
+        <div className="flex items-center gap-2 sm:shrink-0">
           {tab === "contacts" && (
             <>
               <button
                 onClick={handleExportContacts}
                 disabled={exportLoading}
-                className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-3 py-2 min-h-[40px] text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Export all contacts to CSV"
               >
                 {exportLoading ? (
@@ -841,7 +843,7 @@ export default function CRMPage() {
               </button>
               <button
                 onClick={() => setShowImport(true)}
-                className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors whitespace-nowrap"
+                className="flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-3 py-2 min-h-[40px] text-sm font-medium rounded-lg border border-[#E0DED8] bg-white text-[#5F5E5A] hover:bg-[#F8F8F6] transition-colors whitespace-nowrap"
                 title="Import contacts from CSV or XLSX"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -857,7 +859,7 @@ export default function CRMPage() {
               else if (tab === "companies") setShowAddCompany(true);
               else setShowAddDeal(true);
             }}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors whitespace-nowrap"
+            className="flex flex-1 sm:flex-none items-center justify-center gap-1.5 px-4 py-2 min-h-[40px] text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition-colors whitespace-nowrap"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
             Add {tab === "contacts" ? "Contact" : tab === "companies" ? "Company" : "Deal"}
