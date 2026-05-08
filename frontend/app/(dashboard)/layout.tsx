@@ -237,8 +237,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             and scroll inside their own bounds instead of expanding the
             whole page rightward. */}
         <div className="flex-1 lg:ml-[240px] min-h-[100dvh] min-w-0">
-          {/* Mobile header */}
-          <div className="lg:hidden sticky top-0 z-30 bg-white border-b border-[#E0DED8] h-14 flex items-center px-4">
+          {/* Mobile header — fixed (not sticky) so it stays pinned even
+              when overflow-x:hidden on body creates a new scroll
+              container and breaks position:sticky on descendants.
+              A matching h-14 spacer below pushes page content clear. */}
+          <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-white border-b border-[#E0DED8] h-14 flex items-center px-4">
             <button
               onClick={() => setSidebarOpen(true)}
               className="p-2 rounded-lg text-[#5F5E5A] hover:bg-[#F8F8F6] hover:text-[#2C2C2A] transition-colors"
@@ -247,12 +250,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
               </svg>
             </button>
-            <div className="ml-3 flex items-center gap-2 flex-1">
-              <img src="/logo.png" alt="ARIA" className="h-7 w-7 rounded-full object-cover" />
-              <span className="text-[#2C2C2A] font-semibold text-base">ARIA</span>
+            <div className="ml-3 flex items-center flex-1">
+              <img src="/logo.png" alt="ARIA" className="h-9 w-9 rounded-full object-cover" />
             </div>
             <NotificationBell />
           </div>
+          {/* Spacer so page content isn't hidden under the fixed header on mobile */}
+          <div className="lg:hidden h-14" aria-hidden="true" />
 
           {/* Desktop header with notification bell */}
           <div className="hidden lg:flex sticky top-0 z-30 bg-[#F8F8F6] h-14 items-center justify-end px-8 border-b border-[#E0DED8]/50">
