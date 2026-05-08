@@ -300,10 +300,9 @@ export default function AriaLanding() {
       />
 
       <div style={{ position: "relative", zIndex: 2 }}>
-        {/* Nav — desktop only. The layout-level <Navbar /> already
-            handles mobile via hamburger, so this in-page nav is hidden
-            below md: to avoid the duplicate-nav overlap bug spotted in
-            the mobile audit. */}
+        {/* Nav — desktop only (hidden md:flex).
+            Mobile devices don't see this bar; no hamburger needed here
+            because the landing page is a single scrollable page on mobile. */}
         <nav
           className="hidden md:flex"
           style={{
@@ -346,13 +345,27 @@ export default function AriaLanding() {
             >
               Pricing
             </a>
+            <Link
+              href="/login"
+              style={{
+                fontFamily: "'Sora'",
+                fontSize: 14,
+                color: "rgba(240,237,232,0.55)",
+                textDecoration: "none",
+                transition: "color 0.2s",
+              }}
+              onMouseEnter={(e) => ((e.target as HTMLAnchorElement).style.color = "#F0EDE8")}
+              onMouseLeave={(e) => ((e.target as HTMLAnchorElement).style.color = "rgba(240,237,232,0.55)")}
+            >
+              Sign in
+            </Link>
             <Link href="/signup">
               <button
                 style={{
                   fontFamily: "'Sora'",
                   fontSize: 14,
                   fontWeight: 500,
-                  background: "#E94560",
+                  background: "linear-gradient(135deg, #E94560 0%, #c73652 100%)",
                   border: "none",
                   borderRadius: 8,
                   color: "#fff",
@@ -369,7 +382,7 @@ export default function AriaLanding() {
                   (e.target as HTMLButtonElement).style.transform = "";
                 }}
               >
-                Join Waitlist
+                Sign up
               </button>
             </Link>
           </div>
