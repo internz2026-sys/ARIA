@@ -737,6 +737,10 @@ from backend.routers.tasks import router as tasks_router
 from backend.routers.ceo import router as ceo_router
 from backend.routers.login_rate_limit import router as login_rate_limit_router
 from backend.routers.reports import router as reports_router
+from backend.routers.plans import (
+    profile_router as plans_profile_router,
+    admin_router as plans_admin_router,
+)
 # NOTE: backend/routers/paperclip.py was a webhook receiver for the HTTP
 # adapter experiment — we reverted to claude_local, so Paperclip never
 # calls our webhook anymore. The agents now POST results back to ARIA via
@@ -751,6 +755,11 @@ app.include_router(tasks_router)
 app.include_router(ceo_router)
 app.include_router(login_rate_limit_router)
 app.include_router(reports_router)
+# Plans: self-service + admin override. Split into two routers so the
+# self-service surface doesn't accidentally inherit the /api/admin/* role
+# gate, while the admin override does.
+app.include_router(plans_profile_router)
+app.include_router(plans_admin_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1178,27 +1187,112 @@ async def health():
     return {"status": "ok"}
 
 
-# ─── Current user profile snapshot (role + status) ───
+# ─── Current user profile snapshot (role + status + plan) ───
 @app.get("/api/profile/me")
 async def profile_me(request: Request):
-    """Return the calling user's role + status. Used by the dashboard
-    layout to decide whether to show the "account paused" banner.
+    """Return the calling user's role + status + current plan + limits.
 
-    The auth middleware has already verified the JWT and stamped
-    request.state.user; this just adds the profiles row lookup.
+    Used by the dashboard layout to decide whether to show the
+    "account paused" banner AND to render the plan picker / quota
+    badges on the usage page. The auth middleware has already verified
+    the JWT and stamped request.state.user; this adds the profiles row
+    lookup + a single tenant_configs lookup to surface the plan tier.
+
+    Plan/limits lookup is best-effort: a user who hasn't completed
+    onboarding (no tenant_configs row yet) gets ``plan: null``,
+    ``limits: null`` instead of a 500 -- the frontend should fall
+    through to onboarding in that case.
     """
     user = getattr(request.state, "user", None) or {}
     user_id = (user.get("sub") if isinstance(user, dict) else "") or ""
+    user_email = (
+        (user.get("email") if isinstance(user, dict) else "") or ""
+    ).lower().strip()
+
+    # Dev mode shortcut: no profiles lookup, but still surface a sane
+    # default plan so the frontend doesn't crash on `data.plan`.
     if not user_id or user_id == "dev-user":
-        # Dev mode or unauthenticated — return active so the frontend
-        # doesn't render a phantom paused banner during local dev.
-        return {"user_id": user_id, "role": "user", "status": "active"}
+        return {
+            "user_id": user_id,
+            "role": "user",
+            "status": "active",
+            "plan": "scale",
+            "limits": _limits_dict_for_plan("scale"),
+        }
+
     from backend.services.profiles import get_user_role, get_user_status
+    role = get_user_role(user_id)
+    status = get_user_status(user_id)
+
+    plan, limits = _lookup_plan_and_limits_for_email(user_email)
     return {
         "user_id": user_id,
-        "role": get_user_role(user_id),
-        "status": get_user_status(user_id),
+        "role": role,
+        "status": status,
+        "plan": plan,
+        "limits": limits,
     }
+
+
+def _limits_dict_for_plan(plan: str) -> dict:
+    """Serialize a PlanLimits dataclass to the JSON shape the frontend
+    consumes on /api/profile/me.
+
+    Kept in server.py (not the plan_quotas module) so the dataclass stays
+    pure for the orchestrator's quota gate, and any future
+    frontend-shape evolution doesn't ripple back into the gate logic.
+    Field names mirror the task brief verbatim:
+        content_pieces_per_month
+        campaign_plans_per_month
+        email_sequences_enabled
+    """
+    from backend.services.plan_quotas import PLAN_LIMITS
+    limits = PLAN_LIMITS.get(plan) or PLAN_LIMITS["free"]
+    return {
+        "content_pieces_per_month": limits.content_pieces,
+        "campaign_plans_per_month": limits.campaign_plans,
+        "email_sequences_enabled": limits.email_sequences_enabled,
+    }
+
+
+def _lookup_plan_and_limits_for_email(email: str) -> tuple[str | None, dict | None]:
+    """Look up the tenant for the given owner_email and return
+    (plan_slug, limits_dict).
+
+    Returns ``(None, None)`` when:
+      * email is empty
+      * no tenant row matches (user hasn't onboarded yet)
+      * any DB error occurred -- we'd rather drop the plan field than
+        500 the whole /me endpoint
+
+    Best-effort by design: /api/profile/me is on the critical render
+    path of every dashboard page, so a transient Supabase blip
+    shouldn't paint a "paused account" banner just because the plan
+    column didn't load.
+    """
+    if not email:
+        return None, None
+    try:
+        sb = _get_supabase()
+        result = (
+            sb.table("tenant_configs")
+            .select("plan")
+            .eq("owner_email", email)
+            .limit(1)
+            .execute()
+        )
+        data = getattr(result, "data", None) or []
+        if not data:
+            return None, None
+        plan = (data[0].get("plan") or "free").strip().lower()
+        from backend.services.plan_quotas import PLAN_LIMITS
+        if plan not in PLAN_LIMITS:
+            logger.warning("Unknown plan slug %r on /me lookup — coercing to free", plan)
+            plan = "free"
+        return plan, _limits_dict_for_plan(plan)
+    except Exception as e:
+        logger.warning("profile/me plan lookup failed for %s: %s", email, e)
+        return None, None
 
 
 # ─── Twitter / X OAuth 2.0 ───
@@ -2294,37 +2388,187 @@ async def get_calendar_activity(tenant_id: str, start: str = "", end: str = ""):
 # ─── Usage API ───
 
 @app.get("/api/usage/{tenant_id}")
-async def get_usage_dashboard(tenant_id: str):
-    """Return usage stats for the dashboard: tenant totals + per-agent breakdown."""
+async def get_usage_dashboard(tenant_id: str, request: Request):
+    """Return usage stats for the dashboard: tenant totals + per-agent
+    breakdown + monthly plan quota.
+
+    Window: rolling 1 hour for the hourly rate-limit display, calendar
+    month UTC for the plan-quota counters. Counts come from
+    ``agent_logs`` (one row per dispatch, status in
+    completed/completed_with_warning) -- the canonical record of what
+    each agent actually did, surviving container restarts. The previous
+    implementation used an in-memory dict that was wiped on every
+    deploy, which is why /usage was showing 0s despite the user having
+    run many agents.
+
+    Auth: the global middleware has already verified the JWT, but the
+    route doesn't sit under a router with ``Depends(get_verified_tenant)``
+    so we verify ownership here. Mirrors the pattern in the inbox
+    routes for item-id-keyed endpoints.
+
+    Shape is backward-compatible with the existing /usage page
+    (frontend reads ``data.tenant.{requests,request_limit,...}`` and
+    ``data.agents[<id>]``), with NEW top-level fields per the task
+    brief: ``window``, ``total_requests``, ``total_tokens``,
+    ``total_input_tokens``, ``total_output_tokens``, ``request_limit``,
+    ``token_limit``, ``per_agent``, ``monthly``.
+    """
+    # Ownership check -- the route isn't router-scoped, so do it here.
+    await get_verified_tenant(request, tenant_id)
+
     from backend.tools.claude_cli import (
-        get_usage, get_agent_usage_summary,
-        HOURLY_REQUEST_LIMIT, HOURLY_TOKEN_LIMIT, AGENT_HOURLY_LIMITS, DEFAULT_AGENT_LIMIT,
+        HOURLY_REQUEST_LIMIT, HOURLY_TOKEN_LIMIT,
+        AGENT_HOURLY_LIMITS, DEFAULT_AGENT_LIMIT,
     )
-    tenant_usage = get_usage(tenant_id)
-    agent_usage = get_agent_usage_summary(tenant_id)
 
-    # Ensure all agents appear even if they haven't been used this hour
-    for agent_id in ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist", "media"]:
-        if agent_id not in agent_usage:
-            limits = AGENT_HOURLY_LIMITS.get(agent_id, DEFAULT_AGENT_LIMIT)
-            agent_usage[agent_id] = {
-                "requests": 0,
-                "request_limit": limits.get("requests", DEFAULT_AGENT_LIMIT["requests"]),
-                "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
-                "token_limit": limits.get("tokens", DEFAULT_AGENT_LIMIT["tokens"]),
-            }
+    # ── Rolling 1h window for the hourly limits display ──
+    now = datetime.now(timezone.utc)
+    hour_ago = (now - timedelta(hours=1)).isoformat()
 
+    sb = _get_supabase()
+    try:
+        result = (
+            sb.table("agent_logs")
+            .select("agent_name,status,result,timestamp")
+            .eq("tenant_id", tenant_id)
+            .gte("timestamp", hour_ago)
+            .execute()
+        )
+        rows_1h = list(result.data or [])
+    except Exception as e:
+        logger.warning("[usage] agent_logs 1h query failed for tenant=%s: %s", tenant_id, e)
+        rows_1h = []
+
+    # All six canonical agents -- pre-populate so each appears even if
+    # there's been no activity. The frontend renders one card per key.
+    AGENT_IDS = ["ceo", "content_writer", "email_marketer", "social_manager", "ad_strategist", "media"]
+    per_agent: dict[str, dict] = {}
+    for agent_id in AGENT_IDS:
+        limits = AGENT_HOURLY_LIMITS.get(agent_id, DEFAULT_AGENT_LIMIT)
+        per_agent[agent_id] = {
+            "requests": 0,
+            "request_limit": limits.get("requests", DEFAULT_AGENT_LIMIT["requests"]),
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "token_limit": limits.get("tokens", DEFAULT_AGENT_LIMIT["tokens"]),
+            # Mirror keys per the task brief for callers that read the
+            # new shape directly.
+            "tokens": 0,
+            "limit_requests": limits.get("requests", DEFAULT_AGENT_LIMIT["requests"]),
+            "limit_tokens": limits.get("tokens", DEFAULT_AGENT_LIMIT["tokens"]),
+        }
+
+    # Count rows + sum tokens (if the agent stashed them in result jsonb).
+    total_requests = 0
+    total_input = 0
+    total_output = 0
+    for row in rows_1h:
+        status = (row.get("status") or "").lower()
+        if status not in ("completed", "completed_with_warning"):
+            continue
+        agent = row.get("agent_name") or ""
+        bucket = per_agent.get(agent)
+        if bucket is None:
+            # Unknown agent slug -- still count toward tenant totals but
+            # don't create a per-agent card for it.
+            total_requests += 1
+            continue
+        bucket["requests"] += 1
+        bucket["limit_requests"] = bucket["request_limit"]  # keep aliases in sync
+        total_requests += 1
+        # Tokens are best-effort: agent_logs.result is a free-form jsonb
+        # that some callers populate with usage metadata and others
+        # don't. Pull whatever fields look like token counts and treat
+        # missing as 0 (the rate-limit display still has the request
+        # count, which is the headline number).
+        res = row.get("result") or {}
+        if isinstance(res, dict):
+            in_t = int(res.get("input_tokens") or res.get("prompt_tokens") or 0)
+            out_t = int(res.get("output_tokens") or res.get("completion_tokens") or 0)
+            bucket["input_tokens"] += in_t
+            bucket["output_tokens"] += out_t
+            bucket["total_tokens"] = bucket["input_tokens"] + bucket["output_tokens"]
+            bucket["tokens"] = bucket["total_tokens"]
+            total_input += in_t
+            total_output += out_t
+
+    # ── Monthly plan quota counters ──
+    # Same agent_logs table but a wider window (start of current month
+    # UTC) and aggregated by bucket per plan_quotas.PLAN_LIMITS.
+    from backend.services.plan_quotas import month_start_utc, PLAN_LIMITS
+    try:
+        month_res = (
+            sb.table("agent_logs")
+            .select("agent_name,status,timestamp")
+            .eq("tenant_id", tenant_id)
+            .gte("timestamp", month_start_utc().isoformat())
+            .execute()
+        )
+        rows_month = list(month_res.data or [])
+    except Exception as e:
+        logger.warning("[usage] agent_logs monthly query failed for tenant=%s: %s", tenant_id, e)
+        rows_month = []
+
+    CONTENT_AGENTS = {"content_writer", "social_manager", "media"}
+    CAMPAIGN_AGENTS = {"ad_strategist"}
+    content_used = 0
+    campaigns_used = 0
+    for row in rows_month:
+        if (row.get("status") or "").lower() not in ("completed", "completed_with_warning"):
+            continue
+        agent = row.get("agent_name") or ""
+        if agent in CONTENT_AGENTS:
+            content_used += 1
+        elif agent in CAMPAIGN_AGENTS:
+            campaigns_used += 1
+
+    # Look up the tenant's plan to populate the monthly limits. Fall
+    # back to "free" on lookup failure (same conservative default as
+    # plan_quotas._plan_for).
+    try:
+        tenant_cfg = get_tenant_config(tenant_id)
+        plan_slug = (getattr(tenant_cfg, "plan", None) or "free").strip().lower()
+        if plan_slug not in PLAN_LIMITS:
+            plan_slug = "free"
+    except Exception:
+        plan_slug = "free"
+    plan_limits = PLAN_LIMITS[plan_slug]
+
+    # Build the response. Existing-frontend shape (`tenant`/`agents`)
+    # is preserved verbatim so the /usage page keeps rendering; new
+    # top-level fields match the task brief.
+    tenant_block = {
+        "requests": total_requests,
+        "request_limit": HOURLY_REQUEST_LIMIT,
+        "input_tokens": total_input,
+        "output_tokens": total_output,
+        "total_tokens": total_input + total_output,
+        "token_limit": HOURLY_TOKEN_LIMIT,
+    }
     return {
-        "tenant": {
-            "requests": tenant_usage.get("requests", 0),
-            "request_limit": HOURLY_REQUEST_LIMIT,
-            "input_tokens": tenant_usage.get("input_tokens", 0),
-            "output_tokens": tenant_usage.get("output_tokens", 0),
-            "total_tokens": tenant_usage.get("input_tokens", 0) + tenant_usage.get("output_tokens", 0),
-            "token_limit": HOURLY_TOKEN_LIMIT,
+        # ── new top-level shape (task brief) ──
+        "tenant_id": tenant_id,
+        "window": "1h",
+        "total_requests": total_requests,
+        "total_tokens": total_input + total_output,
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+        "request_limit": HOURLY_REQUEST_LIMIT,
+        "token_limit": HOURLY_TOKEN_LIMIT,
+        "per_agent": per_agent,
+        "monthly": {
+            "plan": plan_slug,
+            "content_used": content_used,
+            "content_limit": plan_limits.content_pieces,
+            "campaigns_used": campaigns_used,
+            "campaigns_limit": plan_limits.campaign_plans,
+            "email_sequences_enabled": plan_limits.email_sequences_enabled,
         },
-        "agents": agent_usage,
-        "resets_at": tenant_usage.get("hour", ""),
+        # ── legacy shape (backward compatibility) ──
+        "tenant": tenant_block,
+        "agents": per_agent,
+        "resets_at": now.strftime("%Y-%m-%d-%H"),
     }
 
 
