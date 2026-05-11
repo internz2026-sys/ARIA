@@ -121,7 +121,12 @@ class TenantConfig(BaseModel):
     active_agents: list[str] = Field(default_factory=list)
     channels: list[str] = Field(default_factory=list)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
-    plan: str = "starter"
+    # Pricing tier — enforced by backend/services/plan_quotas.py.
+    # Default is "free" so new signups going through onboarding land on the
+    # gated "try before you buy" tier. The SQL migration (add_tenant_plan.sql)
+    # backfills existing rows with "scale" so alpha users aren't suddenly
+    # capped by the gate they never opted into.
+    plan: str = "free"
     trial_ends: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

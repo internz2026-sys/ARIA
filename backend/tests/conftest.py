@@ -368,6 +368,7 @@ _GET_DB_IMPORT_SITES = (
     "backend.services.email_sender",
     "backend.services.imap_inbound",
     "backend.services.inbox",
+    "backend.services.plan_quotas",
     "backend.services.reports",
     "backend.services.projects",
     "backend.services.profiles",

@@ -56,6 +56,7 @@ from backend.orchestrator import (
     _sanitize_error_message,
     _urllib_request,
     PaperclipUnreachable,
+    PlanQuotaExceeded,
 )
 from backend.orchestrator import is_connected as paperclip_connected
 from backend.agents import AGENT_REGISTRY
@@ -3684,7 +3685,26 @@ async def run_agent(tenant_id: str, agent_name: str):
                              current_task=f"Running {agent_name} task",
                              action="start_work")
 
-    result = await dispatch_agent(tenant_id, agent_name)
+    try:
+        result = await dispatch_agent(tenant_id, agent_name)
+    except PlanQuotaExceeded as exc:
+        # Expected user-facing wall, not a system error. Return a 429
+        # JSON the frontend can render as an "Upgrade to continue"
+        # modal. Drop the agent's "working" status back to idle so the
+        # office sprite doesn't sit stuck at the desk.
+        from starlette.responses import JSONResponse
+        await _emit_agent_status(tenant_id, agent_name, "idle",
+                                 action="task_complete")
+        return JSONResponse(
+            status_code=429,
+            content={
+                "status": "quota_exceeded",
+                "reason": exc.reason,
+                "plan": exc.plan,
+                "used": exc.used,
+                "limit": exc.limit,
+            },
+        )
     await sio.emit("agent_event", result, room=tenant_id)
 
     # Agent done — return to idle
@@ -5366,6 +5386,55 @@ async def _dispatch_paperclip_and_watch_to_inbox(
             "priority": priority,
             "session_id": session_id,
         })
+    except PlanQuotaExceeded as quota_exc:
+        # Pricing-tier wall, not a system error. Write a polite inbox
+        # row the user sees in their feed instead of a silent failure,
+        # and emit a task_completed event so the chat surface reflects
+        # the result. Logged at INFO so it doesn't page out.
+        _logger.info(
+            "[paperclip-watch] plan quota blocked %s for %s: %s",
+            agent_id, tenant_id, quota_exc.reason,
+        )
+        wall_row = _save_inbox_item(
+            tenant_id=tenant_id,
+            agent=agent_id,
+            title=f"Upgrade required: {agent_id.replace('_', ' ').title()}",
+            content=(
+                f"{quota_exc.reason}.\n\n"
+                f"Plan: {quota_exc.plan} (used {quota_exc.used}"
+                + (f"/{quota_exc.limit}" if quota_exc.limit > 0 else "")
+                + "). "
+                f"Upgrade your plan to keep dispatching this agent."
+            ),
+            content_type="notification",
+            priority=priority,
+            task_id=task_id,
+            chat_session_id=session_id,
+            status="quota_blocked",
+        )
+        if wall_row and tenant_id:
+            try:
+                await sio.emit("inbox_new_item", {
+                    "id": wall_row["id"],
+                    "agent": agent_id,
+                    "type": "notification",
+                    "title": wall_row.get("title", ""),
+                    "status": "quota_blocked",
+                    "priority": priority,
+                    "created_at": wall_row.get("created_at", ""),
+                }, room=tenant_id)
+            except Exception:
+                pass
+        # Drop the office sprite back to idle — task is done from the
+        # platform's perspective even though no agent ran.
+        try:
+            await _emit_agent_status(tenant_id, agent_id, "idle",
+                                     action="task_complete")
+            await _emit_agent_status(tenant_id, "ceo", "idle",
+                                     action="return_to_desk")
+        except Exception:
+            pass
+        return
     except Exception as e:
         _logger.error("[paperclip-watch] dispatch_agent raised for %s: %s", agent_id, e)
         result = {}
