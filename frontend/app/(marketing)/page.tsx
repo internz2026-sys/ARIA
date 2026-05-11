@@ -300,9 +300,59 @@ export default function AriaLanding() {
       />
 
       <div style={{ position: "relative", zIndex: 2 }}>
+        {/* Mobile nav — compact bar with logo + Sign in + Sign up. Sits at
+            the top of the landing page so users on phones can reach auth
+            without scrolling to the hero CTA. Hidden at md+ where the
+            desktop nav below renders. */}
+        <nav
+          className="flex md:hidden"
+          style={{
+            justifyContent: "space-between",
+            alignItems: "center",
+            padding: "16px 20px",
+            opacity: loaded ? 1 : 0,
+            transform: loaded ? "translateY(0)" : "translateY(-10px)",
+            transition: "all 0.8s cubic-bezier(0.16, 1, 0.3, 1)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <img src="/logo.png" alt="ARIA" style={{ height: 28, width: 28, borderRadius: "50%", objectFit: "cover" }} />
+            <span style={{ fontFamily: "'Sora'", fontWeight: 600, fontSize: 16, letterSpacing: 1.5 }}>ARIA</span>
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <Link
+              href="/login"
+              style={{
+                fontFamily: "'Sora'",
+                fontSize: 13,
+                color: "rgba(240,237,232,0.7)",
+                textDecoration: "none",
+              }}
+            >
+              Sign in
+            </Link>
+            <Link href="/signup">
+              <button
+                style={{
+                  fontFamily: "'Sora'",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  background: "linear-gradient(135deg, #E94560 0%, #c73652 100%)",
+                  border: "none",
+                  borderRadius: 6,
+                  color: "#fff",
+                  padding: "8px 16px",
+                  cursor: "pointer",
+                }}
+              >
+                Sign up
+              </button>
+            </Link>
+          </div>
+        </nav>
+
         {/* Nav — desktop only (hidden md:flex).
-            Mobile devices don't see this bar; no hamburger needed here
-            because the landing page is a single scrollable page on mobile. */}
+            Mobile devices use the compact nav above. */}
         <nav
           className="hidden md:flex"
           style={{
