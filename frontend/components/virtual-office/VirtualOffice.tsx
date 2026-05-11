@@ -143,9 +143,11 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     canvas.height = h * dpr;
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
-    // Center canvas within wrapper via absolute positioning
+    // Horizontally center canvas within wrapper; pin to top vertically so
+    // the canvas hugs the top of the available area and any extra space
+    // falls below rather than appearing as dead space above and below.
     canvas.style.left = `${Math.max(0, Math.floor((rect.width - w) / 2))}px`;
-    canvas.style.top = `${Math.max(0, Math.floor((rect.height - h) / 2))}px`;
+    canvas.style.top = "0px";
     const ctx = canvas.getContext("2d");
     if (ctx) ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
   }, []);
