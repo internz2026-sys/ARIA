@@ -178,8 +178,11 @@ export default function OfficePage() {
           </div>
         </div>
 
-        {/* Canvas — mobile: explicit tall height so it scrolls naturally; desktop: flex-1 */}
-        <div className="h-[1024px] lg:h-auto lg:flex-1 lg:min-h-0 relative">
+        {/* Canvas area — -mx-6 lg:mx-0 breaks out of <main>'s p-6 padding on
+            mobile so the canvas fills the full viewport width edge-to-edge.
+            lg:mx-0 restores default flow on desktop (sidebar handles margins).
+            overflow-hidden clips any sub-pixel canvas bleed on the right edge. */}
+        <div className="-mx-6 lg:mx-0 flex-1 min-h-0 relative overflow-hidden">
           {!loaded ? (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
