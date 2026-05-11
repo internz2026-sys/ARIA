@@ -5,12 +5,19 @@ import {
   TILE_SIZE,
   OFFICE_PIXEL_WIDTH,
   OFFICE_PIXEL_HEIGHT,
+  MOBILE_PIXEL_WIDTH,
+  MOBILE_PIXEL_HEIGHT,
   ROOMS,
   AGENTS as DEFAULT_AGENTS,
   MEETING_CHAIRS,
   IDLE_SPOTS,
   ALL_IDLE_SPOTS,
   CROSS_ROOM_CHANCE,
+  getRoomsForViewport,
+  getMeetingChairsForViewport,
+  getIdleSpotsForRoom,
+  getAllIdleSpotsForViewport,
+  getDeskPixel,
   type OfficeAgent,
   type Room,
 } from "@/lib/office-config";
@@ -57,6 +64,8 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
   const frameRef = useRef<number>(0);
   const [hoveredAgent, setHoveredAgent] = useState<string | null>(null);
   const scaleRef = useRef(1);
+  const isMobileRef = useRef(false);
+  const [isMobile, setIsMobile] = useState(false);
   const agentList = agents.length > 0 ? agents : DEFAULT_AGENTS;
 
   // Animated positions — use module-level storage for persistence
@@ -74,11 +83,13 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
 
   // Helper: compute target position for a given status
   const getTarget = useCallback((agent: OfficeAgent, idx: number) => {
-    const deskPx = { x: agent.deskX * T + T / 2, y: agent.deskY * T + T / 2 };
+    const mobile = isMobileRef.current;
+    const deskPx = getDeskPixel(agent.deskX, agent.deskY, agent.department, mobile);
     if (agent.status === "running") {
       // CEO always gets chair 0 (head of table)
-      const chairIdx = agent.id === "ceo" ? 0 : Math.min(idx, MEETING_CHAIRS.length - 1);
-      const chair = MEETING_CHAIRS[chairIdx];
+      const chairs = getMeetingChairsForViewport(mobile);
+      const chairIdx = agent.id === "ceo" ? 0 : Math.min(idx, chairs.length - 1);
+      const chair = chairs[chairIdx];
       return { x: chair.x, y: chair.y };
     }
     return deskPx; // working, idle, busy — all at desk
@@ -125,29 +136,52 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     }
   }, [agentList, getTarget]);
 
-  // Resize — canvas is absolutely positioned so it can't inflate the wrapper
+  // Resize — handles both mobile (fill width, scroll height) and desktop (fit inside fixed container)
   const resize = useCallback(() => {
     const canvas = canvasRef.current;
     const wrap = wrapRef.current;
     if (!canvas || !wrap) return;
-    const rect = wrap.getBoundingClientRect();
-    if (rect.width < 10 || rect.height < 10) return;
-    const scaleX = rect.width / OFFICE_PIXEL_WIDTH;
-    const scaleY = rect.height / OFFICE_PIXEL_HEIGHT;
-    const scale = Math.min(scaleX, scaleY);
-    scaleRef.current = scale;
+
+    const mobile = window.innerWidth < 1024;
+    isMobileRef.current = mobile;
+    setIsMobile(mobile);
+
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.floor(OFFICE_PIXEL_WIDTH * scale);
-    const h = Math.floor(OFFICE_PIXEL_HEIGHT * scale);
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
-    // Center canvas within wrapper via absolute positioning
-    canvas.style.left = `${Math.max(0, Math.floor((rect.width - w) / 2))}px`;
-    canvas.style.top = `${Math.max(0, Math.floor((rect.height - h) / 2))}px`;
-    const ctx = canvas.getContext("2d");
-    if (ctx) ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+
+    if (mobile) {
+      // Fill viewport width, let height be natural (page scrolls)
+      const scale = window.innerWidth / MOBILE_PIXEL_WIDTH;
+      scaleRef.current = scale;
+      const w = Math.floor(MOBILE_PIXEL_WIDTH * scale);
+      const h = Math.floor(MOBILE_PIXEL_HEIGHT * scale);
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+      canvas.style.left = "0px";
+      canvas.style.top = "0px";
+      const ctx = canvas.getContext("2d");
+      if (ctx) ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+    } else {
+      // Desktop: scale to fit the fixed container (original logic)
+      const rect = wrap.getBoundingClientRect();
+      if (rect.width < 10 || rect.height < 10) return;
+      const scaleX = rect.width / OFFICE_PIXEL_WIDTH;
+      const scaleY = rect.height / OFFICE_PIXEL_HEIGHT;
+      const scale = Math.min(scaleX, scaleY);
+      scaleRef.current = scale;
+      const w = Math.floor(OFFICE_PIXEL_WIDTH * scale);
+      const h = Math.floor(OFFICE_PIXEL_HEIGHT * scale);
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+      // Center canvas within wrapper via absolute positioning
+      canvas.style.left = `${Math.max(0, Math.floor((rect.width - w) / 2))}px`;
+      canvas.style.top = `${Math.max(0, Math.floor((rect.height - h) / 2))}px`;
+      const ctx = canvas.getContext("2d");
+      if (ctx) ctx.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+    }
   }, []);
 
   // ── Drawing helpers ──────────────────────────────────────────────────────
@@ -665,7 +699,7 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
           p.wanderPause--;
           if (p.wanderPause <= 0) {
             // Head back to desk
-            const deskPx = { x: agent.deskX * T + T / 2, y: agent.deskY * T + T / 2 };
+            const deskPx = getDeskPixel(agent.deskX, agent.deskY, agent.department, isMobileRef.current);
             p.targetX = deskPx.x;
             p.targetY = deskPx.y;
             p.wanderTarget = false;
@@ -682,11 +716,13 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
         // Count down idle timer, then pick a new wander spot
         p.idleTimer--;
         if (p.idleTimer <= 0) {
+          const mobile = isMobileRef.current;
           // 20% chance to visit another room, 80% stay in own department
           const crossRoom = Math.random() < CROSS_ROOM_CHANCE;
-          if (crossRoom && ALL_IDLE_SPOTS.length > 0) {
+          if (crossRoom) {
             // Pick a spot from any other room
-            const otherSpots = ALL_IDLE_SPOTS.filter((s) => s.room !== agent.department);
+            const allSpots = getAllIdleSpotsForViewport(mobile);
+            const otherSpots = allSpots.filter((s) => s.room !== agent.department);
             if (otherSpots.length > 0) {
               const spot = otherSpots[Math.floor(Math.random() * otherSpots.length)];
               p.targetX = spot.x;
@@ -694,8 +730,8 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
               p.wanderTarget = true;
             }
           } else {
-            const spots = IDLE_SPOTS[agent.department];
-            if (spots && spots.length > 0) {
+            const spots = getIdleSpotsForRoom(agent.department, mobile);
+            if (spots.length > 0) {
               const spot = spots[Math.floor(Math.random() * spots.length)];
               p.targetX = spot.x;
               p.targetY = spot.y;
@@ -707,20 +743,25 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       }
     }
 
+    const mobile = isMobileRef.current;
+    const canvasW = mobile ? MOBILE_PIXEL_WIDTH : OFFICE_PIXEL_WIDTH;
+    const canvasH = mobile ? MOBILE_PIXEL_HEIGHT : OFFICE_PIXEL_HEIGHT;
+
     // Clear
-    ctx.clearRect(0, 0, OFFICE_PIXEL_WIDTH, OFFICE_PIXEL_HEIGHT);
+    ctx.clearRect(0, 0, canvasW, canvasH);
     ctx.fillStyle = "#E8E4DE";
-    ctx.fillRect(0, 0, OFFICE_PIXEL_WIDTH, OFFICE_PIXEL_HEIGHT);
+    ctx.fillRect(0, 0, canvasW, canvasH);
 
     // Rooms
-    for (const room of ROOMS) drawRoom(ctx, room);
+    for (const room of getRoomsForViewport(mobile)) drawRoom(ctx, room);
 
-    // Decorations
-    drawDecorations(ctx, time);
+    // Decorations (desktop-only — decorations reference desktop tile coords)
+    if (!mobile) drawDecorations(ctx, time);
 
     // Desks (at desk positions, not agent positions)
     for (const agent of agentList) {
-      drawDesk(ctx, agent.deskX * T + T / 2, agent.deskY * T + T / 2);
+      const dp = getDeskPixel(agent.deskX, agent.deskY, agent.department, mobile);
+      drawDesk(ctx, dp.x, dp.y);
     }
 
     // Agents (at animated positions)
@@ -787,7 +828,9 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     resize();
     const ro = new ResizeObserver(resize);
     if (wrapRef.current) ro.observe(wrapRef.current);
-    return () => ro.disconnect();
+    // Also listen to window resize so isMobile updates on orientation change
+    window.addEventListener("resize", resize);
+    return () => { ro.disconnect(); window.removeEventListener("resize", resize); };
   }, [resize]);
 
   useEffect(() => {
@@ -796,12 +839,32 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
   }, [draw]);
 
   return (
-    <div ref={wrapRef} className="absolute inset-0 overflow-hidden">
+    <div
+      ref={wrapRef}
+      className={isMobile ? "relative w-full" : "absolute inset-0 overflow-hidden"}
+    >
       <canvas
         ref={canvasRef}
-        className="absolute"
+        className={isMobile ? "block" : "absolute"}
         onMouseMove={handleMouseMove}
         onClick={handleClick}
+        onTouchStart={(e) => {
+          // Translate first touch to a click for tap-to-select on mobile
+          const touch = e.touches[0];
+          const canvas = canvasRef.current;
+          if (!canvas || !touch) return;
+          const rect = canvas.getBoundingClientRect();
+          const scale = scaleRef.current;
+          const mx = (touch.clientX - rect.left) / scale;
+          const my = (touch.clientY - rect.top) / scale;
+          const pos = posRef.current;
+          for (const agent of agentList) {
+            const p = pos[agent.id];
+            if (!p) continue;
+            const dist = Math.sqrt((mx - p.x) ** 2 + (my - p.y) ** 2);
+            if (dist < 20) { onAgentClick(agent.id); break; }
+          }
+        }}
         onMouseLeave={() => setHoveredAgent(null)}
       />
     </div>

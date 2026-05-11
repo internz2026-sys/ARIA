@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AGENTS, type OfficeAgent, type AgentStatus } from "@/lib/office-config";
 import VirtualOffice from "@/components/virtual-office/VirtualOffice";
-import MobileOfficeList from "@/components/virtual-office/MobileOfficeList";
 import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
 
 import { useCeoChat } from "@/lib/use-ceo-chat";
@@ -137,9 +136,10 @@ export default function OfficePage() {
 
   return (
     <>
-      <div className="fixed top-14 lg:top-0 left-0 lg:left-[240px] right-0 bottom-0 flex flex-col z-20 bg-[#F8F8F6]">
-        {/* Header bar */}
-        <div className="flex items-center justify-between px-4 py-2 bg-[#F8F8F6] border-b border-[#E0DED8]/60 shrink-0">
+      {/* Desktop: fixed panel fills viewport. Mobile: normal document flow so the tall canvas scrolls. */}
+      <div className="lg:fixed lg:top-0 lg:left-[240px] lg:right-0 lg:bottom-0 lg:flex lg:flex-col lg:z-20 mt-14 lg:mt-0 bg-[#F8F8F6]">
+        {/* Header bar — sticky on mobile so it stays visible while scrolling */}
+        <div className="sticky top-14 lg:static flex items-center justify-between px-4 py-2 bg-[#F8F8F6] border-b border-[#E0DED8]/60 shrink-0 z-10">
           <div>
             <h1 className="text-base font-bold text-[#2C2C2A]">Virtual Office</h1>
             <p className="text-[10px] text-[#5F5E5A]">
@@ -178,19 +178,8 @@ export default function OfficePage() {
           </div>
         </div>
 
-        {/* Mobile: stacked room cards (hidden on lg+) */}
-        <div className="lg:hidden flex-1 min-h-0 overflow-y-auto">
-          {!loaded ? (
-            <div className="flex items-center justify-center h-32">
-              <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
-            </div>
-          ) : (
-            <MobileOfficeList agents={finalAgents} onAgentClick={handleAgentClick} />
-          )}
-        </div>
-
-        {/* Desktop: canvas (hidden on mobile) */}
-        <div className="hidden lg:block flex-1 min-h-0 relative">
+        {/* Canvas — mobile: explicit tall height so it scrolls naturally; desktop: flex-1 */}
+        <div className="h-[1792px] lg:h-auto lg:flex-1 lg:min-h-0 relative">
           {!loaded ? (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
