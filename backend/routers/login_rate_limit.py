@@ -220,3 +220,52 @@ async def login_success(body: LoginEmailBody, request: Request):
     if safe_email:
         _rate_limit.reset("login_fail:email", safe_email)
     return {"ok": True}
+
+
+# ── Ban status (public — banned users have no session) ────────────────────
+#
+# The /banned page renders WITHOUT a Supabase session: the user just got
+# 403'd off every authenticated endpoint, so we can't require auth here
+# without putting them in a redirect loop. Threat model is acceptable:
+#  * Endpoint leaks "<user_id> is banned + their reason" to anyone who
+#    knows the user_id. user_ids are uuids and not enumerable, and the
+#    response carries only the reason copy the user already saw at ban
+#    time — no PII or session material.
+#  * The pause status / role / email do NOT leak here. Only the three
+#    ban-specific fields.
+#
+# Rate-limited by IP via the global middleware (120/min/IP) so this
+# can't be turned into a user_id-existence oracle.
+
+@router.get("/ban-status/{user_id}")
+async def ban_status(user_id: str, request: Request):
+    """Return ban metadata for a user_id. Public — no JWT required.
+
+    The frontend /banned page (which the user lands on after the
+    middleware 403's their JWT with detail=BANNED) calls this with the
+    user_id from the redirect URL so the page can show the reason and
+    "banned until" timestamp.
+
+    Response shape:
+      {
+        "banned": true,
+        "banned_at": "<iso>",
+        "banned_until": "<iso>" | null,    // null when indefinite
+        "indefinite": false,
+        "reason": "<text>" | null
+      }
+    or {"banned": false} for non-banned / unknown users.
+    """
+    # Lazy-import to dodge the heavy supabase client load when this
+    # module is imported (the login-rate-limit endpoints don't need it).
+    from backend.services import profiles as profiles_service
+
+    # Light input validation — the path param is already typed str, but
+    # an empty / overlong value short-circuits to a 200 {"banned": false}
+    # instead of issuing a Supabase query. uuids are 36 chars; 64 is
+    # generous and keeps the cap loose enough for future user_id shapes.
+    uid = (user_id or "").strip()
+    if not uid or len(uid) > 64:
+        return {"banned": False}
+
+    return profiles_service.get_ban_status(uid)

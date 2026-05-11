@@ -128,8 +128,18 @@ async def admin_set_status(target_user_id: str, request: Request):
 
 @router.post("/users/{target_user_id}/ban")
 async def admin_ban_user(target_user_id: str, request: Request):
-    """Auth-layer ban — revokes login at Supabase. Body:
-    { "duration_hours": int (default 8760), "reason": "..." (optional) }.
+    """Auth-layer ban — revokes login at Supabase. Accepts one of three
+    body shapes; exactly one of ``duration_hours``, ``until``, or
+    ``indefinite`` must be set:
+
+      * ``{"duration_hours": N, "reason": "..."}`` — ban for N hours
+        (the original shape — still the default when the body has none
+        of the three fields, defaulting to 8760h = one year)
+      * ``{"until": "2026-12-31T23:59:59Z", "reason": "..."}`` — ban
+        until a specific ISO-8601 UTC timestamp
+      * ``{"indefinite": true, "reason": "..."}`` — ban forever; the
+        profiles row gets ``banned_until=NULL`` and Supabase Auth gets
+        a 100yr sentinel duration
 
     Distinct from /status (pause/suspend), which is a soft middleware
     gate that still allows login. This calls Supabase Auth Admin so the
@@ -141,18 +151,71 @@ async def admin_ban_user(target_user_id: str, request: Request):
       - users can never ban themselves (anti-lockout)
     """
     actor_id, actor_role = _actor_from_request(request)
-    body = await request.json() or {}
-    duration_hours = body.get("duration_hours", 8760)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    body = body or {}
+
     reason = (body.get("reason") or "").strip()
 
-    result = profiles_service.ban_user(
-        target_user_id=target_user_id,
-        actor_role=actor_role,
-        actor_id=actor_id,
-        duration_hours=duration_hours,
-        reason=reason,
-    )
+    # Detect which input shape the caller used. The three fields are
+    # mutually exclusive — exactly one allowed. If the body is empty we
+    # default to the legacy `duration_hours=8760` shape so existing
+    # callers that POST {} keep working.
+    has_duration = "duration_hours" in body
+    has_until = "until" in body and body.get("until") not in (None, "")
+    has_indefinite = bool(body.get("indefinite"))
+
+    # Count truthy-ish presence so the error message can guide callers.
+    # `duration_hours: null` counts as "present" (user supplied the key)
+    # so `{"duration_hours": null, "until": "..."}` is correctly
+    # flagged as two-of-three rather than silently falling through to
+    # the `until` branch.
+    presence = sum(1 for x in (has_duration, has_until, has_indefinite) if x)
+    if presence > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Exactly one of `duration_hours`, `until`, or `indefinite` "
+                "must be set; got multiple."
+            ),
+        )
+
+    if has_indefinite:
+        result = profiles_service.ban_user(
+            target_user_id=target_user_id,
+            actor_role=actor_role,
+            actor_id=actor_id,
+            indefinite=True,
+            reason=reason,
+        )
+    elif has_until:
+        result = profiles_service.ban_user(
+            target_user_id=target_user_id,
+            actor_role=actor_role,
+            actor_id=actor_id,
+            until=body.get("until"),
+            reason=reason,
+        )
+    else:
+        # duration_hours path (or empty body → default 8760)
+        duration_hours = body.get("duration_hours", 8760)
+        result = profiles_service.ban_user(
+            target_user_id=target_user_id,
+            actor_role=actor_role,
+            actor_id=actor_id,
+            duration_hours=duration_hours,
+            reason=reason,
+        )
     if not result.get("ok"):
+        # 400 for shape-validation failures (bad until / non-int hours)
+        # so a misbehaving frontend learns it's a client bug, not a
+        # permission issue. 403 for guard failures (self-ban, admin
+        # banning admin) — same as before.
+        err = (result.get("error") or "").lower()
+        if any(token in err for token in ("until", "duration_hours", "integer")):
+            raise HTTPException(status_code=400, detail=result.get("error") or "Invalid request")
         raise HTTPException(status_code=403, detail=result.get("error") or "Forbidden")
     return result
 

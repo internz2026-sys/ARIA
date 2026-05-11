@@ -861,6 +861,38 @@ async def auth_and_rate_limit_middleware(request: Request, call_next):
         from starlette.responses import JSONResponse
         return JSONResponse(status_code=401, content={"detail": "Invalid or expired token"}, headers=cors_headers)
 
+    # Ban gate — hard-lock for users whose profiles.banned_at is set.
+    # Distinct from the pause gate below (which only blocks "expensive"
+    # actions): banned users are bounced off EVERY authenticated route
+    # so the frontend can route them to /banned cleanly. Supabase Auth
+    # is still the canonical source of truth (a banned JWT will be
+    # rejected at refresh time), but this in-process gate closes the
+    # window between when ban_user fires and when the access token
+    # expires.
+    #
+    # The 403 carries detail=BANNED so the frontend axios interceptor
+    # can detect it without parsing prose, plus the user_id so the
+    # /banned page can fetch the reason from /api/auth/ban-status/{uid}
+    # (which is public — banned users have no valid session).
+    _ban_user_id = (user.get("sub") or "")
+    if _ban_user_id and _ban_user_id != "dev-user":
+        try:
+            from backend.services.profiles import is_user_banned
+            if is_user_banned(_ban_user_id):
+                from starlette.responses import JSONResponse
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "BANNED", "user_id": _ban_user_id},
+                    headers=cors_headers,
+                )
+        except Exception as _ban_exc:
+            # Failing-open here is intentional: if the profiles lookup
+            # is broken (transient Supabase outage), we'd rather serve
+            # the user than mass-lock every account. Supabase Auth's
+            # own ban check still runs at JWT refresh time so an
+            # actually-banned user can't refresh indefinitely.
+            logger.debug("[auth] ban gate lookup failed (allowing through): %s", _ban_exc)
+
     # Pause gate — soft-lock for users whose profiles.status is
     # 'paused' or 'suspended'. Only blocks "expensive" actions (CEO
     # chat, agent runs). Reads (dashboard, inbox history, settings)

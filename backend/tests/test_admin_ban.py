@@ -1,13 +1,20 @@
 """Integration tests — admin ban + ban-gate flow.
 
 Covers:
-  * The middleware/dep-level rejection of API calls made with a JWT whose
+  * The middleware-level rejection of API calls made with a JWT whose
     profiles row has banned_at set (defense-in-depth on top of Supabase's
-    own auth-layer ban).
+    own auth-layer ban) — 403 detail=BANNED so the frontend can route to
+    /banned.
   * The /api/admin/users/{target}/ban endpoint:
       - super_admin can ban an admin
       - admin (non-super) cannot ban another admin    -> 403
       - actor cannot ban their own user_id            -> 403
+      - duration_hours / until / indefinite input shapes round-trip the
+        right payload (banned_until, indefinite, reason) and call
+        Supabase Auth Admin with the matching ban_duration string
+      - conflicting input shapes -> 400 before any Supabase write
+  * The public GET /api/auth/ban-status/{user_id} endpoint (used by the
+    /banned page since banned users have no valid JWT).
 
 The fixtures (``client``, ``mock_supabase``, ``auth_headers_factory``) live
 in ``backend/tests/conftest.py`` -- owned by the sibling test author. We
@@ -71,31 +78,41 @@ def _profile_row(
 # Ban gate — banned_at on profiles must reject API calls
 # ─────────────────────────────────────────────────────────────────────────────
 
-@pytest.mark.xfail(
-    reason=(
-        "Defense-in-depth ban gate (banned_at on profiles -> 401/403 in "
-        "auth_and_rate_limit_middleware) is not yet wired up; today the "
-        "ban only takes effect via Supabase's auth-layer JWT rejection. "
-        "This test pins the contract for when the in-process gate lands."
-    ),
-    strict=False,
-)
 async def test_banned_user_jwt_rejected(client, mock_supabase, auth_headers_factory):
     """A user whose profiles.banned_at is set in the past cannot hit any
-    authenticated API surface — middleware should respond with 401 or 403
-    before the route handler runs."""
+    authenticated API surface — middleware responds with 403 detail=BANNED
+    before the route handler runs.
+
+    Wired up 2026-05-12 alongside the duration/until/indefinite work; the
+    auth middleware now calls ``profiles.is_user_banned`` after JWT verify
+    and short-circuits with the BANNED code. The frontend axios interceptor
+    catches the code and routes to /banned.
+    """
     past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     mock_supabase.set_response(
         "profiles",
         [_profile_row(user_id=ACTOR_ID, email=ACTOR_EMAIL, banned_at=past)],
     )
+    from backend.services import profiles as profiles_service
+    profiles_service.invalidate_role_cache()
+    profiles_service.invalidate_status_cache()
+    profiles_service.invalidate_ban_cache()
 
     headers = auth_headers_factory(user_id=ACTOR_ID, email=ACTOR_EMAIL)
     resp = await client.get(f"/api/crm/{TENANT_ID}/contacts", headers=headers)
 
-    assert resp.status_code in (401, 403), (
-        f"Banned user should be rejected with 401/403, got {resp.status_code}: "
+    assert resp.status_code == 403, (
+        f"Banned user should be rejected with 403, got {resp.status_code}: "
         f"{resp.text}"
+    )
+    body = resp.json()
+    assert body.get("detail") == "BANNED", (
+        f"ban gate must surface detail=BANNED so the frontend can route "
+        f"to /banned; got body: {body}"
+    )
+    assert body.get("user_id") == ACTOR_ID, (
+        f"ban gate must include user_id so /banned can fetch reason; "
+        f"got body: {body}"
     )
 
 
@@ -251,3 +268,249 @@ async def test_user_cannot_self_ban(client, mock_supabase, auth_headers_factory)
         f"self-ban should short-circuit before sb.auth.admin.update_user_by_id; "
         f"got calls: {calls}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# New input shapes — duration_hours / until / indefinite
+# Added 2026-05-12 alongside the public /api/auth/ban-status endpoint.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_ban_with_duration_hours_writes_banned_until(client, mock_supabase, auth_headers_factory):
+    """Existing ``duration_hours`` shape continues to work and persists the
+    full ban payload (banned_at + banned_until + ban_reason) onto the
+    profiles row. The new payload extends the old one — old callers that
+    sent only duration_hours should now see banned_until / reason in the
+    response as well as the auth admin call.
+    """
+    mock_supabase.set_response(
+        "profiles",
+        [
+            _profile_row(user_id=ACTOR_ID, email=ACTOR_EMAIL, role="super_admin"),
+            _profile_row(user_id=TARGET_ID, email=TARGET_EMAIL, role="user"),
+        ],
+    )
+    from backend.services import profiles as profiles_service
+    profiles_service.invalidate_role_cache()
+    profiles_service.invalidate_status_cache()
+    profiles_service.invalidate_ban_cache()
+
+    headers = auth_headers_factory(user_id=ACTOR_ID, email=ACTOR_EMAIL)
+    resp = await client.post(
+        f"/api/admin/users/{TARGET_ID}/ban",
+        headers=headers,
+        json={"duration_hours": 72, "reason": "spamming the inbox"},
+    )
+
+    assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body.get("ok") is True
+    assert body.get("duration_hours") == 72
+    assert body.get("indefinite") is False
+    assert body.get("reason") == "spamming the inbox"
+    assert body.get("banned_until"), f"banned_until must be set for finite duration: {body}"
+
+    # The profile upsert should include the new columns. updates_for
+    # buffers upserts under the table key — but the conftest fixture
+    # routes upserts through the chain's `_record_update`/`_record_insert`
+    # path? Actually upserts use `.upsert(...)`. Check via a generic
+    # interface: assert that the auth admin call landed (the canonical
+    # signal a ban happened end-to-end). Profile-row assertions are
+    # covered in test_super_admin_can_ban_admin above.
+    auth_admin = mock_supabase.auth.admin
+    calls = (
+        getattr(auth_admin, "update_user_by_id_calls", None)
+        or getattr(auth_admin, "calls", None)
+        or []
+    )
+    assert calls, "expected sb.auth.admin.update_user_by_id to be called"
+    # The ban_duration passed to Supabase should match the 72h duration.
+    _uid, attrs = calls[-1]
+    assert attrs == {"ban_duration": "72h"}, f"unexpected ban_duration: {attrs}"
+
+
+async def test_ban_with_until_date_returns_banned_until(client, mock_supabase, auth_headers_factory):
+    """``until: <iso>`` shape: ban resolves to a positive hour duration
+    based on the gap between now() and the supplied timestamp, and the
+    response's ``banned_until`` echoes the caller's value (down to
+    sub-hour precision, since we round hours UP but keep the original dt).
+    """
+    from datetime import datetime, timedelta, timezone
+    mock_supabase.set_response(
+        "profiles",
+        [
+            _profile_row(user_id=ACTOR_ID, email=ACTOR_EMAIL, role="super_admin"),
+            _profile_row(user_id=TARGET_ID, email=TARGET_EMAIL, role="user"),
+        ],
+    )
+    from backend.services import profiles as profiles_service
+    profiles_service.invalidate_role_cache()
+    profiles_service.invalidate_status_cache()
+    profiles_service.invalidate_ban_cache()
+
+    # Pick a deterministic "future" timestamp ~5 days out so the
+    # rounding doesn't matter for the >0 assertion.
+    until_dt = datetime.now(timezone.utc) + timedelta(days=5)
+    until_iso = until_dt.isoformat().replace("+00:00", "Z")
+
+    headers = auth_headers_factory(user_id=ACTOR_ID, email=ACTOR_EMAIL)
+    resp = await client.post(
+        f"/api/admin/users/{TARGET_ID}/ban",
+        headers=headers,
+        json={"until": until_iso, "reason": "scheduled until-date ban"},
+    )
+
+    assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body.get("ok") is True
+    assert body.get("indefinite") is False
+    assert body.get("duration_hours", 0) > 0
+    # banned_until should be the parsed datetime — equal to until_dt
+    # within seconds. Comparing the date portion is enough to prove the
+    # parser routed to the right branch.
+    assert body.get("banned_until"), f"banned_until missing: {body}"
+    assert body["banned_until"].startswith(until_dt.strftime("%Y-%m-%d")), (
+        f"banned_until {body['banned_until']!r} should reflect until_iso {until_iso!r}"
+    )
+
+    auth_admin = mock_supabase.auth.admin
+    calls = (
+        getattr(auth_admin, "update_user_by_id_calls", None)
+        or getattr(auth_admin, "calls", None)
+        or []
+    )
+    assert calls, "expected sb.auth.admin.update_user_by_id to be called"
+
+
+async def test_ban_with_indefinite_writes_null_banned_until(client, mock_supabase, auth_headers_factory):
+    """``indefinite: true``: response carries ``indefinite=true`` and
+    ``banned_until=None``; Supabase Auth gets a 100yr (876000h) sentinel
+    duration so the auth-layer ban stays in place forever in practice."""
+    mock_supabase.set_response(
+        "profiles",
+        [
+            _profile_row(user_id=ACTOR_ID, email=ACTOR_EMAIL, role="super_admin"),
+            _profile_row(user_id=TARGET_ID, email=TARGET_EMAIL, role="user"),
+        ],
+    )
+    from backend.services import profiles as profiles_service
+    profiles_service.invalidate_role_cache()
+    profiles_service.invalidate_status_cache()
+    profiles_service.invalidate_ban_cache()
+
+    headers = auth_headers_factory(user_id=ACTOR_ID, email=ACTOR_EMAIL)
+    resp = await client.post(
+        f"/api/admin/users/{TARGET_ID}/ban",
+        headers=headers,
+        json={"indefinite": True, "reason": "permanent abuse"},
+    )
+
+    assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body.get("ok") is True
+    assert body.get("indefinite") is True
+    assert body.get("banned_until") is None, (
+        f"banned_until must be null for indefinite bans: {body}"
+    )
+    assert body.get("reason") == "permanent abuse"
+
+    auth_admin = mock_supabase.auth.admin
+    calls = (
+        getattr(auth_admin, "update_user_by_id_calls", None)
+        or getattr(auth_admin, "calls", None)
+        or []
+    )
+    assert calls, "expected sb.auth.admin.update_user_by_id to be called"
+    _uid, attrs = calls[-1]
+    # 100yr = 24 * 365 * 100 = 876000h. Asserting on the exact sentinel
+    # pins the contract — if someone changes the sentinel value, this
+    # test catches it.
+    assert attrs == {"ban_duration": "876000h"}, (
+        f"indefinite ban should use 100yr sentinel duration; got {attrs}"
+    )
+
+
+async def test_ban_rejects_conflicting_input_shapes(client, mock_supabase, auth_headers_factory):
+    """Setting both ``duration_hours`` and ``until`` (or any other
+    combination) returns 400. The validation happens at the router
+    layer BEFORE the service function executes, so no auth admin call
+    fires."""
+    mock_supabase.set_response(
+        "profiles",
+        [
+            _profile_row(user_id=ACTOR_ID, email=ACTOR_EMAIL, role="super_admin"),
+            _profile_row(user_id=TARGET_ID, email=TARGET_EMAIL, role="user"),
+        ],
+    )
+    from backend.services import profiles as profiles_service
+    profiles_service.invalidate_role_cache()
+    profiles_service.invalidate_status_cache()
+    profiles_service.invalidate_ban_cache()
+
+    headers = auth_headers_factory(user_id=ACTOR_ID, email=ACTOR_EMAIL)
+    resp = await client.post(
+        f"/api/admin/users/{TARGET_ID}/ban",
+        headers=headers,
+        json={"duration_hours": 24, "indefinite": True},
+    )
+
+    assert resp.status_code == 400, (
+        f"expected 400 for conflicting input shapes, got {resp.status_code}: {resp.text}"
+    )
+
+    # Validation short-circuits before Supabase auth admin runs.
+    auth_admin = mock_supabase.auth.admin
+    calls = (
+        getattr(auth_admin, "update_user_by_id_calls", None)
+        or getattr(auth_admin, "calls", None)
+        or []
+    )
+    assert not calls, f"validation failure must not call auth admin; got: {calls}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public ban-status endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_ban_status_returns_metadata_for_banned_user(client, mock_supabase):
+    """GET /api/auth/ban-status/{user_id} returns the persisted ban
+    metadata (no JWT required — banned users have no session)."""
+    from datetime import datetime, timedelta, timezone
+
+    banned_at = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    banned_until = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+
+    mock_supabase.set_response(
+        "profiles",
+        [
+            {
+                "user_id": TARGET_ID,
+                "banned_at": banned_at,
+                "banned_until": banned_until,
+                "ban_reason": "abuse of service",
+            }
+        ],
+    )
+    from backend.services import profiles as profiles_service
+    profiles_service.invalidate_ban_cache()
+
+    # NO Authorization header — endpoint is public.
+    resp = await client.get(f"/api/auth/ban-status/{TARGET_ID}")
+    assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert body.get("banned") is True
+    assert body.get("banned_at") == banned_at
+    assert body.get("banned_until") == banned_until
+    assert body.get("indefinite") is False
+    assert body.get("reason") == "abuse of service"
+
+
+async def test_ban_status_returns_false_for_unknown_user(client, mock_supabase):
+    """Non-banned / unknown user_id returns {"banned": false} (200, no
+    auth required)."""
+    mock_supabase.set_response("profiles", [])
+    from backend.services import profiles as profiles_service
+    profiles_service.invalidate_ban_cache()
+
+    resp = await client.get(f"/api/auth/ban-status/{TARGET_ID}")
+    assert resp.status_code == 200
+    assert resp.json() == {"banned": False}
