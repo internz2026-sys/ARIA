@@ -179,7 +179,7 @@ export default function OfficePage() {
         </div>
 
         {/* Canvas — mobile: explicit tall height so it scrolls naturally; desktop: flex-1 */}
-        <div className="h-[1792px] lg:h-auto lg:flex-1 lg:min-h-0 relative">
+        <div className="h-[1024px] lg:h-auto lg:flex-1 lg:min-h-0 relative">
           {!loaded ? (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />

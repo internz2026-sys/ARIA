@@ -12,11 +12,11 @@ export const OFFICE_HEIGHT = 16; // tiles
 export const OFFICE_PIXEL_WIDTH = OFFICE_WIDTH * TILE_SIZE;   // 768
 export const OFFICE_PIXEL_HEIGHT = OFFICE_HEIGHT * TILE_SIZE; // 512
 
-// Mobile canvas: single 8-tile-wide column, 7 rooms tall
-export const MOBILE_OFFICE_WIDTH = 8;   // tiles
-export const MOBILE_OFFICE_HEIGHT = 56; // tiles (7 rooms × 8 tiles)
-export const MOBILE_PIXEL_WIDTH = MOBILE_OFFICE_WIDTH * TILE_SIZE;   // 256
-export const MOBILE_PIXEL_HEIGHT = MOBILE_OFFICE_HEIGHT * TILE_SIZE; // 1792
+// Mobile canvas: 2-column × 4-row grid (7 rooms + 1 empty cell)
+export const MOBILE_OFFICE_WIDTH = 16;  // tiles (2 × 8-tile columns)
+export const MOBILE_OFFICE_HEIGHT = 32; // tiles (4 × 8-tile rows)
+export const MOBILE_PIXEL_WIDTH = MOBILE_OFFICE_WIDTH * TILE_SIZE;   // 512
+export const MOBILE_PIXEL_HEIGHT = MOBILE_OFFICE_HEIGHT * TILE_SIZE; // 1024
 
 // ---- Types ----------------------------------------------------------------
 
@@ -62,16 +62,18 @@ export const ROOMS: Room[] = [
   { id: "design-studio", name: "Design Studio",   x: 24, y: 0, width: 8, height: 8, floorColor: "#FFF0F5", wallColor: "#E0A0B8", labelColor: "#E4407B" },
 ];
 
-// ---- Mobile room layout (1-column vertical stack, all at x:0) -------------
+// ---- Mobile room layout (2-column × 4-row grid, 7 rooms + 1 empty cell) ---
+// Col 0 = x:0, Col 1 = x:8. Rows at y: 0, 8, 16, 24. Bottom-right cell empty.
 
 export const MOBILE_ROOMS: Room[] = [
   { id: "ceo-office",     name: "CEO Office",      x: 0, y:  0, width: 8, height: 8, floorColor: "#F5F0FF", wallColor: "#B8A8E0", labelColor: "#534AB7" },
-  { id: "meeting-room",   name: "Meeting Room",    x: 0, y:  8, width: 8, height: 8, floorColor: "#FFF9F0", wallColor: "#D4C4A0", labelColor: "#8B7355" },
-  { id: "content-studio", name: "Content Studio",  x: 0, y: 16, width: 8, height: 8, floorColor: "#EDFAF2", wallColor: "#A8D8B8", labelColor: "#1D9E75" },
-  { id: "email-room",     name: "Email Center",    x: 0, y: 24, width: 8, height: 8, floorColor: "#FFF8ED", wallColor: "#E0C8A0", labelColor: "#BA7517" },
-  { id: "social-hub",     name: "Social Hub",      x: 0, y: 32, width: 8, height: 8, floorColor: "#FFEFED", wallColor: "#E0A8A0", labelColor: "#D85A30" },
-  { id: "ads-room",       name: "Ads Room",        x: 0, y: 40, width: 8, height: 8, floorColor: "#F0EDFF", wallColor: "#B8A0E0", labelColor: "#7C3AED" },
-  { id: "design-studio",  name: "Design Studio",   x: 0, y: 48, width: 8, height: 8, floorColor: "#FFF0F5", wallColor: "#E0A0B8", labelColor: "#E4407B" },
+  { id: "meeting-room",   name: "Meeting Room",    x: 8, y:  0, width: 8, height: 8, floorColor: "#FFF9F0", wallColor: "#D4C4A0", labelColor: "#8B7355" },
+  { id: "content-studio", name: "Content Studio",  x: 0, y:  8, width: 8, height: 8, floorColor: "#EDFAF2", wallColor: "#A8D8B8", labelColor: "#1D9E75" },
+  { id: "email-room",     name: "Email Center",    x: 8, y:  8, width: 8, height: 8, floorColor: "#FFF8ED", wallColor: "#E0C8A0", labelColor: "#BA7517" },
+  { id: "social-hub",     name: "Social Hub",      x: 0, y: 16, width: 8, height: 8, floorColor: "#FFEFED", wallColor: "#E0A8A0", labelColor: "#D85A30" },
+  { id: "ads-room",       name: "Ads Room",        x: 8, y: 16, width: 8, height: 8, floorColor: "#F0EDFF", wallColor: "#B8A0E0", labelColor: "#7C3AED" },
+  { id: "design-studio",  name: "Design Studio",   x: 0, y: 24, width: 8, height: 8, floorColor: "#FFF0F5", wallColor: "#E0A0B8", labelColor: "#E4407B" },
+  // Bottom-right cell (x:8, y:24) intentionally empty
 ];
 
 /** Return MOBILE_ROOMS or ROOMS depending on viewport. */
@@ -104,14 +106,14 @@ export const MEETING_CHAIRS: { x: number; y: number }[] = [
 ];
 
 // ---- Meeting center / chairs (mobile) -------------------------------------
-// Mobile meeting-room is at tile (0, 8). Same offsets within the room.
-// Desktop: meeting-room at (8,0) → TABLE_X=9*T+16=304, TABLE_Y=2*T+16=80
-// Mobile:  meeting-room at (0,8) → TABLE_X=1*T+16=48,  TABLE_Y=10*T+16=336
+// Mobile meeting-room is at tile (8, 0) — identical to the desktop layout.
+// Center = (8+4, 0+4) = (12, 4). TABLE_X/Y are the same as desktop.
 
-export const MOBILE_MEETING_CENTER = { x: 4, y: 12 };
+export const MOBILE_MEETING_CENTER = { x: 12, y: 4 };
 
-const MOBILE_TABLE_X = 1 * TILE_SIZE + 16; // 48
-const MOBILE_TABLE_Y = 10 * TILE_SIZE + 16; // 336
+// Same table origin as desktop: meeting-room at (8,0) → TABLE_X=9*T+16=304, TABLE_Y=2*T+16=80
+const MOBILE_TABLE_X = TABLE_X; // 304 — identical to desktop
+const MOBILE_TABLE_Y = TABLE_Y; // 80  — identical to desktop
 
 export const MOBILE_MEETING_CHAIRS: { x: number; y: number }[] = [
   { x: MOBILE_TABLE_X + 16, y: MOBILE_TABLE_Y - 5 },
