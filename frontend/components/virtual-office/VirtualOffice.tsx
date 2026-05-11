@@ -18,6 +18,8 @@ import {
   getIdleSpotsForRoom,
   getAllIdleSpotsForViewport,
   getDeskPixel,
+  ROOM_MAP,
+  MOBILE_ROOM_MAP,
   type OfficeAgent,
   type Room,
 } from "@/lib/office-config";
@@ -384,7 +386,17 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
 
   // ── Decorations ──────────────────────────────────────────────────────────
 
-  const drawDecorations = useCallback((ctx: CanvasRenderingContext2D, time: number) => {
+  const drawDecorations = useCallback((ctx: CanvasRenderingContext2D, time: number, isMobile: boolean) => {
+    // Helper: compute the canvas translate delta for a room's decoration block.
+    // Decoration coords are hardcoded in desktop pixel space. On mobile the rooms
+    // are at different tile positions, so we shift by (mobileOrigin − desktopOrigin).
+    function roomDelta(roomId: string): { dx: number; dy: number } {
+      if (!isMobile) return { dx: 0, dy: 0 };
+      const dr = ROOM_MAP[roomId];
+      const mr = MOBILE_ROOM_MAP[roomId];
+      if (!dr || !mr) return { dx: 0, dy: 0 };
+      return { dx: (mr.x - dr.x) * T, dy: (mr.y - dr.y) * T };
+    }
     // Helper: plant
     function plant(x: number, y: number, s = 1) {
       ctx.fillStyle = "#A86040"; ctx.fillRect(x - 4 * s, y + 1 * s, 8 * s, 2 * s);
@@ -569,19 +581,21 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       ctx.beginPath(); ctx.ellipse(x, y - 3, 7, 5, 0, Math.PI, Math.PI * 2); ctx.fill();
     }
 
-    // ── CEO Office (0,0 8x8) ──
+    // ── CEO Office (desktop: 0,0  mobile: 0,0 — no delta) ──
+    { const { dx, dy } = roomDelta("ceo-office"); ctx.save(); ctx.translate(dx, dy);
     rug(1 * T, 2 * T, 6 * T, 4 * T, "#534AB7");
     bookshelf(1 * T + 4, 1 * T + 4);
     lamp(6 * T + 16, 1 * T + 16);
     plant(6 * T + 16, 6 * T + 16, 1.1);
-    // clock removed — single wallClock drawn globally
     picture(1 * T + 8, 0 * T + 6, "#E8EAF6");
     cabinet(0 * T + 4, 6 * T + 4);
     cactus(2 * T, 1 * T + 14);
     bin(7 * T, 7 * T);
     sofa(1 * T + 8, 6 * T + 8, "#7E57C2");
+    ctx.restore(); }
 
-    // ── Meeting Room (8,0 8x8) — central conference room ──
+    // ── Meeting Room (desktop: 8,0  mobile: 8,0 — no delta) ──
+    { const { dx, dy } = roomDelta("meeting-room"); ctx.save(); ctx.translate(dx, dy);
     rug(9 * T, 1 * T + 8, 6 * T, 5 * T, "#8B7355");
     confTable(9 * T + 16, 2 * T + 16);
     whiteboard(9 * T + 4, 0 * T + 20);
@@ -591,8 +605,10 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     stickyNotes(15 * T + 8, 1 * T + 4);
     bin(15 * T + 16, 7 * T);
     cactus(9 * T + 4, 7 * T);
+    ctx.restore(); }
 
-    // ── Content Studio (16,0 8x8) ──
+    // ── Content Studio (desktop: 16,0  mobile: 0,8 — delta: -16t, +8t) ──
+    { const { dx, dy } = roomDelta("content-studio"); ctx.save(); ctx.translate(dx, dy);
     rug(17 * T, 2 * T, 6 * T, 4 * T, "#1D9E75");
     bookshelf(22 * T, 1 * T + 4);
     whiteboard(17 * T + 4, 1 * T + 4);
@@ -603,8 +619,10 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     beanBag(23 * T, 3 * T + 8, "#66BB6A");
     cactus(17 * T + 4, 0 * T + 24);
     picture(23 * T, 0 * T + 22, "#C8E6C9");
+    ctx.restore(); }
 
-    // ── Email Center (0,8 8x8) ──
+    // ── Email Center (desktop: 0,8  mobile: 8,8 — delta: +8t, 0) ──
+    { const { dx, dy } = roomDelta("email-room"); ctx.save(); ctx.translate(dx, dy);
     rug(1 * T, 10 * T, 6 * T, 4 * T, "#BA7517");
     cabinet(1 * T + 4, 9 * T + 4);
     cabinet(1 * T + 20, 9 * T + 4);
@@ -616,8 +634,10 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     picture(0 * T + 4, 8 * T + 22, "#FFF3E0");
     cactus(7 * T, 9 * T + 8);
     sofa(3 * T + 8, 14 * T + 10, "#F5A623");
+    ctx.restore(); }
 
-    // ── Social Hub (8,8 8x8) ──
+    // ── Social Hub (desktop: 8,8  mobile: 0,16 — delta: -8t, +8t) ──
+    { const { dx, dy } = roomDelta("social-hub"); ctx.save(); ctx.translate(dx, dy);
     rug(9 * T, 10 * T, 6 * T, 4 * T, "#D85A30");
     whiteboard(9 * T + 4, 9 * T + 4);
     plant(14 * T + 16, 14 * T + 16);
@@ -629,8 +649,10 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     stickyNotes(11 * T, 9 * T + 4);
     bin(9 * T + 4, 15 * T);
     cactus(15 * T + 16, 9 * T + 8);
+    ctx.restore(); }
 
-    // ── Ads Room (16,8 8x8) ──
+    // ── Ads Room (desktop: 16,8  mobile: 8,16 — delta: -8t, +8t) ──
+    { const { dx, dy } = roomDelta("ads-room"); ctx.save(); ctx.translate(dx, dy);
     rug(17 * T, 10 * T, 6 * T, 4 * T, "#7C3AED");
     bookshelf(17 * T + 4, 9 * T + 4);
     cabinet(22 * T + 8, 9 * T + 4);
@@ -643,6 +665,7 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     bin(23 * T, 15 * T);
     cactus(17 * T + 4, 15 * T);
     sofa(19 * T + 8, 14 * T + 10, "#9575CD");
+    ctx.restore(); }
 
     // ── Global wall clock — top-left corner, real timezone ──
     wallClock(22, 22);
@@ -757,8 +780,9 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
     // Rooms
     for (const room of getRoomsForViewport(mobile)) drawRoom(ctx, room);
 
-    // Decorations (desktop-only — decorations reference desktop tile coords)
-    if (!mobile) drawDecorations(ctx, time);
+    // Decorations — translated per-room via ctx.save/translate/restore so
+    // desktop coords render in the correct room on both desktop and mobile.
+    drawDecorations(ctx, time, mobile);
 
     // Desks (at desk positions, not agent positions)
     for (const agent of agentList) {
