@@ -453,21 +453,23 @@ export default function AdminPage() {
       </div>
 
       {/* Users table */}
-      <Panel>
+      <Panel className="overflow-hidden">
+        {/* Toolbar — on mobile the search+filter stack below the title row
+            via flex-wrap so neither element blows the panel past 100vw. */}
         <div className="flex items-center gap-2 p-4 border-b border-[#E0DED8] flex-wrap">
           <h2 className="text-base font-semibold text-[#2C2C2A]">Users</h2>
           <span className="text-xs text-[#9E9C95]">{users.length} loaded</span>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="w-full sm:w-auto sm:ml-auto flex items-center gap-2 mt-2 sm:mt-0">
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search email or name..."
-              className="text-sm px-3 py-1.5 rounded-lg border border-[#E0DED8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7]/60 w-56"
+              className="text-sm px-3 py-1.5 rounded-lg border border-[#E0DED8] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/30 focus:border-[#534AB7]/60 flex-1 sm:w-56 sm:flex-none min-w-0"
             />
             <select
               value={roleFilter}
               onChange={(e) => setRoleFilter(e.target.value as any)}
-              className="text-sm px-2 py-1.5 rounded-lg border border-[#E0DED8] bg-white focus:outline-none"
+              className="text-sm px-2 py-1.5 rounded-lg border border-[#E0DED8] bg-white focus:outline-none flex-shrink-0"
             >
               <option value="">All roles</option>
               <option value="user">Users</option>
@@ -562,38 +564,58 @@ export default function AdminPage() {
                       {/* Actions: reset password + delete. Hidden on
                           self (use the public flow instead) and on
                           targets the actor can't manage (admins can't
-                          touch other admins / super_admins). */}
-                      <div className="inline-flex items-center gap-1.5">
-                        {/* Pause/Resume — toggles status between
-                            active and paused. Suspended is admin-only
-                            via the table (not exposed on the toggle)
-                            for now. */}
+                          touch other admins / super_admins).
+                          On mobile (< lg) we show icon-only buttons to
+                          keep the actions column narrow enough to fit
+                          the 760px min-width table inside overflow-x-auto.
+                          Text labels appear at lg+ where there is more room. */}
+                      <div className="inline-flex items-center gap-1">
+                        {/* Pause/Resume */}
                         {(u.status || "active") === "active" ? (
                           <button
                             onClick={() => handleStatusChange(u, "paused")}
                             disabled={!canEdit || pendingChange === u.user_id}
-                            className="text-xs px-2 py-1 rounded-md border border-[#D4B24C]/40 text-[#8A6D00] bg-white hover:bg-[#FFF4D6] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-[#D4B24C]/40 text-[#8A6D00] bg-white hover:bg-[#FFF4D6] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                             title={!canEdit ? (isSelf ? "Can't pause your own account" : "Only a super admin can pause another admin") : "Block agent runs for this user"}
                           >
-                            {pendingChange === u.user_id ? "Pausing..." : "Pause"}
+                            {/* Pause icon */}
+                            <svg className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                              <path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zm7 0a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 0014.25 3h-1.5z" />
+                            </svg>
+                            <span className="hidden lg:inline">
+                              {pendingChange === u.user_id ? "Pausing…" : "Pause"}
+                            </span>
                           </button>
                         ) : (
                           <button
                             onClick={() => handleStatusChange(u, "active")}
                             disabled={!canEdit || pendingChange === u.user_id}
-                            className="text-xs px-2 py-1 rounded-md border border-[#1D9E75]/30 text-[#157A5A] bg-white hover:bg-[#E6F5ED] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-[#1D9E75]/30 text-[#157A5A] bg-white hover:bg-[#E6F5ED] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                             title={!canEdit ? (isSelf ? "Can't change your own status" : "Only a super admin can resume another admin") : "Restore agent access for this user"}
                           >
-                            {pendingChange === u.user_id ? "Resuming..." : "Resume"}
+                            {/* Play/resume icon */}
+                            <svg className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                              <path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+                            </svg>
+                            <span className="hidden lg:inline">
+                              {pendingChange === u.user_id ? "Resuming…" : "Resume"}
+                            </span>
                           </button>
                         )}
+                        {/* Reset password */}
                         <button
                           onClick={() => handleResetPassword(u)}
                           disabled={!canEdit || pendingAction?.user_id === u.user_id}
-                          className="text-xs px-2 py-1 rounded-md border border-[#E0DED8] text-[#5F5E5A] bg-white hover:border-[#534AB7]/40 hover:text-[#534AB7] hover:bg-[#FAFAFF] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-[#E0DED8] text-[#5F5E5A] bg-white hover:border-[#534AB7]/40 hover:text-[#534AB7] hover:bg-[#FAFAFF] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={!canEdit ? (isSelf ? "Use the public forgot-password flow for self-reset" : "Only a super admin can reset another admin") : "Send password reset email"}
                         >
-                          {pendingAction?.user_id === u.user_id && pendingAction.kind === "reset" ? "Sending..." : "Reset password"}
+                          {/* Key icon */}
+                          <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+                          </svg>
+                          <span className="hidden lg:inline">
+                            {pendingAction?.user_id === u.user_id && pendingAction.kind === "reset" ? "Sending…" : "Reset pw"}
+                          </span>
                         </button>
                         {/* Ban / Unban — destructive; only super_admins can ban */}
                         {canEdit && isSuper && (
@@ -601,29 +623,48 @@ export default function AdminPage() {
                             <button
                               onClick={() => handleUnbanUser(u)}
                               disabled={pendingAction?.user_id === u.user_id}
-                              className="text-xs px-2 py-1 rounded-md border border-[#FBC9B9] text-[#D85A30] bg-white hover:bg-[#FDEEE8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-[#FBC9B9] text-[#D85A30] bg-white hover:bg-[#FDEEE8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Lift the ban — user will be able to log in again"
                             >
-                              {pendingAction?.user_id === u.user_id && pendingAction.kind === "unban" ? "Unbanning..." : "Unban"}
+                              {/* Check/unban icon */}
+                              <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 119 0v3.75M3.75 21.75h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H3.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                              </svg>
+                              <span className="hidden lg:inline">
+                                {pendingAction?.user_id === u.user_id && pendingAction.kind === "unban" ? "Unbanning…" : "Unban"}
+                              </span>
                             </button>
                           ) : (
                             <button
                               onClick={() => setBanTarget(u)}
                               disabled={pendingAction?.user_id === u.user_id}
-                              className="text-xs px-2 py-1 rounded-md border border-[#FBC9B9] text-[#D85A30] bg-white hover:bg-[#FDEEE8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-[#FBC9B9] text-[#D85A30] bg-white hover:bg-[#FDEEE8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Ban this user — blocks login for 1 year"
                             >
-                              {pendingAction?.user_id === u.user_id && pendingAction.kind === "ban" ? "Banning..." : "Ban"}
+                              {/* Ban/lock icon */}
+                              <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                              </svg>
+                              <span className="hidden lg:inline">
+                                {pendingAction?.user_id === u.user_id && pendingAction.kind === "ban" ? "Banning…" : "Ban"}
+                              </span>
                             </button>
                           )
                         )}
+                        {/* Delete */}
                         <button
                           onClick={() => handleDeleteUser(u)}
                           disabled={!canEdit || pendingAction?.user_id === u.user_id}
-                          className="text-xs px-2 py-1 rounded-md border border-[#FBC9B9] text-[#D85A30] bg-white hover:bg-[#FDEEE8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-[#FBC9B9] text-[#D85A30] bg-white hover:bg-[#FDEEE8] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           title={!canEdit ? (isSelf ? "Can't delete your own account" : "Only a super admin can delete another admin") : "Permanently delete this user"}
                         >
-                          {pendingAction?.user_id === u.user_id && pendingAction.kind === "delete" ? "Deleting..." : "Delete"}
+                          {/* Trash icon */}
+                          <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                          </svg>
+                          <span className="hidden lg:inline">
+                            {pendingAction?.user_id === u.user_id && pendingAction.kind === "delete" ? "Deleting…" : "Delete"}
+                          </span>
                         </button>
                       </div>
                     </td>
