@@ -439,7 +439,12 @@ export default function AriaLanding() {
         </nav>
 
         {/* Hero */}
-        <section style={{ maxWidth: 1200, margin: "0 auto", padding: "100px 48px 80px", textAlign: "center" as const }}>
+        {/* On mobile the section's 48px inline padding shrinks usable width
+            to ~294px on a 390px phone. The className override reclaims that
+            space: px-5 (20px) on mobile, reverting to the inline value at
+            lg+ via lg:px-12 (48px). The inline padding is still present for
+            SSR / browsers that don't parse Tailwind, so desktop is safe. */}
+        <section className="px-5 lg:px-12" style={{ maxWidth: 1200, margin: "0 auto", paddingTop: "100px", paddingBottom: "80px", textAlign: "center" as const }}>
           <div
             style={{
               fontFamily: "'JetBrains Mono'",
@@ -917,7 +922,7 @@ export default function AriaLanding() {
         </section>
 
         {/* Final CTA */}
-        <section ref={ctaRef} style={{ maxWidth: 1200, margin: "0 auto", padding: "120px 48px 160px", textAlign: "center" as const }}>
+        <section ref={ctaRef} className="px-5 lg:px-12" style={{ maxWidth: 1200, margin: "0 auto", paddingTop: "120px", paddingBottom: "160px", textAlign: "center" as const }}>
           <h2
             style={{
               fontFamily: "'Instrument Serif'",
@@ -949,7 +954,11 @@ export default function AriaLanding() {
           >
             Join the waitlist. Be the first to get an AI marketing team that actually understands your product.
           </p>
+          {/* CTA form: stacks vertically on mobile (flex-col) so neither
+              the input nor the button is clipped against the screen edge.
+              At sm+ it returns to a single row. */}
           <div
+            className="flex-col sm:flex-row"
             style={{
               display: "flex",
               gap: 12,

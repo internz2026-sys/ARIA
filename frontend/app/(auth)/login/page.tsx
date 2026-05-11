@@ -129,6 +129,37 @@ function LoginForm() {
         body: JSON.stringify({ email: cleanEmail }),
       });
     } catch {}
+
+    // Ban check: query /api/auth/ban-status/{uid} after successful auth.
+    // If the account is banned, redirect to /banned before reaching the
+    // dashboard. Also handles backends that surface bans as 403 BANNED.
+    const userId = data?.user?.id;
+    if (userId) {
+      try {
+        const banRes = await fetch(
+          `${apiBase}/api/auth/ban-status/${encodeURIComponent(userId)}`,
+          { cache: "no-store" },
+        );
+        if (banRes.ok) {
+          const banData = await banRes.json();
+          if (banData?.banned) {
+            router.replace(`/banned?user=${encodeURIComponent(userId)}`);
+            return;
+          }
+        } else if (banRes.status === 403) {
+          const banBody = await banRes.json().catch(() => ({}));
+          if (banBody?.detail === "BANNED") {
+            const uid = banBody?.user_id || userId;
+            router.replace(`/banned?user=${encodeURIComponent(uid)}`);
+            return;
+          }
+        }
+      } catch {
+        // Ban-status endpoint unavailable — fail open. The dashboard
+        // layout will catch the 403 on its /api/profile/me fetch.
+      }
+    }
+
     // Same post-auth routing as the dashboard layout: tenant_id present
     // means onboarding is complete -> /dashboard; otherwise the user
     // needs to finish onboarding at /welcome. Look up the tenant by
@@ -143,7 +174,15 @@ function LoginForm() {
           `${apiBase}/api/tenant/by-email/${encodeURIComponent(userEmail)}`,
           { headers: { Authorization: `Bearer ${data.session?.access_token || ""}` } },
         );
-        const json = await res.json();
+        if (res.status === 403) {
+          const body = await res.json().catch(() => ({}));
+          if (body?.detail === "BANNED") {
+            const uid = body?.user_id || userId;
+            if (uid) router.replace(`/banned?user=${encodeURIComponent(uid)}`);
+            return;
+          }
+        }
+        const json = await res.json().catch(() => ({}));
         if (json.tenant_id) {
           localStorage.setItem("aria_tenant_id", json.tenant_id);
           nextRoute = "/dashboard";

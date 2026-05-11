@@ -143,6 +143,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // applied while the dashboard is open. 60s cadence matches the
   // backend's profile-status cache TTL — anything faster just hits
   // the cache anyway.
+  //
+  // If /api/profile/me returns 403 with detail "BANNED", the user's
+  // account was banned mid-session — redirect to /banned immediately.
   useEffect(() => {
     if (!authChecked) return;
     let cancelled = false;
@@ -153,6 +156,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         const res = await fetch(`${API_URL}/api/profile/me`, {
           headers: { Authorization: `Bearer ${session.access_token}` },
         });
+        if (res.status === 403) {
+          // Check if this is a ban signal
+          const body = await res.json().catch(() => ({}));
+          if (body?.detail === "BANNED") {
+            const uid = body?.user_id || session.user?.id;
+            if (uid) router.replace(`/banned?user=${encodeURIComponent(uid)}`);
+            else router.replace("/banned");
+            return;
+          }
+          return;
+        }
         if (!res.ok) return;
         const data = await res.json();
         if (!cancelled && data?.status) {
@@ -165,7 +179,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     fetchStatus();
     const interval = setInterval(fetchStatus, 60_000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [authChecked]);
+  }, [authChecked, router]);
 
   if (!authChecked) {
     return (
