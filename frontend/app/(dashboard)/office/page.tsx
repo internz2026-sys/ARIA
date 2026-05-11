@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AGENTS, type OfficeAgent, type AgentStatus } from "@/lib/office-config";
 import VirtualOffice from "@/components/virtual-office/VirtualOffice";
+import MobileOfficeList from "@/components/virtual-office/MobileOfficeList";
 import AgentInfoPanel from "@/components/virtual-office/AgentInfoPanel";
 
 import { useCeoChat } from "@/lib/use-ceo-chat";
@@ -177,8 +178,19 @@ export default function OfficePage() {
           </div>
         </div>
 
-        {/* Canvas area */}
-        <div className="flex-1 min-h-0 relative">
+        {/* Mobile: stacked room cards (hidden on lg+) */}
+        <div className="lg:hidden flex-1 min-h-0 overflow-y-auto">
+          {!loaded ? (
+            <div className="flex items-center justify-center h-32">
+              <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : (
+            <MobileOfficeList agents={finalAgents} onAgentClick={handleAgentClick} />
+          )}
+        </div>
+
+        {/* Desktop: canvas (hidden on mobile) */}
+        <div className="hidden lg:block flex-1 min-h-0 relative">
           {!loaded ? (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="w-8 h-8 border-2 border-[#534AB7] border-t-transparent rounded-full animate-spin" />
