@@ -17,16 +17,32 @@ export default function AuthCallbackPage() {
     // back to /login after a 4s timeout — leaving banned users with no
     // explanation. Detect the ban here and route to /banned instead.
     //
-    // We don't have the user's uid in the OAuth error response, so we
-    // pass `source=signin` and let the /banned page render the generic
-    // suspension UI ("contact support for the reason") without a
-    // ban-status fetch.
+    // The OAuth error URL has NO email/uid, so we ask the backend for
+    // the most-recently-banned profile row (close enough for solo and
+    // small-team use) and redirect to /banned?user=<uid>. That lets the
+    // /banned page render the full ban detail (email + reason +
+    // duration) instead of the generic "contact support" placeholder.
     const queryParams = new URLSearchParams(window.location.search);
     const oauthErrorCode = queryParams.get("error_code");
     const oauthError = queryParams.get("error");
     if (oauthErrorCode === "user_banned" || (oauthError === "access_denied" && oauthErrorCode === "user_banned")) {
-      console.log("[ARIA Auth] OAuth flow rejected with user_banned — routing to /banned");
-      router.replace("/banned?source=signin");
+      console.log("[ARIA Auth] OAuth flow rejected with user_banned — resolving uid + routing to /banned");
+      (async () => {
+        try {
+          const r = await fetch(`${API_URL}/api/auth/most-recent-banned`, { cache: "no-store" });
+          if (r.ok) {
+            const d = await r.json();
+            if (d?.banned && d?.user_id) {
+              router.replace(`/banned?user=${encodeURIComponent(d.user_id)}`);
+              return;
+            }
+          }
+        } catch {
+          // Endpoint unreachable — fall through to the generic state.
+        }
+        // Couldn't resolve a uid → show the generic suspension UI.
+        router.replace("/banned?source=signin");
+      })();
       return;
     }
 

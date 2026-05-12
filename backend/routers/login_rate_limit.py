@@ -332,3 +332,54 @@ async def ban_status_by_email(email: str, request: Request):
         status = dict(status)
         status["user_id"] = uid
     return status
+
+
+@router.get("/most-recent-banned")
+async def most_recent_banned(request: Request):
+    """Return the most-recently-banned user's id + email.
+
+    Why: when Supabase rejects an OAuth sign-in with
+    `?error_code=user_banned`, the callback URL has NO email and NO
+    user_id — we know the user is banned but not WHICH one. This
+    endpoint reads the public.profiles table for whoever was banned
+    last (ORDER BY banned_at DESC LIMIT 1) so the /auth/callback page
+    can redirect to /banned?user=<uid> and show the full ban detail
+    (email + reason + duration).
+
+    Edge case: if two users are banned within the same second and one
+    of them just tried to OAuth, the OTHER user's email might be shown.
+    Acceptable trade-off — most bans are spaced out by hours/days.
+
+    Public — no JWT, just IP-rate-limited by global middleware.
+
+    Returns:
+      {
+        "user_id": "<uid>",
+        "email":   "<email>",
+        "banned":  true
+      }
+    Or {"banned": false} when no banned profiles exist at all (fresh DB).
+    """
+    from backend.services.supabase import get_db
+    try:
+        sb = get_db()
+        res = (
+            sb.table("profiles")
+            .select("user_id, email, banned_at")
+            .not_.is_("banned_at", "null")
+            .order("banned_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception:
+        return {"banned": False}
+
+    if not rows:
+        return {"banned": False}
+
+    return {
+        "user_id": rows[0].get("user_id"),
+        "email": rows[0].get("email"),
+        "banned": True,
+    }
