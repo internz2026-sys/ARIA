@@ -9,6 +9,27 @@ export default function AuthCallbackPage() {
   const router = useRouter();
 
   useEffect(() => {
+    // ── OAuth ban short-circuit (must run FIRST) ────────────────────────
+    // When the Supabase Google OAuth flow rejects a banned user it
+    // redirects back to /auth/callback with:
+    //   ?error=access_denied&error_code=user_banned&error_description=...
+    // The rest of this page assumes a valid session is coming and falls
+    // back to /login after a 4s timeout — leaving banned users with no
+    // explanation. Detect the ban here and route to /banned instead.
+    //
+    // We don't have the user's uid in the OAuth error response, so we
+    // pass `source=signin` and let the /banned page render the generic
+    // suspension UI ("contact support for the reason") without a
+    // ban-status fetch.
+    const queryParams = new URLSearchParams(window.location.search);
+    const oauthErrorCode = queryParams.get("error_code");
+    const oauthError = queryParams.get("error");
+    if (oauthErrorCode === "user_banned" || (oauthError === "access_denied" && oauthErrorCode === "user_banned")) {
+      console.log("[ARIA Auth] OAuth flow rejected with user_banned — routing to /banned");
+      router.replace("/banned?source=signin");
+      return;
+    }
+
     // ── Extract Google tokens from URL hash (Supabase implicit flow) ──
     // Supabase puts provider_token in the hash fragment after OAuth redirect.
     // We capture it here because getSession()/onAuthStateChange may not include it.

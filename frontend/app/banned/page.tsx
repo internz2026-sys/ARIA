@@ -43,6 +43,7 @@ type BanStatus = {
 type PageState =
   | { kind: "loading" }
   | { kind: "banned"; status: BanStatus }
+  | { kind: "banned_anonymous" } // Banned but no uid available (OAuth flow)
   | { kind: "not_banned" }
   | { kind: "unavailable"; error?: string };
 
@@ -69,11 +70,23 @@ function BannedContent() {
     setTimeout(() => setLoaded(true), 80);
   }, []);
 
+  const source = searchParams.get("source");
+
   useEffect(() => {
     if (!userId) {
-      // No uid in URL — show generic unavailable message with a manual
-      // sign-in button so the user can decide where to go next.
-      setState({ kind: "unavailable" });
+      // No uid in URL. Two cases:
+      //   - source=signin: the OAuth callback bounced a banned user
+      //     here without a uid (the OAuth error response doesn't
+      //     include one). Render a dedicated "your account is
+      //     suspended" message so the user knows WHY they were
+      //     redirected, with a contact-support CTA.
+      //   - no source: someone landed on /banned directly. Show the
+      //     generic unavailable state.
+      if (source === "signin") {
+        setState({ kind: "banned_anonymous" });
+      } else {
+        setState({ kind: "unavailable" });
+      }
       return;
     }
 
@@ -101,7 +114,7 @@ function BannedContent() {
       .catch((err) => {
         setState({ kind: "unavailable", error: err?.message });
       });
-  }, [userId]);
+  }, [userId, source]);
 
   const isLoading = state.kind === "loading";
 
@@ -209,6 +222,49 @@ function BannedContent() {
             </h1>
             <p style={{ color: "rgba(240,237,232,0.5)", fontSize: 15, lineHeight: 1.7, marginBottom: 32 }}>
               We&apos;re unable to verify your account status right now. Please contact support for assistance.
+            </p>
+
+            <SupportFooter />
+          </>
+        ) : state.kind === "banned_anonymous" ? (
+          /* User came from the OAuth callback with error_code=user_banned
+             but no uid (Supabase doesn't include one on OAuth error).
+             Render the suspension UI without specific reason/until-date
+             — point them at support. */
+          <>
+            <div
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: "50%",
+                background: "rgba(233,69,96,0.1)",
+                border: "1px solid rgba(233,69,96,0.25)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                margin: "0 auto 24px",
+              }}
+            >
+              <svg width="24" height="24" fill="none" stroke="#E94560" strokeWidth={1.8} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+              </svg>
+            </div>
+
+            <h1
+              style={{
+                fontFamily: "'Instrument Serif'",
+                fontSize: 30,
+                fontWeight: 400,
+                lineHeight: 1.15,
+                marginBottom: 16,
+                color: "#F0EDE8",
+              }}
+            >
+              Your account has been{" "}
+              <span style={{ fontStyle: "italic", color: "#E94560" }}>suspended</span>
+            </h1>
+            <p style={{ color: "rgba(240,237,232,0.55)", fontSize: 15, lineHeight: 1.7, marginBottom: 28 }}>
+              Sign-in is disabled on this account. Contact our support team and we&apos;ll share the specific reason and next steps.
             </p>
 
             <SupportFooter />
