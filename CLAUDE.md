@@ -468,6 +468,26 @@ Then tail `journalctl -u webhook -f` on the VPS. Should complete in ~4s with all
 
 ---
 
+## PostgREST raw filters must use `safe_or_value()`
+
+supabase-py parameterizes `.eq()`, `.ilike("col", value)`, `.in_()` — those are always safe to interpolate user input into. But `.or_(...)` and `.filter(...)` pass **raw PostgREST grammar**: `column.operator.value,column.operator.value`. A user-controlled value containing `,` `(` `)` `"` `\` without quoting could chain a new condition and exfiltrate adjacent rows.
+
+**Rule:** any `f"...{user_input}..."` going into `.or_()` or `.filter()` must wrap the interpolated value with `safe_or_value()` from [backend/services/_postgrest_util.py](backend/services/_postgrest_util.py). The helper double-quotes + backslash-escapes properly.
+
+```python
+# WRONG — brittle inline blacklist, easy to forget a char
+esc = search.replace(",", " ").replace("(", "").replace(")", "")
+q = q.or_(f"email.ilike.%{esc}%,full_name.ilike.%{esc}%")
+
+# RIGHT — single source of truth, every PostgREST-grammar char escaped
+needle = safe_or_value(f"%{search}%")
+q = q.or_(f"email.ilike.{needle},full_name.ilike.{needle}")
+```
+
+The CI lint [backend/tests/test_lint_postgrest_or_safety.py](backend/tests/test_lint_postgrest_or_safety.py) fails the build if any non-test file uses `.or_(f"...")` / `.filter(f"...")` without importing `safe_or_value` — so this rule is mechanically enforced going forward.
+
+---
+
 ## Common Issues
 
 | Problem | Fix |

@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from backend.services.supabase import get_db
+from backend.services._postgrest_util import safe_or_value
 
 logger = logging.getLogger("aria.services.profiles")
 
@@ -291,8 +292,8 @@ def list_profiles(
         if role_filter and role_filter in _VALID_ROLES:
             q = q.eq("role", role_filter)
         if search:
-            esc = search.replace(",", " ").replace("(", "").replace(")", "")
-            q = q.or_(f"email.ilike.%{esc}%,full_name.ilike.%{esc}%")
+            needle = safe_or_value(f"%{search}%")
+            q = q.or_(f"email.ilike.{needle},full_name.ilike.{needle}")
         res = q.execute()
         return list(res.data or [])
     except Exception as e:

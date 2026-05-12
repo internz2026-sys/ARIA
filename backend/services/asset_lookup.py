@@ -23,6 +23,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
+from backend.services._postgrest_util import safe_or_value
+
 logger = logging.getLogger("aria.services.asset_lookup")
 
 # Markdown image extractor — media_agent saves `![alt](url)` in the inbox
@@ -307,9 +309,9 @@ def find_referenced_asset(
         if keywords:
             or_parts = []
             for kw in keywords:
-                esc = kw.replace(",", " ").replace("(", "").replace(")", "")
-                or_parts.append(f"title.ilike.%{esc}%")
-                or_parts.append(f"content.ilike.%{esc}%")
+                v = safe_or_value(f"%{kw}%")
+                or_parts.append(f"title.ilike.{v}")
+                or_parts.append(f"content.ilike.{v}")
             q = q.or_(",".join(or_parts))
         rows = list((q.execute()).data or [])
         return rows[:limit]
