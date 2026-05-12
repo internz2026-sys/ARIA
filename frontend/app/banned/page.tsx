@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useState, Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 const FONTS_LINK =
@@ -43,6 +43,7 @@ type BanStatus = {
 type PageState =
   | { kind: "loading" }
   | { kind: "banned"; status: BanStatus }
+  | { kind: "not_banned" }
   | { kind: "unavailable"; error?: string };
 
 function formatDate(iso: string): string {
@@ -58,7 +59,6 @@ function formatDate(iso: string): string {
 }
 
 function BannedContent() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const userId = searchParams.get("user");
   const [state, setState] = useState<PageState>({ kind: "loading" });
@@ -71,7 +71,8 @@ function BannedContent() {
 
   useEffect(() => {
     if (!userId) {
-      // No uid in URL — show generic unavailable message
+      // No uid in URL — show generic unavailable message with a manual
+      // sign-in button so the user can decide where to go next.
       setState({ kind: "unavailable" });
       return;
     }
@@ -87,8 +88,12 @@ function BannedContent() {
         }
         const data: BanStatus = await res.json();
         if (!data.banned) {
-          // User is not actually banned — send them to login
-          router.replace("/login");
+          // User isn't (or no longer) banned — surface that as its own
+          // state with an explicit "Sign in" button. Auto-redirecting
+          // back to /login confused users who landed here after a
+          // failed login: they bounced silently and didn't realize the
+          // ban had been lifted.
+          setState({ kind: "not_banned" });
           return;
         }
         setState({ kind: "banned", status: data });
@@ -96,7 +101,7 @@ function BannedContent() {
       .catch((err) => {
         setState({ kind: "unavailable", error: err?.message });
       });
-  }, [userId, router]);
+  }, [userId]);
 
   const isLoading = state.kind === "loading";
 
@@ -207,6 +212,78 @@ function BannedContent() {
             </p>
 
             <SupportFooter />
+          </>
+        ) : state.kind === "not_banned" ? (
+          /* User followed a stale /banned URL but their account isn't
+             banned (anymore). Don't redirect — show a button so they
+             control where they go next. */
+          <>
+            <div
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: "50%",
+                background: "rgba(74,222,128,0.10)",
+                border: "1px solid rgba(74,222,128,0.25)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                margin: "0 auto 24px",
+              }}
+            >
+              <svg width="24" height="24" fill="none" stroke="#4ADE80" strokeWidth={1.8} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+
+            <h1
+              style={{
+                fontFamily: "'Instrument Serif'",
+                fontSize: 28,
+                fontWeight: 400,
+                lineHeight: 1.2,
+                marginBottom: 16,
+                color: "#F0EDE8",
+              }}
+            >
+              Your account is in good standing
+            </h1>
+            <p style={{ color: "rgba(240,237,232,0.5)", fontSize: 15, lineHeight: 1.7, marginBottom: 28 }}>
+              No active suspension on this account. You can sign in normally.
+            </p>
+
+            <Link
+              href="/login"
+              style={{
+                display: "inline-block",
+                fontFamily: "'Sora'",
+                fontSize: 14,
+                fontWeight: 500,
+                background: "linear-gradient(135deg, #E94560 0%, #c73652 100%)",
+                color: "#fff",
+                padding: "12px 28px",
+                borderRadius: 8,
+                textDecoration: "none",
+                marginBottom: 8,
+              }}
+            >
+              Go to sign in
+            </Link>
+
+            <div>
+              <Link
+                href="/"
+                style={{
+                  display: "inline-block",
+                  fontSize: 13,
+                  color: "rgba(240,237,232,0.35)",
+                  textDecoration: "none",
+                  marginTop: 16,
+                }}
+              >
+                &larr; Return home
+              </Link>
+            </div>
           </>
         ) : (
           /* Banned state */
