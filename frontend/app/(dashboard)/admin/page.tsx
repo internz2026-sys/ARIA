@@ -28,20 +28,67 @@ type AdminUser = {
   updated_at: string;
 };
 
-// ── Ban reason dialog ────────────────────────────────────────────────────────
-// useConfirm doesn't support a textarea, so we use a small inline modal for
-// the Ban flow. The Unban flow is simpler and reuses useConfirm as-is.
+// ── Ban dialog ───────────────────────────────────────────────────────────────
+// useConfirm doesn't support a textarea + radio, so we use a small inline
+// modal for the Ban flow. The Unban flow is simpler and reuses useConfirm.
+
+/** Payload shapes the backend accepts for /ban */
+type BanPayload =
+  | { indefinite: true; reason?: string }
+  | { until: string; reason?: string }          // ISO-8601 with Z
+  | { duration_hours: number; reason?: string }; // backward compat
 
 interface BanDialogProps {
   target: AdminUser;
-  onConfirm: (reason: string) => void;
+  onConfirm: (payload: BanPayload) => void;
   onCancel: () => void;
 }
 
+/** Returns a date string 30 days from today in YYYY-MM-DD format for the date input default. */
+function defaultUntilDate(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 30);
+  return d.toISOString().slice(0, 10); // "YYYY-MM-DD"
+}
+
+/** Formats a YYYY-MM-DD date string as "Month D, YYYY" for the confirmation preview. */
+function fmtDateInput(val: string): string {
+  try {
+    // Parse as local date (not UTC) so "2026-06-01" reads as June 1st.
+    const [y, m, d] = val.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  } catch {
+    return val;
+  }
+}
+
 function BanDialog({ target, onConfirm, onCancel }: BanDialogProps) {
+  const [banType, setBanType] = useState<"indefinite" | "until">("indefinite");
+  const [untilDate, setUntilDate] = useState(defaultUntilDate);
   const [reason, setReason] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { textareaRef.current?.focus(); }, []);
+  const firstRadioRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { firstRadioRef.current?.focus(); }, []);
+
+  const handleSubmit = () => {
+    if (banType === "indefinite") {
+      onConfirm({ indefinite: true, reason: reason.trim() || undefined });
+    } else {
+      // Convert local date "YYYY-MM-DD" to end-of-day UTC ISO string
+      const [y, m, d] = untilDate.split("-").map(Number);
+      const dt = new Date(y, m - 1, d, 23, 59, 59);
+      onConfirm({ until: dt.toISOString().replace(".000Z", "Z").replace(/\.\d{3}Z$/, "Z"), reason: reason.trim() || undefined });
+    }
+  };
+
+  const emailDisplay = target.email || target.user_id;
+  const durationDesc =
+    banType === "indefinite"
+      ? `${emailDisplay} will be unable to log in indefinitely.`
+      : `${emailDisplay} will be unable to log in until ${fmtDateInput(untilDate)}.`;
 
   return (
     <div
@@ -52,6 +99,7 @@ function BanDialog({ target, onConfirm, onCancel }: BanDialogProps) {
         className="bg-white rounded-xl border border-[#E0DED8] shadow-2xl max-w-md w-full mx-4 overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Header */}
         <div className="px-6 pt-6 pb-2">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center flex-shrink-0">
@@ -62,16 +110,61 @@ function BanDialog({ target, onConfirm, onCancel }: BanDialogProps) {
             <h3 className="text-lg font-semibold text-[#2C2C2A]">Ban this user?</h3>
           </div>
         </div>
-        <div className="px-6 py-4 space-y-3">
+
+        {/* Body */}
+        <div className="px-6 py-4 space-y-4">
+          {/* Dynamic confirmation copy */}
           <p className="text-sm text-[#5F5E5A] leading-relaxed">
-            <strong>{target.email || target.user_id}</strong> will be unable to log in for 1 year (8,760 hours). You can lift the ban at any time using the Unban button.
+            {durationDesc} You can lift the ban at any time using the Unban button.
           </p>
+
+          {/* Duration radio */}
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-[#5F5E5A] mb-1">Duration</p>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                ref={firstRadioRef}
+                type="radio"
+                name="ban-type"
+                value="indefinite"
+                checked={banType === "indefinite"}
+                onChange={() => setBanType("indefinite")}
+                className="accent-red-500"
+              />
+              <span className="text-sm text-[#2C2C2A]">Indefinite</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="ban-type"
+                value="until"
+                checked={banType === "until"}
+                onChange={() => setBanType("until")}
+                className="accent-red-500"
+              />
+              <span className="text-sm text-[#2C2C2A]">Until specific date</span>
+            </label>
+
+            {/* Date picker — only shown when "Until specific date" is selected */}
+            {banType === "until" && (
+              <div className="ml-6">
+                <input
+                  type="date"
+                  value={untilDate}
+                  min={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => setUntilDate(e.target.value)}
+                  className="text-sm px-3 py-1.5 rounded-lg border border-[#E0DED8] focus:outline-none focus:ring-2 focus:ring-red-400/30 focus:border-red-400/60 bg-white text-[#2C2C2A]"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Reason textarea — always visible */}
           <div>
             <label className="block text-xs font-medium text-[#5F5E5A] mb-1">
               Reason <span className="text-[#9E9C95] font-normal">(optional)</span>
             </label>
             <textarea
-              ref={textareaRef}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               rows={3}
@@ -80,6 +173,8 @@ function BanDialog({ target, onConfirm, onCancel }: BanDialogProps) {
             />
           </div>
         </div>
+
+        {/* Footer */}
         <div className="px-6 pb-6 pt-2 flex items-center justify-end gap-3">
           <button
             onClick={onCancel}
@@ -88,7 +183,7 @@ function BanDialog({ target, onConfirm, onCancel }: BanDialogProps) {
             Cancel
           </button>
           <button
-            onClick={() => onConfirm(reason)}
+            onClick={handleSubmit}
             className="px-4 py-2 text-sm font-medium rounded-lg text-white bg-red-500 hover:bg-red-600 transition-colors"
           >
             Ban user
@@ -334,20 +429,25 @@ export default function AdminPage() {
     setPendingAction(null);
   };
 
-  const handleBanUser = async (target: AdminUser, reason: string) => {
+  const handleBanUser = async (target: AdminUser, payload: BanPayload) => {
     setBanTarget(null);
     setPendingAction({ user_id: target.user_id, kind: "ban" });
     setErrorMsg("");
     setSuccessMsg("");
     try {
-      const body = await adminApi.banUser(target.user_id, 8760, reason);
+      const body = await adminApi.banUserV2(target.user_id, payload);
       // Reflect the ban locally — mark role as "banned" and store banned_at
       setUsers((prev) => prev.map((u) =>
         u.user_id === target.user_id
           ? { ...u, role: "banned" as Role, banned_at: body.banned_until ?? new Date().toISOString() }
           : u,
       ));
-      setSuccessMsg(`Banned ${target.email || "user"} until ${body.banned_until ? new Date(body.banned_until).toLocaleDateString() : "1 year from now"}.`);
+      const untilLabel = (payload as any).indefinite
+        ? "indefinitely"
+        : body.banned_until
+          ? `until ${new Date(body.banned_until).toLocaleDateString()}`
+          : "for an unspecified duration";
+      setSuccessMsg(`Banned ${target.email || "user"} ${untilLabel}.`);
     } catch (e: any) {
       setErrorMsg(e?.message || "Couldn't ban user");
     }
@@ -419,7 +519,7 @@ export default function AdminPage() {
     {banTarget && (
       <BanDialog
         target={banTarget}
-        onConfirm={(reason) => handleBanUser(banTarget, reason)}
+        onConfirm={(payload) => handleBanUser(banTarget, payload)}
         onCancel={() => setBanTarget(null)}
       />
     )}

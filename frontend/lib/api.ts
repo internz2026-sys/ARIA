@@ -439,11 +439,26 @@ export const admin = {
   /**
    * Ban a user. Default duration is 8760 hours (1 year).
    * Returns { ok: true, banned_until: "<iso>" }
+   * @deprecated prefer banUserV2 for new code
    */
   banUser: (userId: string, durationHours: number = 8760, reason: string = "") =>
     fetchAPI(`/api/admin/users/${userId}/ban`, {
       method: "POST",
       body: JSON.stringify({ duration_hours: durationHours, reason }),
+    }),
+
+  /**
+   * Ban a user with explicit shape.
+   * Pass one of:
+   *   { indefinite: true, reason?: string }
+   *   { until: "<ISO-8601-Z>", reason?: string }
+   *   { duration_hours: N, reason?: string }   ← backward compat
+   * Returns { ok: true, banned_until: "<iso>" }
+   */
+  banUserV2: (userId: string, body: { indefinite?: boolean; until?: string; duration_hours?: number; reason?: string }) =>
+    fetchAPI(`/api/admin/users/${userId}/ban`, {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
 
   /**
