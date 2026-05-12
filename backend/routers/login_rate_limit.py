@@ -269,3 +269,66 @@ async def ban_status(user_id: str, request: Request):
         return {"banned": False}
 
     return profiles_service.get_ban_status(uid)
+
+
+@router.get("/ban-status-by-email/{email}")
+async def ban_status_by_email(email: str, request: Request):
+    """Resolve a banned user's ban metadata from their email address.
+
+    Why this exists: when a banned user tries to log in,
+    `supabase.auth.signInWithPassword` returns a generic error and the
+    frontend has NO user_id to pass to /ban-status/{uid}. This endpoint
+    fills that gap — given an email, look up the matching profiles row
+    and return the same payload as /ban-status, plus the resolved
+    user_id so the frontend can redirect to /banned?user=<uid>.
+
+    Same response shape as /ban-status with `user_id` added on hits:
+      {
+        "user_id": "<uid>",
+        "banned": true,
+        "banned_at": "<iso>",
+        "banned_until": "<iso>" | null,
+        "indefinite": false,
+        "reason": "<text>" | null
+      }
+    or {"banned": false} for non-banned / unknown emails (no oracle).
+
+    Public — no JWT. Rate-limited by IP via the global middleware.
+    """
+    from backend.services import profiles as profiles_service
+    from backend.services.supabase import get_db
+
+    # Light input validation. Real RFC 5321 cap is 254; round to 320
+    # for the few edge cases that exceed it.
+    e = (email or "").strip().lower()
+    if not e or len(e) > 320 or "@" not in e:
+        return {"banned": False}
+
+    try:
+        sb = get_db()
+        res = (
+            sb.table("profiles")
+            .select("user_id")
+            .eq("email", e)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception:
+        # Fail-closed quietly: a DB hiccup looks the same as "unknown
+        # email", no oracle leak. Login page falls through to its
+        # generic error display.
+        return {"banned": False}
+
+    if not rows:
+        return {"banned": False}
+
+    uid = rows[0].get("user_id")
+    status = profiles_service.get_ban_status(uid)
+    # If banned, include the resolved user_id so the frontend can
+    # redirect to /banned?user=<uid>. If not banned, hide the uid (no
+    # oracle).
+    if status.get("banned"):
+        status = dict(status)
+        status["user_id"] = uid
+    return status

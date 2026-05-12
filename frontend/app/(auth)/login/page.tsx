@@ -94,6 +94,39 @@ function LoginForm() {
       password,
     });
     if (error) {
+      // Banned-user short circuit: Supabase blocks signInWithPassword
+      // for banned users with a generic 400. Before showing the error
+      // as "Invalid credentials" (which is misleading), resolve the
+      // ban-status by email and, if banned, route to /banned with the
+      // resolved user_id. This is the redirect path the user expected
+      // — without it, banned users just see "Authentication failed"
+      // and never reach the ban explanation page.
+      const errMsg = (error.message || "").toLowerCase();
+      const errCode = ((error as { code?: string })?.code || "").toLowerCase();
+      const looksLikeBan =
+        errCode === "user_banned" ||
+        errMsg.includes("banned") ||
+        errMsg.includes("user is banned");
+      if (looksLikeBan) {
+        try {
+          const banRes = await fetch(
+            `${apiBase}/api/auth/ban-status-by-email/${encodeURIComponent(cleanEmail)}`,
+            { cache: "no-store" },
+          );
+          if (banRes.ok) {
+            const banData = await banRes.json();
+            if (banData?.banned && banData?.user_id) {
+              router.replace(`/banned?user=${encodeURIComponent(banData.user_id)}`);
+              return;
+            }
+          }
+        } catch {
+          // Endpoint unreachable — fall through to the generic error
+          // display so the user sees SOMETHING rather than a silent
+          // hang.
+        }
+      }
+
       // Tell the backend this attempt failed so the counter increments.
       // Done as fire-and-forget; we don't block the error display on it.
       try {
