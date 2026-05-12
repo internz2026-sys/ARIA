@@ -463,28 +463,9 @@ function BannedContent() {
 function SupportFooter() {
   return (
     <>
-      <p style={{ fontSize: 14, color: "rgba(240,237,232,0.4)", marginBottom: 20, lineHeight: 1.6 }}>
+      <p style={{ fontSize: 14, color: "rgba(240,237,232,0.4)", marginBottom: 24, lineHeight: 1.6 }}>
         If you believe this is a mistake, reach out to our support team and we&apos;ll look into it.
       </p>
-
-      <a
-        href="mailto:accounts@zillamedia.co"
-        style={{
-          display: "inline-block",
-          fontFamily: "'Sora'",
-          fontSize: 14,
-          fontWeight: 500,
-          color: "#E94560",
-          textDecoration: "none",
-          marginBottom: 20,
-          padding: "10px 24px",
-          border: "1px solid rgba(233,69,96,0.3)",
-          borderRadius: 8,
-          transition: "all 0.2s ease",
-        }}
-      >
-        accounts@zillamedia.co
-      </a>
 
       <div>
         <Link
