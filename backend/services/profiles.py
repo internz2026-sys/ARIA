@@ -148,6 +148,61 @@ def invalidate_status_cache(user_id: str | None = None) -> None:
         _status_cache.clear()
 
 
+# Tiny TTL cache for the per-user ban check the middleware runs on every
+# authenticated request. 30s TTL keeps the request-path cost low (one
+# Supabase round-trip per minute per user at worst) while still firing
+# the ban within a window any human would tolerate.
+_ban_cache: dict[str, tuple[float, bool]] = {}
+_BAN_CACHE_TTL = 30.0
+
+
+def is_user_banned(user_id: str) -> bool:
+    """Lightweight check for the auth middleware: is this user banned?
+
+    Returns True iff the profiles row has banned_at set. Cached for 30s
+    to keep the middleware hot path cheap — the canonical source of
+    truth is still Supabase Auth (which will reject the JWT on its own
+    once the access token expires + refresh fails), this is a
+    defense-in-depth gate that catches the window before that happens.
+
+    Failure mode: a DB hiccup returns False (NOT banned) so a transient
+    Supabase outage doesn't accidentally lock everyone out. The
+    auth-layer ban in Supabase remains the canonical enforcer if this
+    layer is unreachable.
+    """
+    if not user_id:
+        return False
+    cached = _ban_cache.get(user_id)
+    if cached and cached[0] > _now():
+        return cached[1]
+    banned = False
+    try:
+        sb = get_db()
+        res = (
+            sb.table("profiles")
+            .select("banned_at")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        banned = bool(rows and rows[0].get("banned_at"))
+    except Exception as e:
+        logger.debug("[profiles] is_user_banned lookup failed for %s: %s", user_id, e)
+        banned = False
+    _ban_cache[user_id] = (_now() + _BAN_CACHE_TTL, banned)
+    return banned
+
+
+def invalidate_ban_cache(user_id: str | None = None) -> None:
+    """Drop cached ban check(s) — called after ban_user / unban_user
+    so the next request sees the new state without waiting for TTL."""
+    if user_id:
+        _ban_cache.pop(user_id, None)
+    else:
+        _ban_cache.clear()
+
+
 def set_user_status(*, target_user_id: str, new_status: str, actor_role: str, actor_id: str, reason: str = "") -> dict:
     """Pause / resume / suspend a user. Returns {ok, error?}.
 
@@ -477,20 +532,99 @@ def delete_user(*, target_user_id: str, actor_role: str, actor_id: str) -> dict:
 
 _DEFAULT_BAN_HOURS = 8760  # one year — Supabase's recommended "indefinite" sentinel
 _MAX_BAN_HOURS = 24 * 365 * 10  # 10 years; defensive upper bound on caller input
+# Supabase Auth doesn't have a true "indefinite" flag — set the
+# ban_duration to 100yr (876,000h) as a sentinel that effectively means
+# "forever". The profiles row also gets banned_until=NULL so callers
+# can detect indefinite without parsing the huge timestamp.
+_INDEFINITE_BAN_HOURS = 24 * 365 * 100  # 876,000h ≈ 100yr
 
 
-def ban_user(*, target_user_id: str, actor_role: str, actor_id: str, duration_hours: int = _DEFAULT_BAN_HOURS, reason: str = "") -> dict:
+def _parse_until_to_hours(until_value, *, now: "datetime | None" = None) -> "tuple[int | None, datetime | None, str | None]":
+    """Translate an ISO-8601 ``until`` timestamp into a positive hour
+    duration relative to ``now`` (default: utcnow).
+
+    Returns ``(hours, parsed_dt, error)``:
+      * ``hours`` is rounded UP so a ``until`` 30s in the future doesn't
+        round to 0 hours and trip the "duration_hours must be positive"
+        guard. Capped at ``_MAX_BAN_HOURS``.
+      * ``parsed_dt`` is the canonical timezone-aware datetime (UTC if
+        the input lacked tzinfo) so the caller can use it verbatim for
+        ``banned_until`` instead of recomputing from ``hours`` (which
+        loses sub-hour precision).
+      * ``error`` is non-None when the input is unparseable / in the
+        past; in that case ``hours`` and ``parsed_dt`` are both None.
+    """
+    if until_value is None or until_value == "":
+        return None, None, "until must be a non-empty ISO-8601 datetime"
+
+    if not isinstance(until_value, str):
+        return None, None, "until must be a string"
+
+    raw = until_value.strip()
+    # Python's fromisoformat accepts "2026-12-31T23:59:59+00:00" but not
+    # the "Z" suffix Supabase / Postgres / JS Date all emit. Normalise.
+    if raw.endswith("Z") or raw.endswith("z"):
+        raw = raw[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None, None, "until must be an ISO-8601 datetime"
+
+    if parsed.tzinfo is None:
+        # Naive datetime — assume UTC. Stamping a local-time naive
+        # datetime as banned_until would either lock the user out
+        # longer than intended (server in UTC, value in +10) or shorter
+        # (server in UTC, value in -08). UTC-assume keeps the
+        # interpretation predictable.
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    current = now or datetime.now(timezone.utc)
+    delta = parsed - current
+    seconds = delta.total_seconds()
+    if seconds <= 0:
+        return None, None, "until must be in the future"
+
+    # Round UP so any positive interval yields ≥1 hour. Supabase's
+    # ban_duration is whole hours so we always over-estimate slightly
+    # rather than risk a 0h ban that no-ops.
+    hours = max(1, int((seconds + 3599) // 3600))
+    if hours > _MAX_BAN_HOURS:
+        hours = _MAX_BAN_HOURS
+    return hours, parsed, None
+
+
+def ban_user(
+    *,
+    target_user_id: str,
+    actor_role: str,
+    actor_id: str,
+    duration_hours: "int | None" = _DEFAULT_BAN_HOURS,
+    reason: str = "",
+    until: "str | None" = None,
+    indefinite: bool = False,
+) -> dict:
     """Ban a user at the Supabase auth layer (revokes login).
+
+    Three ways to specify the ban length, exactly one must be provided
+    (the admin router validates this; this function is defensive too):
+
+      * ``duration_hours=N``   — ban for N hours (existing shape)
+      * ``until="<ISO-8601>"`` — ban until a specific UTC timestamp
+      * ``indefinite=True``    — ban forever (Supabase has no true
+                                  forever flag; we use a 100-year
+                                  sentinel and store banned_until=NULL)
 
     Unlike `set_user_status` (a soft pause that still allows login),
     this calls `auth.admin.update_user_by_id` with a `ban_duration` so
     Supabase rejects new sign-ins and invalidates existing sessions on
-    the next refresh. The default duration is 8760h (one year) per the
-    spec — Supabase has no true "forever" so we use a long sentinel.
+    the next refresh.
 
-    We also stamp `profiles.banned_at = now()` so the admin UI can
-    render a Banned badge without having to call the Auth Admin API on
-    every page load (and so list views can sort/filter on it).
+    We stamp the profiles row with `banned_at = now()`,
+    `banned_until = <computed timestamp or NULL>`, and
+    `ban_reason = <reason or NULL>` so the public ban-status endpoint
+    and admin UI can read everything off the profiles row without
+    hitting Supabase Auth Admin on every request.
 
     Guards mirror set_user_status (and the other admin mutations):
       - actor must be admin or super_admin
@@ -504,14 +638,35 @@ def ban_user(*, target_user_id: str, actor_role: str, actor_id: str, duration_ho
     if target_user_id == actor_id:
         return {"ok": False, "error": "You can't ban your own account"}
 
-    try:
-        hours = int(duration_hours) if duration_hours is not None else _DEFAULT_BAN_HOURS
-    except (TypeError, ValueError):
-        return {"ok": False, "error": "duration_hours must be an integer"}
-    if hours <= 0:
-        return {"ok": False, "error": "duration_hours must be positive"}
-    if hours > _MAX_BAN_HOURS:
-        hours = _MAX_BAN_HOURS
+    # Resolve the three input shapes to a concrete hours + banned_until.
+    # `is_indefinite` is the bit that drives:
+    #   1. the Supabase ban_duration sentinel (100yr)
+    #   2. the banned_until column (NULL instead of 2126-01-01)
+    #   3. the response payload (`indefinite: true` for UI clarity)
+    banned_at = datetime.now(timezone.utc)
+    is_indefinite = False
+    explicit_until: "datetime | None" = None
+
+    if indefinite:
+        # If the caller mixed indefinite=True with duration/until, ignore
+        # the others — indefinite is the strongest signal.
+        hours = _INDEFINITE_BAN_HOURS
+        is_indefinite = True
+    elif until is not None and until != "":
+        parsed_hours, parsed_dt, err = _parse_until_to_hours(until, now=banned_at)
+        if err is not None or parsed_hours is None:
+            return {"ok": False, "error": err or "Invalid until value"}
+        hours = parsed_hours
+        explicit_until = parsed_dt
+    else:
+        try:
+            hours = int(duration_hours) if duration_hours is not None else _DEFAULT_BAN_HOURS
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "duration_hours must be an integer"}
+        if hours <= 0:
+            return {"ok": False, "error": "duration_hours must be positive"}
+        if hours > _MAX_BAN_HOURS:
+            hours = _MAX_BAN_HOURS
 
     target_role = get_user_role(target_user_id)
     if not is_super_admin(actor_role) and target_role != "user":
@@ -532,18 +687,29 @@ def ban_user(*, target_user_id: str, actor_role: str, actor_id: str, duration_ho
         logger.error("[profiles] ban_user (auth update) failed for %s: %s", target_user_id, e)
         return {"ok": False, "error": "Could not ban user at auth layer"}
 
-    banned_at = datetime.now(timezone.utc)
-    banned_until = banned_at + timedelta(hours=hours)
+    # banned_until: prefer the caller-supplied ISO datetime verbatim
+    # (more precise than recomputing from hours), fall back to computed
+    # offset for the duration_hours / default path. NULL for indefinite.
+    if is_indefinite:
+        banned_until: "datetime | None" = None
+    elif explicit_until is not None:
+        banned_until = explicit_until
+    else:
+        banned_until = banned_at + timedelta(hours=hours)
 
-    # 2. Mirror the ban onto the profiles row so the admin UI sees it
-    #    without a separate Auth Admin call. Non-fatal — auth is the
-    #    source of truth for whether login works; this column is just a
-    #    badge hint.
+    # 2. Mirror the ban onto the profiles row so the admin UI + the
+    #    public /api/auth/ban-status endpoint can read everything off
+    #    one row without a second Auth Admin call. Non-fatal — auth is
+    #    the source of truth for whether login works; these columns are
+    #    just badge / context hints.
+    profile_payload: dict = {
+        "user_id": target_user_id,
+        "banned_at": banned_at.isoformat(),
+        "banned_until": banned_until.isoformat() if banned_until else None,
+        "ban_reason": (reason or None),
+    }
     try:
-        sb.table("profiles").upsert(
-            {"user_id": target_user_id, "banned_at": banned_at.isoformat()},
-            on_conflict="user_id",
-        ).execute()
+        sb.table("profiles").upsert(profile_payload, on_conflict="user_id").execute()
     except Exception as e:
         logger.warning("[profiles] ban_user profile upsert failed (auth ban succeeded): %s", e)
 
@@ -551,16 +717,21 @@ def ban_user(*, target_user_id: str, actor_role: str, actor_id: str, duration_ho
     # touch here, but invalidating role/status caches keeps any future
     # gate that consults them from serving stale data after a ban.
     invalidate_status_cache(target_user_id)
+    invalidate_ban_cache(target_user_id)
 
     logger.warning(
-        "[admin] %s (%s) BANNED user %s for %sh%s",
+        "[admin] %s (%s) BANNED user %s for %sh%s%s",
         actor_id, actor_role, target_user_id, hours,
+        " (indefinite)" if is_indefinite else "",
         f" (reason: {reason})" if reason else "",
     )
     return {
         "ok": True,
-        "banned_until": banned_until.isoformat(),
+        "banned_at": banned_at.isoformat(),
+        "banned_until": banned_until.isoformat() if banned_until else None,
+        "indefinite": is_indefinite,
         "duration_hours": hours,
+        "reason": (reason or None),
     }
 
 
@@ -600,16 +771,90 @@ def unban_user(*, target_user_id: str, actor_role: str, actor_id: str) -> dict:
 
     try:
         sb.table("profiles").upsert(
-            {"user_id": target_user_id, "banned_at": None},
+            {
+                "user_id": target_user_id,
+                "banned_at": None,
+                "banned_until": None,
+                "ban_reason": None,
+            },
             on_conflict="user_id",
         ).execute()
     except Exception as e:
         logger.warning("[profiles] unban_user profile upsert failed (auth unban succeeded): %s", e)
 
     invalidate_status_cache(target_user_id)
+    invalidate_ban_cache(target_user_id)
 
     logger.warning("[admin] %s (%s) UNBANNED user %s", actor_id, actor_role, target_user_id)
     return {"ok": True}
+
+
+def get_ban_status(user_id: str) -> dict:
+    """Read ban metadata for a user_id off the profiles row.
+
+    Used by ``GET /api/auth/ban-status/{user_id}`` — a public endpoint
+    so the /banned page can fetch the reason / timestamps without a
+    valid session (banned users don't have one). Returns:
+
+        {
+          "banned": true,
+          "banned_at": "...",
+          "banned_until": "..." | null,   # null when indefinite
+          "indefinite": false,
+          "reason": "..." | null,
+        }
+
+    Or ``{"banned": false}`` for non-banned / unknown users.
+
+    Implementation notes:
+
+      * "Banned" is defined as ``banned_at IS NOT NULL`` on the
+        profiles row. We deliberately DO NOT also check ``banned_until
+        > now()`` here: if Supabase Auth still has an active ban,
+        login won't work, and the user should see the banned page
+        until the auth-layer ban also expires. Time-based cleanup
+        of expired bans is a separate concern (future cron job).
+      * ``indefinite`` is the boolean the frontend toggles its copy on
+        ("You are permanently banned" vs "Banned until 2026-12-31").
+        It's derived from ``banned_until IS NULL`` on the row — see
+        ``ban_user`` which writes NULL specifically to mark
+        indefiniteness.
+      * Failures fall back to ``{"banned": false}`` — denying ban status
+        is safer than 500ing the /banned page, which would loop the
+        user back to a generic error screen.
+    """
+    if not user_id:
+        return {"banned": False}
+    try:
+        sb = get_db()
+        res = (
+            sb.table("profiles")
+            .select("banned_at, banned_until, ban_reason")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        logger.warning("[profiles] get_ban_status lookup failed for %s: %s", user_id, e)
+        return {"banned": False}
+
+    if not rows:
+        return {"banned": False}
+
+    row = rows[0] or {}
+    banned_at = row.get("banned_at")
+    if not banned_at:
+        return {"banned": False}
+
+    banned_until = row.get("banned_until")
+    return {
+        "banned": True,
+        "banned_at": banned_at,
+        "banned_until": banned_until,
+        "indefinite": banned_until is None,
+        "reason": row.get("ban_reason"),
+    }
 
 
 def list_recent_agent_logs(limit: int = 50) -> list[dict]:

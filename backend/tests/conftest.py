@@ -436,6 +436,11 @@ def mock_supabase(monkeypatch: pytest.MonkeyPatch) -> _MockSupabase:
         from backend.services import profiles as _profiles_mod
         _profiles_mod.invalidate_role_cache()
         _profiles_mod.invalidate_status_cache()
+        # The ban cache lives next to role/status — same reason for the
+        # blanket invalidation per-test: a prior test's "not banned"
+        # cache hit would shadow this test's banned profile mock.
+        if hasattr(_profiles_mod, "invalidate_ban_cache"):
+            _profiles_mod.invalidate_ban_cache()
     except Exception:
         pass
 
