@@ -275,6 +275,15 @@ export const usage = {
   getDashboard: (tenantId: string) => fetchAPI(`/api/usage/${tenantId}`),
 };
 
+export const profile = {
+  getMe: (tenantId: string) => fetchAPI(`/api/profile/me?tenant_id=${tenantId}`),
+  updatePlan: (tenantId: string, plan: string) =>
+    fetchAPI(`/api/profile/me/plan`, {
+      method: "POST",
+      body: JSON.stringify({ plan, tenant_id: tenantId }),
+    }),
+};
+
 // ── Email sending config (Resend-managed sender identity) ──
 //
 // These endpoints are added by the backend Email coder. If they

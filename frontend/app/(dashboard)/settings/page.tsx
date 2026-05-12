@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
-import { API_URL, authFetch, email as emailApi, EmailSettingsStatus } from "@/lib/api";
+import { API_URL, authFetch, email as emailApi, EmailSettingsStatus, profile as profileApi } from "@/lib/api";
 import { useConfirm } from "@/lib/use-confirm";
 import { useNotifications } from "@/lib/use-notifications";
 
@@ -88,6 +88,11 @@ export default function SettingsPage() {
   const [linkedinOrgsLoading, setLinkedinOrgsLoading] = useState(false);
   const [linkedinShowOrgs, setLinkedinShowOrgs] = useState(false);
 
+  // Plan picker state
+  const [currentPlan, setCurrentPlan] = useState<string | null>(null);
+  const [planLoading, setPlanLoading] = useState(true);
+  const [planSwitching, setPlanSwitching] = useState<string | null>(null);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
@@ -123,6 +128,12 @@ export default function SettingsPage() {
           setLinkedinOrgName(data?.org_name || "");
         })
         .catch(() => setLinkedinConnected(false));
+
+      // Plan — best effort; falls back to "free" if endpoint not ready yet.
+      profileApi.getMe(tenantId)
+        .then((data) => setCurrentPlan(data?.plan || "free"))
+        .catch(() => setCurrentPlan("free"))
+        .finally(() => setPlanLoading(false));
 
       // Email sending config — best effort, the backend endpoint is
       // shipping in a parallel branch. If it 404s we surface a "not
@@ -370,6 +381,21 @@ export default function SettingsPage() {
     setWhatsappConnected(false);
   }
 
+  async function switchPlan(plan: string) {
+    const tenantId = localStorage.getItem("aria_tenant_id");
+    if (!tenantId || plan === currentPlan) return;
+    setPlanSwitching(plan);
+    try {
+      await profileApi.updatePlan(tenantId, plan);
+      setCurrentPlan(plan);
+      showToast({ title: `Switched to ${plan.charAt(0).toUpperCase() + plan.slice(1)} plan`, variant: "success" });
+    } catch {
+      showToast({ title: "Plan switch failed", body: "Please try again.", variant: "error" });
+    } finally {
+      setPlanSwitching(null);
+    }
+  }
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <h1 className="text-xl sm:text-2xl font-semibold text-[#2C2C2A]">Settings</h1>
@@ -427,6 +453,84 @@ export default function SettingsPage() {
               Restart onboarding buttons above. A 4-preset tone
               picker would overwrite the user's nuanced onboarding
               answer with a single word, which is a regression. */}
+
+          {/* Plan picker */}
+          <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
+            <h2 className="text-base font-semibold text-[#2C2C2A] mb-1">Plan</h2>
+            <p className="text-sm text-[#5F5E5A] mb-4">
+              Plan changes are free during the early access period. Billing launches with Stripe integration soon.
+            </p>
+            {planLoading ? (
+              <p className="text-sm text-[#9E9C95]">Loading...</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {([
+                  {
+                    slug: "free",
+                    name: "Free",
+                    price: null,
+                    features: ["3 content pieces/month", "No campaigns", "No email sequences"],
+                  },
+                  {
+                    slug: "starter",
+                    name: "Starter",
+                    price: "$49/mo",
+                    features: ["10 content pieces/month", "1 campaign/month", "GTM playbook"],
+                  },
+                  {
+                    slug: "growth",
+                    name: "Growth",
+                    price: "$149/mo",
+                    features: ["30 content pieces/month", "3 campaigns/month", "Email sequences"],
+                  },
+                  {
+                    slug: "scale",
+                    name: "Scale",
+                    price: "$299/mo",
+                    features: ["Unlimited content", "Unlimited campaigns", "Priority generation"],
+                  },
+                ] as const).map((plan) => {
+                  const isCurrent = currentPlan === plan.slug;
+                  const isSwitching = planSwitching === plan.slug;
+                  return (
+                    <div
+                      key={plan.slug}
+                      className={`rounded-xl border p-4 flex flex-col gap-3 transition-colors ${isCurrent ? "border-[#534AB7] bg-[#F3F2FC]" : "border-[#E0DED8] bg-white hover:bg-[#F8F8F6]"}`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-[#2C2C2A]">{plan.name}</p>
+                          <p className="text-xs text-[#5F5E5A] mt-0.5">{plan.price ?? "Free"}</p>
+                        </div>
+                        {isCurrent && (
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#534AB7] text-white shrink-0">
+                            Current
+                          </span>
+                        )}
+                      </div>
+                      <ul className="space-y-1">
+                        {plan.features.map((f) => (
+                          <li key={f} className="text-xs text-[#5F5E5A] flex items-center gap-1.5">
+                            <span className="w-1 h-1 rounded-full bg-[#5F5E5A] shrink-0" />
+                            {f}
+                          </li>
+                        ))}
+                      </ul>
+                      {!isCurrent && (
+                        <button
+                          onClick={() => switchPlan(plan.slug)}
+                          disabled={!!planSwitching}
+                          className="mt-auto w-full py-2 rounded-lg text-xs font-medium border border-[#534AB7] text-[#534AB7] hover:bg-[#534AB7] hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isSwitching ? "Switching..." : `Switch to ${plan.name}`}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           <div className="bg-white rounded-xl border border-[#E0DED8] p-6">
             <h2 className="text-base font-semibold text-[#2C2C2A] mb-2">Account</h2>
