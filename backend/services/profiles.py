@@ -830,7 +830,7 @@ def get_ban_status(user_id: str) -> dict:
         sb = get_db()
         res = (
             sb.table("profiles")
-            .select("banned_at, banned_until, ban_reason")
+            .select("email, banned_at, banned_until, ban_reason")
             .eq("user_id", user_id)
             .limit(1)
             .execute()
@@ -851,6 +851,7 @@ def get_ban_status(user_id: str) -> dict:
     banned_until = row.get("banned_until")
     return {
         "banned": True,
+        "email": row.get("email"),
         "banned_at": banned_at,
         "banned_until": banned_until,
         "indefinite": banned_until is None,

@@ -34,6 +34,7 @@ function loadFonts() {
 
 type BanStatus = {
   banned: boolean;
+  email: string | null;
   banned_at: string | null;
   banned_until: string | null;
   indefinite: boolean;
@@ -377,6 +378,29 @@ function BannedContent() {
               Your account has been{" "}
               <span style={{ fontStyle: "italic", color: "#E94560" }}>suspended</span>
             </h1>
+
+            {/* Email of the banned account — so the user knows WHICH
+                account is locked (especially after OAuth where the
+                callback URL didn't carry the email). */}
+            {state.status.email && (
+              <div
+                style={{
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.07)",
+                  borderRadius: 10,
+                  padding: "12px 16px",
+                  marginBottom: 12,
+                  fontFamily: "'JetBrains Mono'",
+                  fontSize: 13,
+                  color: "rgba(240,237,232,0.7)",
+                  letterSpacing: 0.2,
+                  textAlign: "center",
+                  wordBreak: "break-all",
+                }}
+              >
+                {state.status.email}
+              </div>
+            )}
 
             {/* Duration */}
             <div
