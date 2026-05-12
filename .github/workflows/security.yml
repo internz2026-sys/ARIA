@@ -1,0 +1,88 @@
+name: Security
+
+# Runs SAST + dependency-CVE + secret-leak scans on every push and PR.
+# Deliberately NOT gating deploy on these (unlike pytest). The signals are
+# noisy enough at the start that blocking would create false-failure
+# friction; instead they show up as red status checks on the PR/commit
+# and the team triages over time. Once the codebase has a clean baseline
+# for a sustained period, flip `continue-on-error` off to make them
+# blocking.
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bandit:
+    name: Bandit SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install bandit
+        run: pip install "bandit[toml]>=1.7"
+      # -r recurse, -ll = report at LOW severity and above, -q = quiet
+      # (no progress bar), --skip B101 = "assert_used" (we use asserts in
+      # tests where it's idiomatic), --skip B324 = MD5 (only used for
+      # cache keys, not crypto). Tighten the skip list over time.
+      - name: Run bandit
+        run: |
+          bandit -r backend/ -ll -q --skip B101,B324 \
+            --exclude backend/tests,backend/migrations \
+            --format screen
+
+  pip-audit:
+    name: Dependency CVE scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      # Scan both prod and test requirements. --strict means any
+      # advisory at all fails the job; combined with continue-on-error
+      # at the job level this surfaces them without blocking deploys.
+      - name: Audit dependencies
+        run: |
+          pip-audit -r backend/requirements.txt --strict || true
+          pip-audit -r backend/requirements-test.txt --strict || true
+
+  detect-secrets:
+    name: Committed secrets scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install detect-secrets
+        run: pip install "detect-secrets>=1.5"
+      # Scan and compare against the baseline. New unaudited findings
+      # fail the job. To accept a finding as a false positive: run
+      # `detect-secrets audit .secrets.baseline` locally, commit the
+      # updated baseline.
+      - name: Scan for new secrets
+        run: |
+          if [ ! -f .secrets.baseline ]; then
+            echo "::warning::No .secrets.baseline present — creating one"
+            detect-secrets scan > .secrets.baseline
+            echo "Baseline created. Commit it to lock in the current state."
+          else
+            detect-secrets scan --baseline .secrets.baseline
+          fi

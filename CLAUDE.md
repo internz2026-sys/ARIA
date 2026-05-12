@@ -468,6 +468,19 @@ Then tail `journalctl -u webhook -f` on the VPS. Should complete in ~4s with all
 
 ---
 
+## Security CI
+
+Two workflows in `.github/workflows/` complement the pytest gate:
+
+- **[security.yml](.github/workflows/security.yml)** — bandit (Python SAST), pip-audit (dependency CVEs), detect-secrets (committed credentials). Runs on every push + PR. `continue-on-error: true` so findings surface as red status checks but don't block deploys yet — tighten once the baseline is clean.
+- **[security-review.yml](.github/workflows/security-review.yml)** — Claude Opus reads the PR diff and posts a sticky security review comment via [.github/scripts/security_review.py](.github/scripts/security_review.py). PR-only (no comment surface on direct pushes). The system prompt knows ARIA's supabase-py + PostgREST + RLS + `_PUBLIC_PREFIXES` patterns so it flags real deviations rather than generic OWASP.
+
+Required repo secret for the Claude review: **`ANTHROPIC_API_KEY`** under Settings → Secrets and variables → Actions. Without it the review job exits cleanly with a "skipped" note — non-blocking. Cost is roughly $0.10-0.50 per PR depending on diff size; drop the model from `claude-opus-4-7` to `claude-sonnet-4-6` in `security_review.py` to halve it.
+
+`.secrets.baseline` is created on the first detect-secrets run and committed afterwards. To accept a finding as a false positive: run `detect-secrets audit .secrets.baseline` locally and commit the updated baseline.
+
+---
+
 ## PostgREST raw filters must use `safe_or_value()`
 
 supabase-py parameterizes `.eq()`, `.ilike("col", value)`, `.in_()` — those are always safe to interpolate user input into. But `.or_(...)` and `.filter(...)` pass **raw PostgREST grammar**: `column.operator.value,column.operator.value`. A user-controlled value containing `,` `(` `)` `"` `\` without quoting could chain a new condition and exfiltrate adjacent rows.

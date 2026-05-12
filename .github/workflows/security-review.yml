@@ -1,0 +1,81 @@
+name: Security Review (Claude)
+
+# Opus auditor reviews every PR's diff for security issues and posts a
+# sticky comment on the PR with findings. Runs on pull_request only —
+# direct pushes to main/staging don't trigger this (no PR to comment
+# on). Cost: ~$0.10-0.50 per PR depending on diff size.
+#
+# Required repo secret: ANTHROPIC_API_KEY — create via
+#   GitHub repo Settings → Secrets and variables → Actions
+#   → New repository secret → name=ANTHROPIC_API_KEY value=<key>
+# Get a key at https://console.anthropic.com/
+
+on:
+  pull_request:
+    branches: [main, staging]
+
+concurrency:
+  group: security-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Claude security review
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full history to diff against base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build PR diff
+        id: diff
+        run: |
+          set -e
+          git fetch origin "${{ github.base_ref }}" --depth=50
+          BASE_SHA=$(git rev-parse "origin/${{ github.base_ref }}")
+          # Scope to source code only — skip generated lockfiles, images,
+          # and migrations (migrations are reviewed manually before being
+          # run in Supabase SQL Editor).
+          git diff --unified=5 "${BASE_SHA}...HEAD" \
+            -- 'backend/**/*.py' 'frontend/**/*.ts' 'frontend/**/*.tsx' \
+            > /tmp/pr-diff.patch || true
+          LINES=$(wc -l < /tmp/pr-diff.patch)
+          echo "diff_lines=${LINES}" >> "$GITHUB_OUTPUT"
+          echo "Diff has ${LINES} lines."
+
+      - name: Run Claude security audit
+        id: audit
+        if: ${{ steps.diff.outputs.diff_lines != '0' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::ANTHROPIC_API_KEY secret is not set."
+            echo "Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          python .github/scripts/security_review.py /tmp/pr-diff.patch > /tmp/review.md
+          echo "Generated review:"
+          cat /tmp/review.md
+
+      - name: Skip comment if no code changes
+        if: ${{ steps.diff.outputs.diff_lines == '0' }}
+        run: |
+          echo "No backend/frontend code changes in this PR — skipping review."
+          mkdir -p /tmp
+          echo "_No backend/frontend code changes in this PR._" > /tmp/review.md
+
+      - name: Post sticky review comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: /tmp/review.md
+          header: "🛡️ Security Review"
