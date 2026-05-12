@@ -3,12 +3,21 @@ name: Security Review (Claude)
 # Opus auditor reviews every PR's diff for security issues and posts a
 # sticky comment on the PR with findings. Runs on pull_request only —
 # direct pushes to main/staging don't trigger this (no PR to comment
-# on). Cost: ~$0.10-0.50 per PR depending on diff size.
+# on).
 #
-# Required repo secret: ANTHROPIC_API_KEY — create via
+# Auth path: this job HMAC-signs the diff and POSTs it to ARIA's
+# /api/internal/security-review endpoint on the VPS, which delegates
+# to the local Claude CLI (same machinery as CEO chat). No Anthropic
+# API tokens consumed — uses the existing Claude subscription.
+#
+# Required repo secret: SECURITY_REVIEW_HMAC_SECRET — must match the
+# value in /opt/aria/.env on the VPS. Create via
 #   GitHub repo Settings → Secrets and variables → Actions
-#   → New repository secret → name=ANTHROPIC_API_KEY value=<key>
-# Get a key at https://console.anthropic.com/
+#   → New repository secret → name=SECURITY_REVIEW_HMAC_SECRET
+#   → value=<any long random string; same on both sides>
+#
+# Optional: SECURITY_REVIEW_URL env override if the endpoint moves.
+# Defaults to https://aria.hoversight.agency/api/internal/security-review.
 
 on:
   pull_request:
@@ -52,17 +61,14 @@ jobs:
           echo "diff_lines=${LINES}" >> "$GITHUB_OUTPUT"
           echo "Diff has ${LINES} lines."
 
-      - name: Run Claude security audit
+      - name: Run Claude security audit (via VPS Claude CLI)
         id: audit
         if: ${{ steps.diff.outputs.diff_lines != '0' }}
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SECURITY_REVIEW_HMAC_SECRET: ${{ secrets.SECURITY_REVIEW_HMAC_SECRET }}
+          # Optional override; defaults to prod URL in the script.
+          SECURITY_REVIEW_URL: ${{ vars.SECURITY_REVIEW_URL }}
         run: |
-          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-            echo "::error::ANTHROPIC_API_KEY secret is not set."
-            echo "Add it under Settings → Secrets and variables → Actions."
-            exit 1
-          fi
           python .github/scripts/security_review.py /tmp/pr-diff.patch > /tmp/review.md
           echo "Generated review:"
           cat /tmp/review.md

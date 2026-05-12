@@ -737,6 +737,7 @@ from backend.routers.tasks import router as tasks_router
 from backend.routers.ceo import router as ceo_router
 from backend.routers.login_rate_limit import router as login_rate_limit_router
 from backend.routers.reports import router as reports_router
+from backend.routers.security_review import router as security_review_router
 from backend.routers.plans import (
     profile_router as plans_profile_router,
     admin_router as plans_admin_router,
@@ -755,6 +756,7 @@ app.include_router(tasks_router)
 app.include_router(ceo_router)
 app.include_router(login_rate_limit_router)
 app.include_router(reports_router)
+app.include_router(security_review_router)
 # Plans: self-service + admin override. Split into two routers so the
 # self-service surface doesn't accidentally inherit the /api/admin/* role
 # gate, while the admin override does.
@@ -799,6 +801,7 @@ _PUBLIC_PREFIXES = (
     "/api/media/",          # Image generation (used by Paperclip Media Designer)
     "/api/tenant/by-email/", # Tenant lookup during login (returns only tenant_id)
     "/api/email/inbound",   # Inbound mail webhook (Postmark/Resend/SendGrid → /api/email/inbound)
+    "/api/internal/",       # HMAC-gated internal endpoints (e.g. /security-review for GitHub Actions)
     # /docs + /openapi.json removed from public prefixes in #20 — the
     # FastAPI app constructor now sets docs_url/openapi_url=None in
     # production so the routes don't exist at all there. In dev they

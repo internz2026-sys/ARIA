@@ -473,9 +473,14 @@ Then tail `journalctl -u webhook -f` on the VPS. Should complete in ~4s with all
 Two workflows in `.github/workflows/` complement the pytest gate:
 
 - **[security.yml](.github/workflows/security.yml)** — bandit (Python SAST), pip-audit (dependency CVEs), detect-secrets (committed credentials). Runs on every push + PR. `continue-on-error: true` so findings surface as red status checks but don't block deploys yet — tighten once the baseline is clean.
-- **[security-review.yml](.github/workflows/security-review.yml)** — Claude Opus reads the PR diff and posts a sticky security review comment via [.github/scripts/security_review.py](.github/scripts/security_review.py). PR-only (no comment surface on direct pushes). The system prompt knows ARIA's supabase-py + PostgREST + RLS + `_PUBLIC_PREFIXES` patterns so it flags real deviations rather than generic OWASP.
+- **[security-review.yml](.github/workflows/security-review.yml)** — Claude Opus reads the PR diff and posts a sticky security review comment via [.github/scripts/security_review.py](.github/scripts/security_review.py). PR-only (no comment surface on direct pushes). The system prompt knows ARIA's supabase-py + PostgREST + RLS + `_PUBLIC_PREFIXES` patterns so it flags real deviations rather than generic OWASP. **Routes through ARIA's local Claude CLI on the VPS** (via the `/api/internal/security-review` HMAC-gated endpoint in [backend/routers/security_review.py](backend/routers/security_review.py)) — no Anthropic API tokens consumed, just uses the existing Claude subscription.
 
-Required repo secret for the Claude review: **`ANTHROPIC_API_KEY`** under Settings → Secrets and variables → Actions. Without it the review job exits cleanly with a "skipped" note — non-blocking. Cost is roughly $0.10-0.50 per PR depending on diff size; drop the model from `claude-opus-4-7` to `claude-sonnet-4-6` in `security_review.py` to halve it.
+Required setup:
+1. Generate a long random string for HMAC.
+2. Add it to `/opt/aria/.env` on the VPS as `SECURITY_REVIEW_HMAC_SECRET=<value>`, then `docker compose restart backend` for the env to load.
+3. Add the same value as a GitHub repo secret named `SECURITY_REVIEW_HMAC_SECRET` (Settings → Secrets and variables → Actions). Without it the workflow exits with a "skipped" note — non-blocking.
+
+The endpoint is in `_PUBLIC_PREFIXES` (JWT bypass) but HMAC-locked. If you ever expose new internal endpoints, add them under `/api/internal/` and HMAC-gate them the same way — never JWT-protect a machine-to-machine surface.
 
 `.secrets.baseline` is created on the first detect-secrets run and committed afterwards. To accept a finding as a false positive: run `detect-secrets audit .secrets.baseline` locally and commit the updated baseline.
 
