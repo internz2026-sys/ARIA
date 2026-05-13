@@ -333,11 +333,15 @@ export default function CalendarPage() {
     }
 
     return (
-      <div className="border border-[#E0DED8] rounded-xl overflow-x-auto">
-        <div className="min-w-[640px]">
+      <div className="border border-[#E0DED8] rounded-xl overflow-hidden">
+        {/* Day-of-week header */}
         <div className="grid grid-cols-7 bg-[#F8F8F6] border-b border-[#E0DED8]">
           {DAYS.map((d) => (
-            <div key={d} className="text-center text-[10px] font-semibold text-[#5F5E5A] py-2 uppercase tracking-wide">{d}</div>
+            <div key={d} className="text-center py-2 uppercase tracking-wide">
+              {/* Mobile: single letter; sm+: full 3-letter abbreviation */}
+              <span className="sm:hidden text-[9px] font-semibold text-[#5F5E5A]">{d.slice(0, 1)}</span>
+              <span className="hidden sm:inline text-[10px] font-semibold text-[#5F5E5A]">{d}</span>
+            </div>
           ))}
         </div>
         {weeks.map((week, wi) => (
@@ -350,35 +354,59 @@ export default function CalendarPage() {
               return (
                 <div
                   key={di}
-                  className={`min-h-[90px] p-1.5 border-r border-[#E0DED8] last:border-r-0 ${
-                    isCurrentMonth ? "bg-white" : "bg-[#FAFAF8]"
-                  }`}
+                  className={`border-r border-[#E0DED8] last:border-r-0 ${isCurrentMonth ? "bg-white" : "bg-[#FAFAF8]"}`}
                 >
-                  <div className={`text-xs font-medium mb-1 ${
-                    isToday ? "bg-[#534AB7] text-white w-6 h-6 rounded-full flex items-center justify-center" :
-                    isCurrentMonth ? "text-[#2C2C2A]" : "text-[#B0AFA8]"
-                  }`}>
-                    {day.getDate()}
-                  </div>
-                  <div className="space-y-0.5">
-                    {dayTasks.slice(0, 3).map((t) => (
-                      <TaskCard key={t.id} task={t} compact />
-                    ))}
-                    {dayTasks.length > 3 && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setExpandedDay({ date: day, tasks: dayTasks }); }}
-                        className="text-[9px] text-[#534AB7] font-medium pl-1 hover:underline cursor-pointer w-full text-left"
-                      >
-                        +{dayTasks.length - 3} more
-                      </button>
+                  {/* Mobile: compact dot view — tap to open day modal */}
+                  <button
+                    onClick={() => dayTasks.length > 0 ? setExpandedDay({ date: day, tasks: dayTasks }) : undefined}
+                    className={`sm:hidden w-full min-h-[52px] p-1 flex flex-col items-center ${dayTasks.length > 0 ? "active:bg-[#EEEDFE]/30" : "cursor-default"}`}
+                  >
+                    <div className={`text-[11px] font-medium w-5 h-5 flex items-center justify-center mb-0.5 ${
+                      isToday ? "bg-[#534AB7] text-white rounded-full" :
+                      isCurrentMonth ? "text-[#2C2C2A]" : "text-[#B0AFA8]"
+                    }`}>
+                      {day.getDate()}
+                    </div>
+                    {dayTasks.length > 0 && (
+                      <div className="flex gap-0.5 flex-wrap justify-center">
+                        {dayTasks.slice(0, 3).map((t, idx) => (
+                          <span key={idx} className="w-1.5 h-1.5 rounded-full" style={{
+                            background: t.source === "inbox_sent" ? "#10b981" : t.source === "inbox_draft" ? "#9ca3af" : "#534AB7"
+                          }} />
+                        ))}
+                        {dayTasks.length > 3 && (
+                          <span className="text-[7px] text-[#534AB7] font-bold leading-none">{dayTasks.length - 3}+</span>
+                        )}
+                      </div>
                     )}
+                  </button>
+                  {/* sm+: full event-label view */}
+                  <div className="hidden sm:block min-h-[90px] p-1.5">
+                    <div className={`text-xs font-medium mb-1 ${
+                      isToday ? "bg-[#534AB7] text-white w-6 h-6 rounded-full flex items-center justify-center" :
+                      isCurrentMonth ? "text-[#2C2C2A]" : "text-[#B0AFA8]"
+                    }`}>
+                      {day.getDate()}
+                    </div>
+                    <div className="space-y-0.5">
+                      {dayTasks.slice(0, 3).map((t) => (
+                        <TaskCard key={t.id} task={t} compact />
+                      ))}
+                      {dayTasks.length > 3 && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setExpandedDay({ date: day, tasks: dayTasks }); }}
+                          className="text-[9px] text-[#534AB7] font-medium pl-1 hover:underline cursor-pointer w-full text-left"
+                        >
+                          +{dayTasks.length - 3} more
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
             })}
           </div>
         ))}
-        </div>
       </div>
     );
   }
@@ -390,31 +418,51 @@ export default function CalendarPage() {
     const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
 
     return (
-      <div className="border border-[#E0DED8] rounded-xl overflow-x-auto">
-        <div className="min-w-[640px]">
+      <div className="border border-[#E0DED8] rounded-xl overflow-hidden">
         <div className="grid grid-cols-7 bg-[#F8F8F6] border-b border-[#E0DED8]">
           {days.map((d, i) => (
             <div key={i} className={`text-center py-2 border-r border-[#E0DED8] last:border-r-0 ${isSameDay(d, new Date()) ? "bg-[#EEEDFE]" : ""}`}>
-              <div className="text-[10px] font-semibold text-[#5F5E5A] uppercase">{DAYS[d.getDay()]}</div>
-              <div className={`text-lg font-bold ${isSameDay(d, new Date()) ? "text-[#534AB7]" : "text-[#2C2C2A]"}`}>{d.getDate()}</div>
+              {/* Mobile: single letter + compact date */}
+              <div className="sm:hidden text-[9px] font-semibold text-[#5F5E5A] uppercase">{DAYS[d.getDay()].slice(0, 1)}</div>
+              <div className={`sm:hidden text-sm font-bold ${isSameDay(d, new Date()) ? "text-[#534AB7]" : "text-[#2C2C2A]"}`}>{d.getDate()}</div>
+              {/* sm+: full label */}
+              <div className="hidden sm:block text-[10px] font-semibold text-[#5F5E5A] uppercase">{DAYS[d.getDay()]}</div>
+              <div className={`hidden sm:block text-lg font-bold ${isSameDay(d, new Date()) ? "text-[#534AB7]" : "text-[#2C2C2A]"}`}>{d.getDate()}</div>
             </div>
           ))}
         </div>
-        <div className="grid grid-cols-7 min-h-[400px]">
+        <div className="grid grid-cols-7 min-h-[200px] sm:min-h-[400px]">
           {days.map((day, i) => {
             const dayTasks = tasks.filter((t) => isSameDay(new Date(t.scheduled_at), day));
             return (
-              <div key={i} className="border-r border-[#E0DED8] last:border-r-0 p-1.5 space-y-1">
-                {dayTasks.map((t) => (
-                  <TaskCard key={t.id} task={t} />
-                ))}
-                {dayTasks.length === 0 && (
-                  <div className="text-[10px] text-[#6B6A65] text-center mt-4">No tasks</div>
-                )}
+              <div key={i} className="border-r border-[#E0DED8] last:border-r-0 p-0.5 sm:p-1.5">
+                {/* Mobile: colored dots, tap to open detail */}
+                <div className="sm:hidden flex flex-col items-center gap-1 pt-1">
+                  {dayTasks.slice(0, 5).map((t, idx) => (
+                    <button key={idx} onClick={() => setSelected(t)}
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{ background: t.source === "inbox_sent" ? "#10b981" : t.source === "inbox_draft" ? "#9ca3af" : "#534AB7" }}
+                    />
+                  ))}
+                  {dayTasks.length > 5 && (
+                    <span className="text-[7px] text-[#534AB7] font-bold">{dayTasks.length - 5}+</span>
+                  )}
+                  {dayTasks.length === 0 && (
+                    <div className="text-[8px] text-[#D0CFC8] mt-1">—</div>
+                  )}
+                </div>
+                {/* sm+: full event cards */}
+                <div className="hidden sm:block space-y-1">
+                  {dayTasks.map((t) => (
+                    <TaskCard key={t.id} task={t} />
+                  ))}
+                  {dayTasks.length === 0 && (
+                    <div className="text-[10px] text-[#6B6A65] text-center mt-4">No tasks</div>
+                  )}
+                </div>
               </div>
             );
           })}
-        </div>
         </div>
       </div>
     );
@@ -566,17 +614,17 @@ export default function CalendarPage() {
       </div>
 
       {/* Toolbar */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:justify-between">
         <div className="flex items-center gap-2">
           <button onClick={() => navigate(-1)} className="p-1.5 rounded-lg hover:bg-[#F8F8F6] text-[#5F5E5A] transition-colors">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
           </button>
-          <h2 className="text-base font-semibold text-[#2C2C2A] min-w-[200px] text-center">{headerTitle}</h2>
+          <h2 className="text-base font-semibold text-[#2C2C2A] min-w-[120px] sm:min-w-[200px] text-center">{headerTitle}</h2>
           <button onClick={() => navigate(1)} className="p-1.5 rounded-lg hover:bg-[#F8F8F6] text-[#5F5E5A] transition-colors">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
           </button>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
           {/* Filter mode: All activity (drafts+sent+scheduled) vs Scheduled only */}
           <div className="flex items-center gap-1 bg-[#F8F8F6] rounded-lg p-0.5">
             {([
@@ -586,7 +634,7 @@ export default function CalendarPage() {
               <button
                 key={opt.key}
                 onClick={() => setFilterMode(opt.key)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   filterMode === opt.key ? "bg-white text-[#534AB7] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"
                 }`}
                 title={opt.key === "all" ? "Show drafts, sent items, and scheduled tasks" : "Show only items explicitly queued for execution"}
@@ -601,7 +649,7 @@ export default function CalendarPage() {
               <button
                 key={v}
                 onClick={() => setView(v)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   view === v ? "bg-white text-[#534AB7] shadow-sm" : "text-[#5F5E5A] hover:text-[#2C2C2A]"
                 }`}
               >

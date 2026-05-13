@@ -299,12 +299,13 @@ export default function DashboardPage() {
           </div>
           <button
             onClick={() => { setAddToColumn("todo"); setShowAddModal(true); }}
-            className="flex items-center gap-1.5 px-3 py-2 bg-[#534AB7] text-white rounded-lg text-xs font-medium hover:bg-[#433AA0] transition-colors"
+            className="flex items-center gap-1.5 p-2 sm:px-3 sm:py-2 bg-[#534AB7] text-white rounded-lg text-xs font-medium hover:bg-[#433AA0] transition-colors shrink-0"
+            title="Add task"
           >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
-            Add task
+            <span className="hidden sm:inline">Add task</span>
           </button>
         </div>
 

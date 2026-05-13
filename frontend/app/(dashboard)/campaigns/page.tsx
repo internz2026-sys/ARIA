@@ -321,20 +321,22 @@ export default function CampaignsPage() {
           <h1 className="text-xl font-bold text-[#2C2C2A]">Campaigns</h1>
           <p className="text-sm text-[#5F5E5A] mt-0.5">Track ad campaigns and upload performance reports</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => setShowUpload(true)}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg border border-[#E0DED8] text-[#2C2C2A] hover:bg-[#F8F8F6] transition"
+            className="flex items-center gap-1.5 p-2 sm:px-4 sm:py-2 text-sm font-semibold rounded-lg border border-[#E0DED8] text-[#2C2C2A] hover:bg-[#F8F8F6] transition"
+            title="Upload Report"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
-            Upload Report
+            <span className="hidden sm:inline">Upload Report</span>
           </button>
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition"
+            className="flex items-center gap-1.5 p-2 sm:px-4 sm:py-2 text-sm font-semibold rounded-lg bg-[#534AB7] text-white hover:bg-[#433AA0] transition"
+            title="New Campaign"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
-            New Campaign
+            <span className="hidden sm:inline">New Campaign</span>
           </button>
         </div>
       </div>
