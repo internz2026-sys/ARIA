@@ -85,11 +85,22 @@ const CATEGORY_TO_ROUTE: Record<string, string> = {
   status: "/inbox",
 };
 
+// Cooldown window for "agent is still working" toasts — once we've
+// surfaced one for an agent, we won't show another for this long, even
+// when the backend re-emits task_stalled events (it does every minute
+// while a task is in flight). Without this, the toast flashes back on
+// every minute mark and on every component remount as soon as the
+// previous one auto-dismisses, producing the "ghost" duplicates.
+const STALLED_TOAST_COOLDOWN_MS = 4 * 60 * 1000;
+
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [badges, setBadges] = useState<BadgeCounts>({ inbox: 0, conversations: 0, system: 0, projects: 0, total: 0 });
   const [toasts, setToasts] = useState<Notification[]>([]);
   const toastTimers = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  // Last-shown wall-clock per agent so we can enforce the cooldown
+  // above. Keyed by agent slug ("content_writer", "ad_strategist", …).
+  const lastStalledToastAt = useRef<Map<string, number>>(new Map());
 
   const tenantId = typeof window !== "undefined" ? localStorage.getItem("aria_tenant_id") || "" : "";
 
@@ -244,25 +255,34 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       // when it's been in todo/in_progress for >3min. Reassures the
       // user without a loud high-priority bell ring.
       //
-      // The id is derived from paperclip_issue_id (stable across
-      // backend restarts) so a redeploy that wipes the backend's
-      // _stalled_alerted set doesn't pile up duplicate toasts on the
-      // same stuck issue. addToast already dedupes by id — same id
-      // in === one toast on screen.
+      // Two layers of dedup, both intentional:
+      //   1. Toast id is keyed by AGENT only ("task-stalled-content_writer")
+      //      so multiple stalled issues for the same agent collapse
+      //      into one toast instead of stacking duplicates.
+      //   2. STALLED_TOAST_COOLDOWN_MS prevents the same agent's toast
+      //      from re-appearing minutes apart as the backend re-emits.
+      //      addToast's own id-dedup only works while the toast is
+      //      still on screen (5s window); once auto-dismissed, a fresh
+      //      duplicate would pop right back in. The cooldown closes
+      //      that gap.
       const handleTaskStalled = (payload: {
         paperclip_issue_id?: string;
         agent?: string;
         title?: string;
         stalled_seconds?: number;
       }) => {
-        const agentLabel = payload.agent
-          ? payload.agent.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
-          : "Agent";
+        const agentSlug = payload.agent || "agent";
+        const now = Date.now();
+        const lastShown = lastStalledToastAt.current.get(agentSlug) || 0;
+        if (now - lastShown < STALLED_TOAST_COOLDOWN_MS) return;
+        lastStalledToastAt.current.set(agentSlug, now);
+
+        const agentLabel = agentSlug
+          .replace(/_/g, " ")
+          .replace(/\b\w/g, (m) => m.toUpperCase());
         const minutes = Math.max(3, Math.round((payload.stalled_seconds || 180) / 60));
-        const stableKey = payload.paperclip_issue_id
-          || `${payload.agent || "agent"}-${(payload.title || "").slice(0, 40)}`;
         const synthetic: Notification = {
-          id: `task-stalled-${stableKey}`,
+          id: `task-stalled-${agentSlug}`,
           tenant_id: tenantId,
           type: "task_stalled",
           category: "status",  // grey left-border = neutral / informational
