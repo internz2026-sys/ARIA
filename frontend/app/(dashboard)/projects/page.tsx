@@ -388,8 +388,101 @@ function TableView({
   editMode: boolean;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-[#E0DED8] overflow-x-auto">
-      <table className="w-full min-w-[720px]">
+    <>
+      {/* Mobile: stacked card layout. The wide 720px-min-width table
+          below is unreadable on phones — long delegation prompts pile
+          up dozens of wrapped lines per row. The card view truncates
+          to 2 lines and keeps every action accessible. */}
+      <div className="sm:hidden space-y-2">
+        {tasks.map(task => {
+          const agent = AGENT_LABELS[task.agent] || { name: task.agent, color: "#5F5E5A" };
+          const priority = PRIORITY_STYLES[task.priority] || PRIORITY_STYLES.medium;
+          const checked = checkedIds.has(task.id);
+          return (
+            <div
+              key={task.id}
+              data-project-row={task.id}
+              className={`bg-white rounded-lg border p-3 transition ${
+                highlightedId === task.id
+                  ? "border-[#534AB7]/40 ring-2 ring-inset ring-[#534AB7]/40 animate-pulse"
+                  : checked
+                    ? "border-[#534AB7]/30 bg-[#EEEDFE]/30"
+                    : "border-[#E0DED8]"
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                {editMode && (
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggleCheck(task.id)}
+                    className="mt-0.5 w-4 h-4 rounded border-[#E0DED8] text-[#534AB7] focus:ring-[#534AB7]/30 cursor-pointer shrink-0"
+                    aria-label="Select task"
+                  />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-[#2C2C2A] leading-snug line-clamp-2">
+                    {task.title || task.task}
+                  </p>
+                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                    <span
+                      className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                      style={{ backgroundColor: agent.color + "15", color: agent.color }}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: agent.color }} />
+                      {agent.name}
+                    </span>
+                    <span
+                      className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                      style={{ backgroundColor: priority.bg, color: priority.color }}
+                    >
+                      {priority.label}
+                    </span>
+                    <span className="text-[10px] text-[#9E9C95]">
+                      {new Date(task.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => onDelete(task.id)}
+                  className="shrink-0 p-1 text-[#B0AFA8] hover:text-[#D85A30] transition"
+                  title="Delete task"
+                  aria-label="Delete task"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <select
+                  value={task.status}
+                  onChange={e => onStatusChange(task.id, e.target.value)}
+                  className="flex-1 text-[11px] font-medium px-2 py-1.5 rounded-md border border-[#E0DED8] bg-white text-[#2C2C2A] outline-none cursor-pointer hover:border-[#534AB7]/40 transition"
+                  aria-label="Task status"
+                >
+                  {STATUS_COLUMNS.map(s => (
+                    <option key={s.key} value={s.key}>{s.label}</option>
+                  ))}
+                </select>
+                {task.inbox_item_id && (
+                  <a
+                    href={`/inbox?id=${task.inbox_item_id}`}
+                    className="text-[11px] font-semibold px-2.5 py-1.5 rounded-md border border-[#534AB7]/30 text-[#534AB7] bg-[#EEEDFE] hover:bg-[#534AB7] hover:text-white transition-colors shrink-0"
+                    title="Open the copy-paste instructions in the Inbox"
+                  >
+                    Review →
+                  </a>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* sm+: classic wide table */}
+      <div className="hidden sm:block bg-white rounded-xl border border-[#E0DED8] overflow-x-auto">
+        <table className="w-full min-w-[720px]">
         <thead>
           <tr className="border-b border-[#E0DED8] bg-[#F8F8F6]">
             {/* Checkbox column header — only present in Edit Mode so
@@ -506,8 +599,9 @@ function TableView({
             );
           })}
         </tbody>
-      </table>
-    </div>
+        </table>
+      </div>
+    </>
   );
 }
 
