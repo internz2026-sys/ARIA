@@ -110,8 +110,24 @@ export default function AgentsPage() {
           </div>
           {/* Connector line */}
           <div className="w-px h-6 bg-[#E0DED8]" />
-          {/* Horizontal connector */}
-          <div className="flex items-start">
+
+          {/* Mobile: wrapped chip grid — no horizontal connectors so it
+              fits within the viewport. The vertical line above already
+              conveys "these report to CEO". */}
+          <div className="sm:hidden flex flex-wrap justify-center gap-2 px-2 w-full">
+            {AGENTS.slice(1).map((agent) => (
+              <div
+                key={agent.slug}
+                className="px-2.5 py-1 rounded-md border text-[10px] font-medium"
+                style={{ borderColor: agent.color, color: agent.color }}
+              >
+                {agent.name}
+              </div>
+            ))}
+          </div>
+
+          {/* sm+: classic horizontal org-chart tree with connector lines */}
+          <div className="hidden sm:flex items-start">
             <div className="flex items-center gap-0">
               {AGENTS.slice(1).map((agent, i) => (
                 <div key={agent.slug} className="flex flex-col items-center">
@@ -131,8 +147,8 @@ export default function AgentsPage() {
               ))}
             </div>
           </div>
-          {/* Horizontal line across */}
-          <div className="w-full max-w-md border-t border-[#E0DED8] -mt-[calc(1rem+21px)] mb-8" />
+          {/* Horizontal line across — desktop tree only */}
+          <div className="hidden sm:block w-full max-w-md border-t border-[#E0DED8] -mt-[calc(1rem+21px)] mb-8" />
         </div>
       </div>
 
