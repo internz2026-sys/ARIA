@@ -22,6 +22,40 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [accountStatus, setAccountStatus] = useState<AccountStatus>("active");
+  // Mobile header auto-hide: visible when scrolling UP, hidden when
+  // scrolling DOWN. Twitter-style affordance — gets out of the way
+  // while reading, snaps back the moment the user wants to navigate.
+  const [hideHeader, setHideHeader] = useState(false);
+  const lastScrollYRef = useRef(0);
+
+  useEffect(() => {
+    let ticking = false;
+    const THRESHOLD = 8;     // ignore sub-pixel jitter
+    const TOP_ZONE = 56;     // always show in the top 56px (one header height)
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const y = window.scrollY || document.documentElement.scrollTop || 0;
+        const last = lastScrollYRef.current;
+        if (y < TOP_ZONE) {
+          // Near the top — always show. Avoids the header staying
+          // hidden when the user is bouncing the rubber-band scroll.
+          setHideHeader(false);
+        } else if (y - last > THRESHOLD) {
+          // Scrolled DOWN past the threshold — hide.
+          setHideHeader(true);
+        } else if (last - y > THRESHOLD) {
+          // Scrolled UP past the threshold — show.
+          setHideHeader(false);
+        }
+        lastScrollYRef.current = y;
+        ticking = false;
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   // Swipe-to-close gesture state. Tracks the starting touch point so
   // we can compute horizontal delta on touchend. We only act on
@@ -255,7 +289,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               when overflow-x:hidden on body creates a new scroll
               container and breaks position:sticky on descendants.
               A matching h-14 spacer below pushes page content clear. */}
-          <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-white border-b border-[#E0DED8] h-14 flex items-center px-4">
+          <div
+            className={`lg:hidden fixed top-0 left-0 right-0 z-30 bg-white border-b border-[#E0DED8] h-14 flex items-center px-4 transition-transform duration-200 ease-out ${
+              hideHeader ? "-translate-y-full" : "translate-y-0"
+            }`}
+          >
             <button
               onClick={() => setSidebarOpen(true)}
               className="p-2 rounded-lg text-[#5F5E5A] hover:bg-[#F8F8F6] hover:text-[#2C2C2A] transition-colors"
