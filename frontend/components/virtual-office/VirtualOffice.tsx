@@ -109,11 +109,14 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
         // First time: start at the TARGET position (not desk) so agents
         // appear where they should be based on their persisted status.
         // This prevents "reset to desk" when navigating away and back.
+        // Short initial idleTimer so idle agents start wandering within
+        // a second or two of mount instead of looking frozen at their
+        // desk for 5–13s.
         pos[agent.id] = {
           x: target.x, y: target.y,
           targetX: target.x, targetY: target.y,
           walking: false, facingRight: true, walkFrame: 0,
-          idleTimer: Math.floor(300 + Math.random() * 500),
+          idleTimer: Math.floor(30 + Math.random() * 120),
           wanderTarget: false,
           wanderPause: 0,
           thoughtIcon: Math.floor(Math.random() * THOUGHT_ICONS.length),
@@ -131,10 +134,12 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       const p = pos[agent.id];
       p.targetX = target.x;
       p.targetY = target.y;
-      // Reset idle wander state when status changes
+      // Reset idle wander state when status changes.
+      // Short timer so the agent starts roaming shortly after becoming
+      // idle — keeps the office visibly alive.
       p.wanderTarget = false;
       p.wanderPause = 0;
-      p.idleTimer = Math.floor(300 + Math.random() * 500);
+      p.idleTimer = Math.floor(30 + Math.random() * 120);
     }
   }, [agentList, getTarget]);
 
@@ -717,53 +722,63 @@ export default function VirtualOffice({ agents, onAgentClick }: VirtualOfficePro
       // Wave timer countdown
       if (p.waveTimer > 0) p.waveTimer--;
 
-      // Idle wandering — only when agent status is "idle" and not currently walking
+      // Idle wandering — only when agent status is "idle" and not currently walking.
+      //
+      // Continuous-roaming model: when an agent is "idle" (no Paperclip
+      // task running), they pick a spot, walk to it, pause briefly, then
+      // pick ANOTHER spot — they do not return to their desk between
+      // wanders. The desk-return step is intentionally skipped because
+      // sitting at the desk is indistinguishable from "working" and made
+      // the office look dead. Status changes (idle → working / running)
+      // are still handled by the useEffect above, which retargets the
+      // agent to its desk / meeting chair.
       if (agent.status === "idle" && !p.walking) {
-        // If pausing at an idle spot, count down then head home
+        const mobile = isMobileRef.current;
+
+        // Helper: pick a roaming spot. 20% chance to cross into another
+        // department's room so the office feels mixed.
+        const pickRoamingSpot = () => {
+          const crossRoom = Math.random() < CROSS_ROOM_CHANCE;
+          const spots = crossRoom
+            ? getAllIdleSpotsForViewport(mobile).filter((s) => s.room !== agent.department)
+            : getIdleSpotsForRoom(agent.department, mobile);
+          if (spots.length === 0) return false;
+          const spot = spots[Math.floor(Math.random() * spots.length)];
+          p.targetX = spot.x;
+          p.targetY = spot.y;
+          p.wanderTarget = true;
+          return true;
+        };
+
+        // If pausing at a spot, count down then pick the next spot.
         if (p.wanderPause > 0) {
           p.wanderPause--;
           if (p.wanderPause <= 0) {
-            // Head back to desk
-            const deskPx = getDeskPixel(agent.deskX, agent.deskY, agent.department, isMobileRef.current);
-            p.targetX = deskPx.x;
-            p.targetY = deskPx.y;
-            p.wanderTarget = false;
+            // Don't go home — pick a fresh roaming spot. If no spot is
+            // available (config error), fall back to clearing the
+            // wanderTarget so the idleTimer path below can retry.
+            if (!pickRoamingSpot()) {
+              p.wanderTarget = false;
+            }
+            // Reset idleTimer so the next idle-tick triggers immediately
+            // if we somehow didn't pick a spot.
+            p.idleTimer = Math.floor(30 + Math.random() * 60);
           }
           continue;
         }
 
-        // If just arrived at an idle spot, start a pause
+        // Just arrived at a wander spot — start a short pause.
         if (p.wanderTarget) {
-          p.wanderPause = Math.floor(60 + Math.random() * 60);
+          p.wanderPause = Math.floor(40 + Math.random() * 60);
           continue;
         }
 
-        // Count down idle timer, then pick a new wander spot
+        // Idle timer — short delay between roaming legs keeps motion
+        // visible and varied without making sprites zip around.
         p.idleTimer--;
         if (p.idleTimer <= 0) {
-          const mobile = isMobileRef.current;
-          // 20% chance to visit another room, 80% stay in own department
-          const crossRoom = Math.random() < CROSS_ROOM_CHANCE;
-          if (crossRoom) {
-            // Pick a spot from any other room
-            const allSpots = getAllIdleSpotsForViewport(mobile);
-            const otherSpots = allSpots.filter((s) => s.room !== agent.department);
-            if (otherSpots.length > 0) {
-              const spot = otherSpots[Math.floor(Math.random() * otherSpots.length)];
-              p.targetX = spot.x;
-              p.targetY = spot.y;
-              p.wanderTarget = true;
-            }
-          } else {
-            const spots = getIdleSpotsForRoom(agent.department, mobile);
-            if (spots.length > 0) {
-              const spot = spots[Math.floor(Math.random() * spots.length)];
-              p.targetX = spot.x;
-              p.targetY = spot.y;
-              p.wanderTarget = true;
-            }
-          }
-          p.idleTimer = Math.floor(300 + Math.random() * 500);
+          pickRoamingSpot();
+          p.idleTimer = Math.floor(30 + Math.random() * 120);
         }
       }
     }
