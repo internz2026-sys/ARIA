@@ -509,7 +509,7 @@ export default function CEOChatPage() {
             area padding kept so the send button isn't hidden behind the
             iPhone home-indicator. */}
         <div
-          className="border-t border-[#E0DED8] px-3 py-2 shrink-0"
+          className="px-3 py-2 shrink-0"
           style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
         >
           <div className="max-w-2xl mx-auto">
