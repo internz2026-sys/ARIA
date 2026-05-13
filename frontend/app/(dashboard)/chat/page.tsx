@@ -175,13 +175,22 @@ export default function CEOChatPage() {
   }
 
   return (
+    // Negative margins cancel the dashboard layout's `main` padding
+    // (`p-6 pb-24` on mobile, `lg:p-8 lg:pb-8` on desktop) so the chat
+    // is full-bleed — no awkward inset look that made it feel like a
+    // misplaced card. Height = remaining viewport (mobile header h-14
+    // on small screens) minus the mobile bottom nav so the input row
+    // never sits on top of the tab bar.
+    //
     // `@container/chat` lets the inner sidebar/main split decide its
-    // layout from the actual chat-area width rather than the viewport,
-    // which is what we want once the dashboard sidebar may collapse.
+    // layout from the actual chat-area width rather than the viewport.
     // `dvh` (dynamic viewport height) shrinks when the mobile keyboard
-    // opens, so the chat input stays visible above the keyboard instead
-    // of being pushed off-screen.
-    <div className="@container/chat flex h-[calc(100dvh-120px)] relative">
+    // opens, so the chat input stays visible above the keyboard
+    // instead of being pushed off-screen.
+    <div
+      className="@container/chat flex relative -mx-6 -mt-6 -mb-24 lg:-mx-8 lg:-mt-8 lg:-mb-8 bg-white"
+      style={{ height: "calc(100dvh - 3.5rem - 3.5rem - env(safe-area-inset-bottom, 0px))" }}
+    >
       {/* Mobile drawer backdrop. Renders only below `lg` and only when
           the sidebar is open — desktop never sees it. Tap to dismiss. */}
       {isMobile && sidebarOpen && (
@@ -362,18 +371,15 @@ export default function CEOChatPage() {
 
       {/* ─── Main Chat Area ─── */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header — matches the FloatingChat widget's compact layout:
-            history toggle | tiny AI badge | "ARIA CEO" | new chat | tiny
-            online dot. The previous version (large star avatar + long
-            subtitle + pulsing dot) felt heavyweight next to the widget,
-            so this page now mirrors the widget aesthetic. Divider line
-            removed at the user's request so the header bleeds into the
-            chat area. */}
-        <div className="flex items-center gap-2 px-3 py-2.5">
+        {/* Header — generous padding and a clear hierarchy: history
+            toggle (chip-style when active) | AI badge | "ARIA CEO" +
+            online subtitle | new-chat round button. No divider line so
+            the header bleeds into the conversation area. */}
+        <div className="flex items-center gap-2.5 px-3 sm:px-4 py-3 shrink-0 bg-white">
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className={`p-1.5 rounded-lg transition-colors shrink-0 ${
-              sidebarOpen ? "bg-[#EEEDFE] text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#2C2C2A] hover:bg-[#F8F8F6]"
+            className={`p-2 rounded-lg transition-colors shrink-0 ${
+              sidebarOpen ? "bg-[#EEEDFE] text-[#534AB7]" : "text-[#5F5E5A] hover:text-[#2C2C2A] hover:bg-[#F8F8F6]"
             }`}
             title={sidebarOpen ? "Hide history" : "Show history"}
             aria-label="Toggle chat history"
@@ -382,15 +388,19 @@ export default function CEOChatPage() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </button>
-          <div className="w-6 h-6 rounded-md bg-[#534AB7] flex items-center justify-center shrink-0">
-            <span className="text-white text-[9px] font-bold">AI</span>
+          <div className="w-8 h-8 rounded-lg bg-[#534AB7] flex items-center justify-center shrink-0 shadow-sm">
+            <span className="text-white text-[11px] font-bold tracking-wide">AI</span>
           </div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-xs font-semibold text-[#2C2C2A] truncate">ARIA CEO</h1>
+            <h1 className="text-sm font-semibold text-[#2C2C2A] truncate leading-tight">ARIA CEO</h1>
+            <div className="flex items-center gap-1 mt-0.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#1D9E75]" />
+              <span className="text-[10px] text-[#1D9E75] font-medium">Online</span>
+            </div>
           </div>
           <button
             onClick={startNewChat}
-            className="p-1.5 rounded-lg text-[#B0AFA8] hover:text-[#534AB7] hover:bg-[#EEEDFE] transition-colors shrink-0"
+            className="p-2 rounded-lg text-[#5F5E5A] hover:text-[#534AB7] hover:bg-[#EEEDFE] transition-colors shrink-0"
             title="New chat"
             aria-label="Start new chat"
           >
@@ -398,10 +408,6 @@ export default function CEOChatPage() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
             </svg>
           </button>
-          <span className="flex items-center gap-1 shrink-0">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#1D9E75]" />
-            <span className="text-[9px] text-[#1D9E75] font-medium">Online</span>
-          </span>
         </div>
 
         {/* Messages — bubble styling mirrors the FloatingChat widget:
@@ -426,13 +432,21 @@ export default function CEOChatPage() {
             }`}
           >
           {messages.length === 0 && (
-            <div className="flex flex-col items-center text-center px-3">
-              <p className="text-xs text-[#B0AFA8] mb-5">Ask the CEO anything about your marketing.</p>
-              {/* Suggestion chips — page-only enhancement over the
-                  widget (which has no chips). Restyled to match the
-                  widget's compact, low-chrome aesthetic: pill border,
-                  subtle text, no card-y shadows. */}
-              <div className="grid grid-cols-2 gap-1.5 sm:gap-2 w-full max-w-md">
+            <div className="flex flex-col items-center text-center px-4">
+              {/* Big AI mark — same purple square as the widget's
+                  header badge, scaled up so it reads as the hero of
+                  the empty state. */}
+              <div className="w-14 h-14 rounded-2xl bg-[#534AB7] flex items-center justify-center mb-4 shadow-sm">
+                <span className="text-white text-base font-bold tracking-wide">AI</span>
+              </div>
+              <h2 className="text-base font-semibold text-[#2C2C2A] mb-1.5">How can I help?</h2>
+              <p className="text-xs text-[#9E9C95] max-w-[260px] leading-relaxed mb-6">
+                I&apos;m your Chief Marketing Strategist — ask me anything or I&apos;ll delegate to the right agent.
+              </p>
+              {/* Suggestion chips — desktop only. On mobile the widget
+                  feel is "no chips, just type", and on a 412px screen
+                  the chips just push the input off-screen anyway. */}
+              <div className="hidden sm:grid grid-cols-2 gap-2 w-full max-w-md">
                 {[
                   "Write a blog post about my product",
                   "Create a welcome email sequence",
@@ -444,7 +458,7 @@ export default function CEOChatPage() {
                   <button
                     key={suggestion}
                     onClick={() => setInput(suggestion)}
-                    className="text-left text-[11px] sm:text-xs px-2.5 py-2 leading-snug rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:border-[#534AB7] hover:text-[#534AB7] hover:bg-[#EEEDFE]/50 active:bg-[#EEEDFE]/50 transition-all"
+                    className="text-left text-xs px-3 py-2 leading-snug rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:border-[#534AB7] hover:text-[#534AB7] hover:bg-[#EEEDFE]/50 transition-all"
                   >
                     {suggestion}
                   </button>
@@ -517,42 +531,44 @@ export default function CEOChatPage() {
           </div>
         </div>
 
-        {/* Input — matches the FloatingChat widget's compact layout:
-            textarea bg-[#F8F8F6] (not white), text-xs, min-h-[36px], and
-            chrome-less mode buttons (no border ring when "off"). Safe-
-            area padding kept so the send button isn't hidden behind the
-            iPhone home-indicator. */}
+        {/* Input — a single rounded pill container with the textarea
+            spanning full width and the action buttons floating inside
+            on the right. Mirrors ChatGPT / Claude's mobile input
+            pattern: input feels like ONE control, not "textbox + 3
+            separate buttons". Border + bg sit on the wrapper, not the
+            textarea, so focus styles apply to the whole pill. */}
         <div
-          className="px-3 py-2 shrink-0"
-          style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
+          className="px-3 pt-2 pb-3 shrink-0 bg-white"
+          style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
         >
           <div className="max-w-2xl mx-auto">
             {stt.error && (
-              <div className="mb-1.5 flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+              <div className="mb-2 flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
                 <span className="flex-1 leading-tight">{sttErrorMessage(stt.error)}</span>
                 <button onClick={stt.clearError} className="text-amber-700 hover:text-amber-900 font-medium shrink-0">×</button>
               </div>
             )}
-            {/* Tighter action-button cluster so the textarea owns more
-                width on mobile. p-1.5 (24×24 hit target → small icon)
-                + gap-1 between buttons, and a slightly wider gap from
-                the textarea so the visual grouping reads as
-                "input | actions". */}
-            <div className="flex items-end gap-1.5">
+            <div
+              className={`flex items-end gap-1 bg-[#F8F8F6] border rounded-2xl pl-3.5 pr-1.5 py-1.5 transition-colors ${
+                input || (stt.listening && stt.transcript)
+                  ? "border-[#534AB7]/40"
+                  : "border-[#E0DED8] focus-within:border-[#534AB7]/40"
+              }`}
+            >
               <textarea
                 ref={textareaRef}
                 value={stt.listening && stt.transcript ? stt.transcript : input}
                 onChange={(e) => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; } }}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                placeholder={stt.listening ? "Listening... (sends after 3s of silence)" : "Ask the CEO..."}
+                placeholder={stt.listening ? "Listening..." : "Ask the CEO..."}
                 disabled={sending}
                 rows={1}
-                className="flex-1 min-w-0 min-h-[40px] max-h-[200px] px-3 py-2.5 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none"
+                className="flex-1 min-w-0 min-h-[36px] max-h-[200px] bg-transparent text-sm text-[#2C2C2A] placeholder:text-[#9E9C95] focus:outline-none disabled:opacity-50 resize-none self-center"
               />
               {tts.supported && (
                 <button
                   onClick={() => tts.setEnabled(!tts.enabled)}
-                  className={`p-1.5 rounded-lg transition-colors shrink-0 ${tts.enabled ? "text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#5F5E5A]"}`}
+                  className={`p-2 rounded-full transition-colors shrink-0 ${tts.enabled ? "text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#5F5E5A]"}`}
                   title={tts.enabled ? "Turn off auto-read" : "Turn on auto-read"}
                   aria-label={tts.enabled ? "Turn off auto-read" : "Turn on auto-read"}
                 >
@@ -570,10 +586,10 @@ export default function CEOChatPage() {
               {stt.supported && (
                 <button
                   onClick={stt.toggle}
-                  className={`p-1.5 rounded-lg transition-colors shrink-0 ${
+                  className={`p-2 rounded-full transition-colors shrink-0 ${
                     stt.listening
                       ? "bg-red-500 text-white animate-pulse"
-                      : "text-[#B0AFA8] hover:text-[#534AB7] hover:bg-[#F8F8F6]"
+                      : "text-[#B0AFA8] hover:text-[#534AB7]"
                   }`}
                   title={stt.listening ? "Stop recording" : "Voice input"}
                   aria-label={stt.listening ? "Stop recording" : "Voice input"}
@@ -586,11 +602,11 @@ export default function CEOChatPage() {
               <button
                 onClick={handleSend}
                 disabled={!input.trim() || sending}
-                className="p-2 bg-[#534AB7] text-white rounded-lg hover:bg-[#433AA0] transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                className="p-2 bg-[#534AB7] text-white rounded-full hover:bg-[#433AA0] transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
                 aria-label="Send message"
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 19V5m0 0l-7 7m7-7l7 7" />
                 </svg>
               </button>
             </div>
