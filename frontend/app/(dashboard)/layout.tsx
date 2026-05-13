@@ -246,11 +246,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Sidebar - mobile.
-            - top-0 bottom-14 (instead of inset-y-0) leaves a 56px gap
-              at the bottom for the MobileBottomNav so the user can
-              still tap Inbox/Chats while the drawer is open.
-            - z-[55] sits above the backdrop (z-40) but below
-              MobileBottomNav (z-[60]) so the bottom bar wins overlap.
+            - inset-y-0 extends the panel full-height. The
+              MobileBottomNav sits on z-[60] (sidebar is z-[55]) so the
+              bottom bar still floats on top and remains tappable; a
+              previous `bottom-14` reserved a 56px footer gap but on
+              phones with `env(safe-area-inset-bottom)` insets the nav
+              extends higher than 56px and a sliver of background
+              showed between the two. bottom-0 + z-stacking keeps the
+              UX (tappable bottom bar) while removing the visible gap.
             - Touch handlers implement swipe-to-close (left swipe).
               Vertical-only scroll inside the menu still works because
               we ignore gestures that aren't dominantly horizontal.
@@ -262,7 +265,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           onTouchEnd={handleSidebarTouchEnd}
           onTouchCancel={handleSidebarTouchEnd}
           onClick={handleSidebarClick}
-          className={`fixed top-0 bottom-14 left-0 z-[55] w-[240px] transform transition-transform duration-200 ease-in-out lg:hidden ${
+          className={`fixed inset-y-0 left-0 z-[55] w-[240px] transform transition-transform duration-200 ease-in-out lg:hidden ${
             sidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
         >
