@@ -366,8 +366,10 @@ export default function CEOChatPage() {
             history toggle | tiny AI badge | "ARIA CEO" | new chat | tiny
             online dot. The previous version (large star avatar + long
             subtitle + pulsing dot) felt heavyweight next to the widget,
-            so this page now mirrors the widget aesthetic. */}
-        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8]">
+            so this page now mirrors the widget aesthetic. Divider line
+            removed at the user's request so the header bleeds into the
+            chat area. */}
+        <div className="flex items-center gap-2 px-3 py-2.5">
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className={`p-1.5 rounded-lg transition-colors shrink-0 ${
@@ -409,10 +411,22 @@ export default function CEOChatPage() {
             content column on sm+ (max-w-2xl) so longer replies are
             readable; the bubble itself stays widget-sized so the
             visual identity matches everywhere. */}
-        <div className="flex-1 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
-          <div className="max-w-2xl mx-auto space-y-3">
+        <div className="flex-1 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4 min-h-0">
+          {/* When there are no messages yet, the inner wrapper becomes
+              a full-height flex column so the empty state pins to the
+              vertical center of the chat area instead of clinging to
+              the top with a giant void underneath. The moment a
+              message lands, we drop back to the normal stacked layout
+              (space-y) so replies start flowing from the top. */}
+          <div
+            className={`max-w-2xl mx-auto ${
+              messages.length === 0 && !sending
+                ? "h-full flex flex-col items-center justify-center"
+                : "space-y-3"
+            }`}
+          >
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center text-center px-3 py-8 sm:py-12">
+            <div className="flex flex-col items-center text-center px-3">
               <p className="text-xs text-[#B0AFA8] mb-5">Ask the CEO anything about your marketing.</p>
               {/* Suggestion chips — page-only enhancement over the
                   widget (which has no chips). Restyled to match the
@@ -519,7 +533,12 @@ export default function CEOChatPage() {
                 <button onClick={stt.clearError} className="text-amber-700 hover:text-amber-900 font-medium shrink-0">×</button>
               </div>
             )}
-            <div className="flex items-end gap-2">
+            {/* Tighter action-button cluster so the textarea owns more
+                width on mobile. p-1.5 (24×24 hit target → small icon)
+                + gap-1 between buttons, and a slightly wider gap from
+                the textarea so the visual grouping reads as
+                "input | actions". */}
+            <div className="flex items-end gap-1.5">
               <textarea
                 ref={textareaRef}
                 value={stt.listening && stt.transcript ? stt.transcript : input}
@@ -528,13 +547,14 @@ export default function CEOChatPage() {
                 placeholder={stt.listening ? "Listening... (sends after 3s of silence)" : "Ask the CEO..."}
                 disabled={sending}
                 rows={1}
-                className="flex-1 min-h-[36px] max-h-[200px] px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none"
+                className="flex-1 min-w-0 min-h-[40px] max-h-[200px] px-3 py-2.5 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-sm text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none"
               />
               {tts.supported && (
                 <button
                   onClick={() => tts.setEnabled(!tts.enabled)}
-                  className={`p-2 rounded-lg transition-colors ${tts.enabled ? "text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#5F5E5A]"}`}
+                  className={`p-1.5 rounded-lg transition-colors shrink-0 ${tts.enabled ? "text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#5F5E5A]"}`}
                   title={tts.enabled ? "Turn off auto-read" : "Turn on auto-read"}
+                  aria-label={tts.enabled ? "Turn off auto-read" : "Turn on auto-read"}
                 >
                   {tts.enabled ? (
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -550,12 +570,13 @@ export default function CEOChatPage() {
               {stt.supported && (
                 <button
                   onClick={stt.toggle}
-                  className={`p-2 rounded-lg transition-colors ${
+                  className={`p-1.5 rounded-lg transition-colors shrink-0 ${
                     stt.listening
                       ? "bg-red-500 text-white animate-pulse"
                       : "text-[#B0AFA8] hover:text-[#534AB7] hover:bg-[#F8F8F6]"
                   }`}
                   title={stt.listening ? "Stop recording" : "Voice input"}
+                  aria-label={stt.listening ? "Stop recording" : "Voice input"}
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
@@ -565,7 +586,8 @@ export default function CEOChatPage() {
               <button
                 onClick={handleSend}
                 disabled={!input.trim() || sending}
-                className="p-2 bg-[#534AB7] text-white rounded-lg hover:bg-[#433AA0] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="p-2 bg-[#534AB7] text-white rounded-lg hover:bg-[#433AA0] transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                aria-label="Send message"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />

@@ -639,7 +639,7 @@ export default function AriaLanding() {
                 margin: 0,
               }}
             >
-              Five agents. <span style={{ fontStyle: "italic", color: "#E94560" }}>One team.</span>
+              Six agents. <span style={{ fontStyle: "italic", color: "#E94560" }}>One team.</span>
             </h2>
           </div>
 
@@ -660,6 +660,7 @@ export default function AriaLanding() {
               <AgentNode name="EmailMarketer" role="EMAIL" color="#FFE66D" delay={550} active={agentsVisible} />
               <AgentNode name="SocialManager" role="SOCIAL" color="#A78BFA" delay={700} active={agentsVisible} />
               <AgentNode name="AdStrategist" role="ADS" color="#FF8A5C" delay={850} active={agentsVisible} />
+              <AgentNode name="MediaDesigner" role="MEDIA" color="#F472B6" delay={1000} active={agentsVisible} />
             </div>
           </div>
         </section>
