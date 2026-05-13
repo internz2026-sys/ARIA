@@ -362,52 +362,62 @@ export default function CEOChatPage() {
 
       {/* ─── Main Chat Area ─── */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 pb-3 border-b border-[#E0DED8]">
+        {/* Header — matches the FloatingChat widget's compact layout:
+            history toggle | tiny AI badge | "ARIA CEO" | new chat | tiny
+            online dot. The previous version (large star avatar + long
+            subtitle + pulsing dot) felt heavyweight next to the widget,
+            so this page now mirrors the widget aesthetic. */}
+        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#E0DED8]">
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="p-1.5 rounded-lg text-[#5F5E5A] hover:bg-[#F8F8F6] hover:text-[#2C2C2A] transition shrink-0"
+            className={`p-1.5 rounded-lg transition-colors shrink-0 ${
+              sidebarOpen ? "bg-[#EEEDFE] text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#2C2C2A] hover:bg-[#F8F8F6]"
+            }`}
             title={sidebarOpen ? "Hide history" : "Show history"}
+            aria-label="Toggle chat history"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </button>
-          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-[#534AB7] flex items-center justify-center shrink-0">
-            <svg className="w-4 h-4 sm:w-[18px] sm:h-[18px] text-white" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
-            </svg>
+          <div className="w-6 h-6 rounded-md bg-[#534AB7] flex items-center justify-center shrink-0">
+            <span className="text-white text-[9px] font-bold">AI</span>
           </div>
           <div className="flex-1 min-w-0">
-            <h1 className="text-sm sm:text-base font-semibold text-[#2C2C2A] truncate">Chat with CEO Agent</h1>
-            {/* Mobile: short tagline. sm+: full delegation description. */}
-            <p className="text-[10px] text-[#5F5E5A] truncate sm:hidden">Chief Marketing Strategist</p>
-            <p className="text-[10px] text-[#5F5E5A] truncate hidden sm:block">Your Chief Marketing Strategist — delegates tasks to Content Writer, Email Marketer, Social Manager, and Ad Strategist</p>
+            <h1 className="text-xs font-semibold text-[#2C2C2A] truncate">ARIA CEO</h1>
           </div>
-          <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#1D9E75] opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-[#1D9E75]" />
-            </span>
-            {/* Hide the "Online" label on mobile — the green dot speaks
-                for itself and the saved width goes back to the title. */}
-            <span className="hidden sm:inline text-xs font-medium text-[#1D9E75]">Online</span>
-          </div>
+          <button
+            onClick={startNewChat}
+            className="p-1.5 rounded-lg text-[#B0AFA8] hover:text-[#534AB7] hover:bg-[#EEEDFE] transition-colors shrink-0"
+            title="New chat"
+            aria-label="Start new chat"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            </svg>
+          </button>
+          <span className="flex items-center gap-1 shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#1D9E75]" />
+            <span className="text-[9px] text-[#1D9E75] font-medium">Online</span>
+          </span>
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto space-y-4 p-4 pb-2">
+        {/* Messages — bubble styling mirrors the FloatingChat widget:
+            text-xs leading-relaxed, rounded-xl with one sharp tail
+            corner, max-w-[85%], no avatar, no name label above each
+            bubble. The full-page chat still gets a slightly wider
+            content column on sm+ (max-w-2xl) so longer replies are
+            readable; the bubble itself stays widget-sized so the
+            visual identity matches everywhere. */}
+        <div className="flex-1 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
+          <div className="max-w-2xl mx-auto space-y-3">
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center px-3 sm:px-6">
-              <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-[#EEEDFE] flex items-center justify-center mb-3 sm:mb-4">
-                <svg className="w-6 h-6 sm:w-7 sm:h-7 text-[#534AB7]" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
-                </svg>
-              </div>
-              <h3 className="text-sm sm:text-base font-semibold text-[#2C2C2A] mb-1">How can I help you today?</h3>
-              <p className="text-xs sm:text-sm text-[#5F5E5A] max-w-md mb-4 sm:mb-6 px-2">
-                I&apos;m your Chief Marketing Strategist. Tell me what you need and I&apos;ll either handle it myself or delegate to the right agent.
-              </p>
+            <div className="flex flex-col items-center justify-center text-center px-3 py-8 sm:py-12">
+              <p className="text-xs text-[#B0AFA8] mb-5">Ask the CEO anything about your marketing.</p>
+              {/* Suggestion chips — page-only enhancement over the
+                  widget (which has no chips). Restyled to match the
+                  widget's compact, low-chrome aesthetic: pill border,
+                  subtle text, no card-y shadows. */}
               <div className="grid grid-cols-2 gap-1.5 sm:gap-2 w-full max-w-md">
                 {[
                   "Write a blog post about my product",
@@ -420,7 +430,7 @@ export default function CEOChatPage() {
                   <button
                     key={suggestion}
                     onClick={() => setInput(suggestion)}
-                    className="text-left text-[11px] sm:text-xs p-2 sm:p-3 leading-snug rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:border-[#534AB7] hover:text-[#534AB7] hover:bg-[#EEEDFE]/50 active:bg-[#EEEDFE]/50 transition-all"
+                    className="text-left text-[11px] sm:text-xs px-2.5 py-2 leading-snug rounded-lg border border-[#E0DED8] text-[#5F5E5A] hover:border-[#534AB7] hover:text-[#534AB7] hover:bg-[#EEEDFE]/50 active:bg-[#EEEDFE]/50 transition-all"
                   >
                     {suggestion}
                   </button>
@@ -430,169 +440,138 @@ export default function CEOChatPage() {
           )}
 
           {messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[75%] ${msg.role === "user" ? "" : "flex gap-3"}`}>
-                {msg.role === "assistant" && (
-                  <img src="/logo.png" alt="ARIA" className="w-8 h-8 rounded-full object-cover shrink-0 mt-1" />
-                )}
-                <div>
-                  <div
-                    className={`rounded-2xl px-4 py-3 ${
-                      msg.role === "user"
-                        ? "bg-[#534AB7] text-white rounded-br-md"
-                        : "bg-[#F8F8F6] text-[#2C2C2A] border border-[#E0DED8] rounded-bl-md"
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[10px] font-semibold opacity-70">
-                        {msg.role === "user" ? userName : "ARIA CEO"}
-                      </span>
-                    </div>
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{renderMarkdown(msg.content)}</p>
-                  </div>
-                  {msg.role === "assistant" && tts.supported && (
-                    <button
-                      onClick={() => tts.speaking ? tts.stop() : tts.speak(msg.content)}
-                      className="mt-1 p-1 rounded text-[#B0AFA8] hover:text-[#534AB7] transition-colors"
-                      title={tts.speaking ? "Stop reading" : "Read aloud"}
-                    >
-                      {tts.speaking ? (
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
-                        </svg>
-                      ) : (
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-                        </svg>
-                      )}
-                    </button>
-                  )}
-
-                  {msg.delegations && msg.delegations.length > 0 && (
-                    <div className="mt-2 space-y-2">
-                      {msg.delegations.map((d, j) => (
-                        <div
-                          key={j}
-                          className="flex items-start gap-2 p-2.5 rounded-lg border border-dashed"
-                          style={{ borderColor: AGENT_COLORS[d.agent] || "#E0DED8" }}
-                        >
-                          <svg className="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke={AGENT_COLORS[d.agent] || "#5F5E5A"} strokeWidth={2} viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-                          </svg>
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded text-white" style={{ backgroundColor: AGENT_COLORS[d.agent] || "#5F5E5A" }}>
-                                {AGENT_NAMES[d.agent] || d.agent}
-                              </span>
-                              <span className="text-[10px] text-[#5F5E5A]">{d.priority} priority</span>
-                            </div>
-                            <p className="text-xs text-[#5F5E5A] mt-1">{d.task}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+            <div key={i}>
+              <div className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`max-w-[85%] rounded-xl px-3 py-2 ${
+                    msg.role === "user"
+                      ? "bg-[#534AB7] text-white rounded-br-sm"
+                      : "bg-[#F8F8F6] text-[#2C2C2A] border border-[#E0DED8] rounded-bl-sm"
+                  }`}
+                >
+                  <div className="text-xs leading-relaxed">{renderMarkdown(msg.content)}</div>
                 </div>
+                {msg.role === "assistant" && tts.supported && (
+                  <button
+                    onClick={() => tts.speaking ? tts.stop() : tts.speak(msg.content)}
+                    className="ml-1 self-end mb-0.5 p-1 rounded text-[#B0AFA8] hover:text-[#534AB7] transition-colors"
+                    title={tts.speaking ? "Stop reading" : "Read aloud"}
+                  >
+                    {tts.speaking ? (
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />
+                      </svg>
+                    ) : (
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                      </svg>
+                    )}
+                  </button>
+                )}
               </div>
+              {msg.delegations && msg.delegations.length > 0 && (
+                <div className="mt-1.5 space-y-1">
+                  {msg.delegations.map((d, j) => (
+                    <div
+                      key={j}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-dashed text-[10px]"
+                      style={{ borderColor: AGENT_COLORS[d.agent] || "#E0DED8" }}
+                    >
+                      <span className="font-semibold px-1.5 py-0.5 rounded text-white" style={{ backgroundColor: AGENT_COLORS[d.agent] || "#5F5E5A" }}>
+                        {AGENT_NAMES[d.agent] || d.agent}
+                      </span>
+                      <span className="text-[#5F5E5A] truncate flex-1">{d.task}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
 
           {sending && (
-            <div className="flex justify-start">
-              <div className="flex gap-3">
-                <img src="/logo.png" alt="ARIA" className="w-8 h-8 rounded-full object-cover shrink-0" />
-                <div className="bg-[#F8F8F6] border border-[#E0DED8] rounded-2xl rounded-bl-md px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <div className="flex gap-1">
-                      <span className="w-2 h-2 bg-[#534AB7] rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                      <span className="w-2 h-2 bg-[#534AB7] rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                      <span className="w-2 h-2 bg-[#534AB7] rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                    </div>
-                    <span className="text-xs text-[#5F5E5A]">CEO is thinking...</span>
-                  </div>
-                </div>
+            <div className="flex items-center gap-2 text-xs text-[#5F5E5A]">
+              <div className="flex gap-1">
+                <span className="w-1.5 h-1.5 bg-[#534AB7] rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                <span className="w-1.5 h-1.5 bg-[#534AB7] rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                <span className="w-1.5 h-1.5 bg-[#534AB7] rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
               </div>
+              Thinking...
             </div>
           )}
 
           <div ref={bottomRef} />
+          </div>
         </div>
 
-        {/* Input */}
-        {/* Input area — sticks to the bottom of the flex-col, and on
-            mobile adds the iOS home-indicator inset so the send button
-            isn't hidden behind the safe-area. `pb-[env(safe-area-inset-
-            bottom)]` is additive to the explicit pb so the input stays
-            readable on both iOS and Android. */}
+        {/* Input — matches the FloatingChat widget's compact layout:
+            textarea bg-[#F8F8F6] (not white), text-xs, min-h-[36px], and
+            chrome-less mode buttons (no border ring when "off"). Safe-
+            area padding kept so the send button isn't hidden behind the
+            iPhone home-indicator. */}
         <div
-          className="border-t border-[#E0DED8] px-4 pt-3 pb-2"
+          className="border-t border-[#E0DED8] px-3 py-2 shrink-0"
           style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
         >
-          {stt.error && (
-            <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-              </svg>
-              <span className="flex-1">{sttErrorMessage(stt.error)}</span>
-              <button onClick={stt.clearError} className="text-amber-700 hover:text-amber-900 font-medium">
-                Dismiss
-              </button>
-            </div>
-          )}
-          <div className="flex items-end gap-2">
-            <textarea
-              ref={textareaRef}
-              value={stt.listening && stt.transcript ? stt.transcript : input}
-              onChange={(e) => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 260) + "px"; } }}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-              placeholder={stt.listening ? "Listening... (sends after 3s of silence)" : "Ask the CEO agent anything about your marketing..."}
-              disabled={sending}
-              rows={1}
-              className="flex-1 min-h-[48px] max-h-[260px] px-4 py-3 bg-white border border-[#E0DED8] rounded-xl text-sm text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-2 focus:ring-[#534AB7]/20 focus:border-[#534AB7] disabled:opacity-60 resize-none"
-            />
-            {tts.supported && (
-              <button
-                onClick={() => tts.setEnabled(!tts.enabled)}
-                className={`p-3 rounded-xl transition-colors border border-[#E0DED8] ${
-                  tts.enabled ? "text-[#534AB7] bg-[#EEEDFE]" : "text-[#B0AFA8] hover:text-[#5F5E5A] hover:bg-[#F8F8F6]"
-                }`}
-                title={tts.enabled ? "Turn off auto-read" : "Turn on auto-read"}
-              >
-                {tts.enabled ? (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-                  </svg>
-                )}
-              </button>
+          <div className="max-w-2xl mx-auto">
+            {stt.error && (
+              <div className="mb-1.5 flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
+                <span className="flex-1 leading-tight">{sttErrorMessage(stt.error)}</span>
+                <button onClick={stt.clearError} className="text-amber-700 hover:text-amber-900 font-medium shrink-0">×</button>
+              </div>
             )}
-            {stt.supported && (
+            <div className="flex items-end gap-2">
+              <textarea
+                ref={textareaRef}
+                value={stt.listening && stt.transcript ? stt.transcript : input}
+                onChange={(e) => { if (!stt.listening) { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px"; } }}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                placeholder={stt.listening ? "Listening... (sends after 3s of silence)" : "Ask the CEO..."}
+                disabled={sending}
+                rows={1}
+                className="flex-1 min-h-[36px] max-h-[200px] px-3 py-2 bg-[#F8F8F6] border border-[#E0DED8] rounded-lg text-xs text-[#2C2C2A] placeholder:text-[#6B6A65] focus:outline-none focus:ring-1 focus:ring-[#534AB7]/30 disabled:opacity-50 resize-none"
+              />
+              {tts.supported && (
+                <button
+                  onClick={() => tts.setEnabled(!tts.enabled)}
+                  className={`p-2 rounded-lg transition-colors ${tts.enabled ? "text-[#534AB7]" : "text-[#B0AFA8] hover:text-[#5F5E5A]"}`}
+                  title={tts.enabled ? "Turn off auto-read" : "Turn on auto-read"}
+                >
+                  {tts.enabled ? (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                    </svg>
+                  )}
+                </button>
+              )}
+              {stt.supported && (
+                <button
+                  onClick={stt.toggle}
+                  className={`p-2 rounded-lg transition-colors ${
+                    stt.listening
+                      ? "bg-red-500 text-white animate-pulse"
+                      : "text-[#B0AFA8] hover:text-[#534AB7] hover:bg-[#F8F8F6]"
+                  }`}
+                  title={stt.listening ? "Stop recording" : "Voice input"}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                  </svg>
+                </button>
+              )}
               <button
-                onClick={stt.toggle}
-                className={`p-3 rounded-xl transition-colors ${
-                  stt.listening
-                    ? "bg-red-500 text-white animate-pulse"
-                    : "border border-[#E0DED8] text-[#5F5E5A] hover:text-[#534AB7] hover:bg-[#F8F8F6]"
-                }`}
-                title={stt.listening ? "Stop recording" : "Voice input"}
+                onClick={handleSend}
+                disabled={!input.trim() || sending}
+                className="p-2 bg-[#534AB7] text-white rounded-lg hover:bg-[#433AA0] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
                 </svg>
               </button>
-            )}
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || sending}
-              className="p-3 bg-[#534AB7] text-white rounded-xl hover:bg-[#433AA0] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-              </svg>
-            </button>
+            </div>
           </div>
         </div>
       </div>
