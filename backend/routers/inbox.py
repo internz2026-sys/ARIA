@@ -64,7 +64,7 @@ async def _verify_inbox_owner(request: Request, item_id: str) -> dict:
 
 
 @router.get("/api/inbox/item/{item_id}")
-async def get_inbox_item(item_id: str):
+async def get_inbox_item(request: Request, item_id: str):
     """Fetch a single inbox row by id — the deep-link hydrator path.
 
     Used by the inbox page when a user navigates in with `?id=<uuid>`
@@ -74,16 +74,16 @@ async def get_inbox_item(item_id: str):
     state, and opens the detail pane — no need to load every page
     just to find one specific draft.
 
-    Auth: relies on the existing global middleware. The item is
-    keyed by its UUID alone, no tenant_id in the URL — but the
-    middleware's tenant ownership check kicks in before the row is
-    returned via the resource_id → tenant_id lookup. (If the user
-    forges someone else's item id, they get a row whose tenant_id
-    won't match their own — the frontend sees a stranger's draft
-    and the URL is in the address bar, so we lose nothing more
-    than what the user already knows. v1.5 will tighten this with
-    an explicit owner check.)
+    Auth: keyed by item UUID alone (no tenant_id in URL), so we use
+    the same _verify_inbox_owner pattern as the companion PATCH /
+    DELETE / restore / resend handlers — fetches the row's tenant_id
+    and runs it through get_verified_tenant. Raises 404 if the row
+    doesn't exist, 403 if the caller doesn't own its tenant.
+    Previously this route returned any inbox row to any
+    authenticated user who could guess the UUID — a self-documented
+    gap the rest of the file already closed.
     """
+    await _verify_inbox_owner(request, item_id)
     sb = get_db()
     try:
         result = (
