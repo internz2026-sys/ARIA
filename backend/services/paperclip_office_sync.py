@@ -11,7 +11,7 @@ It does TWO related jobs against Paperclip's API every few seconds:
    output as a comment on the Paperclip issue. This poller scrapes those
    comments and creates the corresponding inbox_items rows.
    This was deleted briefly on 2026-04-10 thinking the skill curl was the
-   active path, but it never was — see ARIA_log.md for the post-mortem.
+   active path, but it never was — see docs/ARIA_log.md for the post-mortem.
 
 2. sync_agent_statuses(sio) — the Virtual Office sync.
    Maps each Paperclip agent's status (idle/running/paused) to an ARIA

@@ -55,3 +55,10 @@ tests/playwright/screenshots/*
 # ─── Misc ──────────────────────────────────────────────────────────────────
 *.tmp
 *.bak
+
+# Local-only / build noise (added 2026-05-15)
+.mcp.json
+pytest_err.txt
+pytest_out.txt
+*.pptx
+*.mp4

@@ -17,7 +17,7 @@ Schema (run once in Supabase SQL Editor — see backend/migrations/profiles.sql)
 The role column is the gate every /api/admin/* route checks. Roles are
 NEVER inferred from email allow-lists or env vars — always from this
 table. To bootstrap the first super_admin, run a one-shot upsert in
-Supabase (documented in ARIA_log.md).
+Supabase (documented in docs/ARIA_log.md).
 """
 from __future__ import annotations
 
