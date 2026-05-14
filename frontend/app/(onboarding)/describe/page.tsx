@@ -68,22 +68,31 @@ export default function DescribePage() {
   }, [messages, tts]);
 
   useEffect(() => {
-    // Detect restart mode
-    if (localStorage.getItem("aria_reonboarding_tenant_id")) {
+    // Detect restart mode (either the reonboarding marker localStorage
+    // key set by welcome → "Start from scratch", or an explicit
+    // ?restart=1 query param survival hatch).
+    const urlRestart =
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("restart") === "1";
+    const restartMode =
+      urlRestart ||
+      (typeof window !== "undefined" && !!localStorage.getItem("aria_reonboarding_tenant_id"));
+    if (restartMode) {
       setIsRestart(true);
     }
     // Pass any existing session_id so the backend can resume from
     // onboarding_drafts (Postgres-backed) instead of creating a fresh
-    // session. Backend reads it from the body, looks up by the
-    // authenticated user_id, and returns is_resumed=true with the
-    // last assistant message if a draft exists.
+    // session. On restart we skip this entirely and pass restart=true,
+    // which forces the backend to delete the prior draft and spin up a
+    // clean 8-question agent — otherwise resume picks up the completed
+    // prior onboarding and Q1 immediately reports "already complete".
     const existingSessionId =
-      typeof window !== "undefined"
+      !restartMode && typeof window !== "undefined"
         ? localStorage.getItem("aria_onboarding_session") || ""
         : "";
     authFetch(`${API_URL}/api/onboarding/start`, {
       method: "POST",
-      body: JSON.stringify({ session_id: existingSessionId }),
+      body: JSON.stringify({ session_id: existingSessionId, restart: restartMode }),
     })
       .then(r => r.json())
       .then(data => {

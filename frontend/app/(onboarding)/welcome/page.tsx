@@ -49,7 +49,15 @@ export default function WelcomePage() {
     if (tenantId) {
       localStorage.setItem("aria_reonboarding_tenant_id", tenantId);
     }
-    window.location.href = "/describe";
+    // Clear stale onboarding state so /describe doesn't try to resume
+    // the completed prior session (which would short-circuit Q1→Q8 to
+    // "already complete"). The backend also wipes the persisted draft
+    // when /start is called with restart=true; clearing localStorage
+    // here keeps the client side honest.
+    localStorage.removeItem("aria_onboarding_session");
+    localStorage.removeItem("aria_onboarding_config");
+    localStorage.removeItem("aria_skipped_topics");
+    window.location.href = "/describe?restart=1";
   }
 
   // Still checking

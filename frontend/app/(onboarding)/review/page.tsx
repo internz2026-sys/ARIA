@@ -26,7 +26,12 @@ export default function ReviewPage() {
             router.push("/describe");
             return;
           }
-          const res = await fetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(userId)}`);
+          // authFetch — endpoint is JWT-bound (reads user_id from the
+          // bearer token). The ?user_id= query param is ignored by the
+          // backend but kept so older logs stay searchable. Bare fetch
+          // here returned 401 and silently bounced the user back to
+          // /describe with a half-loaded review screen.
+          const res = await authFetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(userId)}`);
           if (res.ok) {
             const draft = await res.json();
             if (draft?.extracted_config && Object.keys(draft.extracted_config).length > 0) {
@@ -73,9 +78,12 @@ export default function ReviewPage() {
           const userId = session?.user?.id;
           if (userId) {
             const skippedTopicsRaw = localStorage.getItem("aria_skipped_topics");
-            await fetch(`${API_URL}/api/onboarding/save-draft`, {
+            // authFetch — JWT-bound. Bare fetch dropped the bearer
+            // token and the endpoint 401'd, which meant the draft
+            // mirror to onboarding_drafts silently failed and the
+            // user lost cross-tab / cross-device resume.
+            await authFetch(`${API_URL}/api/onboarding/save-draft`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 user_id: userId,
                 session_id: sessionId,

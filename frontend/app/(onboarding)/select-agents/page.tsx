@@ -59,7 +59,8 @@ export default function SelectAgentsPage() {
         const { data: { session } } = await supabase.auth.getSession();
         const userId = session?.user?.id;
         if (!userId) return;
-        const res = await fetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(userId)}`);
+        // authFetch — JWT-bound endpoint, bare fetch 401'd silently.
+        const res = await authFetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(userId)}`);
         if (!res.ok) return;
         const draft = await res.json();
         if (draft?.extracted_config && Object.keys(draft.extracted_config).length > 0) {
@@ -144,7 +145,9 @@ export default function SelectAgentsPage() {
           // Clean up the server-side draft now that we have a real tenant
           if (user?.id) {
             try {
-              await fetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(user.id)}`, { method: "DELETE" });
+              // authFetch — JWT-bound DELETE; bare fetch 401'd which
+              // meant the draft row leaked across sessions.
+              await authFetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(user.id)}`, { method: "DELETE" });
             } catch { /* best-effort */ }
           }
           router.push("/dashboard");

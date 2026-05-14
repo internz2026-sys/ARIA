@@ -2615,6 +2615,13 @@ class OnboardingMessage(BaseModel):
 
 class OnboardingStart(BaseModel):
     session_id: Optional[str] = None
+    # When True, /api/onboarding/start ignores any persisted draft for
+    # this user and force-starts a fresh 8-question agent (also wiping
+    # the prior onboarding_drafts row). Wired to the welcome page's
+    # "Start from scratch" button — without it, /start auto-resumes the
+    # completed prior onboarding and the agent reports "complete" on Q1
+    # because every field is already validated.
+    restart: bool = False
 
 
 @app.get("/api/tenant/by-email/{email}")
@@ -2760,13 +2767,27 @@ def _last_assistant_message(agent: OnboardingAgent) -> str:
 
 @app.post("/api/onboarding/start")
 async def start_onboarding(body: OnboardingStart, user_id: str = Depends(get_user_id_from_jwt)):
+    # Restart path: the user explicitly asked to redo onboarding from
+    # scratch. Wipe the prior draft row so the resume block below
+    # finds nothing and falls through to a fresh OnboardingAgent. The
+    # localStorage clear on the frontend isn't enough on its own
+    # because /start re-reads the Postgres draft keyed by user_id, not
+    # by the client's session_id.
+    if body.restart:
+        try:
+            sb = _get_supabase()
+            sb.table("onboarding_drafts").delete().eq("user_id", user_id).execute()
+            logger.info("Onboarding restart for user=%s: cleared prior draft", user_id)
+        except Exception as e:
+            logger.warning("Onboarding restart: failed to clear prior draft for user=%s: %s", user_id, e)
+
     # Try to resume from a persisted draft first.
     # Note: only the new from_dict snapshot shape (a dict with messages/
     # field_state keys, written by this server's _persist_onboarding_draft)
     # supports resume. Legacy drafts written by /api/onboarding/save-draft
     # store conversation_history as a list of chat messages — those don't
     # carry enough state to rehydrate, so we let those users start fresh.
-    draft = _load_onboarding_draft(user_id)
+    draft = None if body.restart else _load_onboarding_draft(user_id)
     history = (draft or {}).get("conversation_history")
     if isinstance(history, dict) and history.get("messages"):
         try:
