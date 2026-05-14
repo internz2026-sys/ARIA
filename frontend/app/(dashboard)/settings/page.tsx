@@ -190,10 +190,15 @@ export default function SettingsPage() {
     }
   }
 
-  function reconnectGmail() {
+  async function reconnectGmail() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
     setGmailReconnecting(true);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      window.location.href = "/login";
+      return;
+    }
 
     function refreshGmailStatus() {
       authFetch(`${API_URL}/api/integrations/${tenantId}/gmail-status`)
@@ -234,7 +239,7 @@ export default function SettingsPage() {
     // the user pick whichever Google account actually has Gmail OAuth
     // enabled, regardless of which account they used to sign into ARIA.
     const popup = window.open(
-      `${API_URL}/api/auth/google/connect/${tenantId}`,
+      `${API_URL}/api/auth/google/connect/${tenantId}?access_token=${encodeURIComponent(session.access_token)}`,
       "google_auth",
       "width=600,height=700"
     );
@@ -247,10 +252,15 @@ export default function SettingsPage() {
     oauthCleanupRef.current.push(cleanup);
   }
 
-  function connectTwitter() {
+  async function connectTwitter() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
-    window.open(`${API_URL}/api/auth/twitter/connect/${tenantId}`, "twitter_auth", "width=600,height=700");
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      window.location.href = "/login";
+      return;
+    }
+    window.open(`${API_URL}/api/auth/twitter/connect/${tenantId}?access_token=${encodeURIComponent(session.access_token)}`, "twitter_auth", "width=600,height=700");
     let cleaned = false;
     function cleanup() {
       if (cleaned) return;
@@ -269,10 +279,15 @@ export default function SettingsPage() {
     oauthCleanupRef.current.push(cleanup);
   }
 
-  function connectLinkedIn() {
+  async function connectLinkedIn() {
     const tenantId = localStorage.getItem("aria_tenant_id");
     if (!tenantId) return;
-    window.open(`${API_URL}/api/auth/linkedin/connect/${tenantId}`, "linkedin_auth", "width=600,height=700");
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      window.location.href = "/login";
+      return;
+    }
+    window.open(`${API_URL}/api/auth/linkedin/connect/${tenantId}?access_token=${encodeURIComponent(session.access_token)}`, "linkedin_auth", "width=600,height=700");
     let cleaned = false;
     function cleanup() {
       if (cleaned) return;

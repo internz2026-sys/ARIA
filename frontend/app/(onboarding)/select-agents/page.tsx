@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { API_URL, getAuthHeaders, authFetch } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 
 const agents = [
   { slug: "ceo", name: "ARIA CEO", role: "Chief Marketing Strategist", description: "Builds your GTM playbook, coordinates all agents, reviews outputs, adjusts strategy", color: "#534AB7", required: true },
@@ -80,10 +80,12 @@ export default function SelectAgentsPage() {
     if (!accessToken) return;
     const refreshToken = localStorage.getItem("aria_google_refresh_token");
     try {
-      const authHeaders = await getAuthHeaders();
-      await fetch(`${API_URL}/api/integrations/${tenantId}/google-tokens`, {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return; // Can't authenticate — skip silently
+      const url = `${API_URL}/api/integrations/${tenantId}/google-tokens?access_token=${encodeURIComponent(session.access_token)}`;
+      await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           google_access_token: accessToken,
           google_refresh_token: refreshToken || null,
