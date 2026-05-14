@@ -563,3 +563,67 @@ def auth_headers_factory() -> Callable[..., dict[str, str]]:
         return {"Authorization": f"Bearer {token}"}
 
     return _make
+
+
+# ── Router-split safety net: shared owner/other-user fixture ──────────────
+# Used by the test_routes_*.py files that pin behaviour of routes about to
+# move from server.py to dedicated router modules. Each route gets at
+# minimum: (1) happy path with owner JWT, (2) cross-tenant 403 with another
+# user's JWT, (3) 401 with no JWT. This fixture centralises the boilerplate
+# so a route file is just ~3 lines per case instead of repeating tenant
+# registration + JWT minting in every test.
+@pytest.fixture
+def route_setup(
+    mock_supabase,
+    mock_tenant_lookup,
+    auth_headers_factory,
+):
+    """Set up owner + other-user JWT headers + two tenant_ids.
+
+    Returns a SimpleNamespace with:
+      - owner_headers       : Authorization header dict for User A's JWT
+      - other_headers       : Authorization header dict for User B's JWT
+      - tenant_id           : User A's tenant_id (registered as owned)
+      - other_tenant_id     : User B's tenant_id (NOT registered — used for
+                              the cross-tenant lookup path; owner_headers
+                              against this tenant_id should 403)
+      - mock_supabase       : the mock so per-test responses can be wired
+      - owner_email / other_email : the email claims used
+
+    Per the safety-net brief: a test author writes one assertion per case
+    (200/403/401), keeps the existing fixture wiring out of the test body,
+    and the parallel server.py-splitting agent can move routes around
+    without breaking these tests as long as the URL + auth contract stays
+    fixed. If a route file silently drops `Depends(get_verified_tenant)`,
+    the cross-tenant 403 case here will start returning 200 — that's the
+    canonical failure signal.
+    """
+    import types
+    import uuid as _uuid
+
+    owner_email = "owner@aria.test"
+    other_email = "other@aria.test"
+    owner_id = "owner-uuid-1111-1111-1111-111111111111"
+    other_id = "other-uuid-2222-2222-2222-222222222222"
+
+    tenant_id = str(_uuid.uuid4())
+    other_tenant_id = str(_uuid.uuid4())
+
+    # Register only User A's tenant — User B's tenant_id stays unknown to
+    # the (mocked) DB so the bouncer fires its tenant-not-found branch.
+    mock_tenant_lookup(tenant_id, owner_email)
+
+    owner_headers = auth_headers_factory(user_id=owner_id, email=owner_email)
+    other_headers = auth_headers_factory(user_id=other_id, email=other_email)
+
+    return types.SimpleNamespace(
+        owner_headers=owner_headers,
+        other_headers=other_headers,
+        tenant_id=tenant_id,
+        other_tenant_id=other_tenant_id,
+        mock_supabase=mock_supabase,
+        owner_email=owner_email,
+        other_email=other_email,
+        owner_id=owner_id,
+        other_id=other_id,
+    )
