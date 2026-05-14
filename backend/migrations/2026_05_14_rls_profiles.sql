@@ -7,9 +7,9 @@
 -- Apply as supabase_admin via Supabase Studio SQL editor (NOT
 -- service_role — bypass would no-op the ENABLE).
 --
--- profiles is keyed on `id` which equals `auth.users.id`. The JWT's
--- `sub` claim is the same UUID. Owner check is simple:
---   id::text = auth.jwt() ->> 'sub'
+-- profiles is keyed on `user_id` (NOT `id`) which equals auth.users.id.
+-- The JWT's `sub` claim is the same UUID. Owner check is:
+--   user_id::text = auth.jwt() ->> 'sub'
 --
 -- ADMIN escape hatch — banned_at / role admin lookups happen in the
 -- backend via SERVICE_ROLE (which bypasses RLS) so no special admin
@@ -28,25 +28,25 @@ create policy profiles_self_select
   on public.profiles
   for select
   to authenticated
-  using (id::text = auth.jwt() ->> 'sub');
+  using (user_id::text = auth.jwt() ->> 'sub');
 
 create policy profiles_self_insert
   on public.profiles
   for insert
   to authenticated
-  with check (id::text = auth.jwt() ->> 'sub');
+  with check (user_id::text = auth.jwt() ->> 'sub');
 
 create policy profiles_self_update
   on public.profiles
   for update
   to authenticated
-  using (id::text = auth.jwt() ->> 'sub')
-  with check (id::text = auth.jwt() ->> 'sub');
+  using (user_id::text = auth.jwt() ->> 'sub')
+  with check (user_id::text = auth.jwt() ->> 'sub');
 
 create policy profiles_self_delete
   on public.profiles
   for delete
   to authenticated
-  using (id::text = auth.jwt() ->> 'sub');
+  using (user_id::text = auth.jwt() ->> 'sub');
 
 -- End of migration. Re-runnable as written.
