@@ -191,7 +191,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           // Check if this is a ban signal
           const body = await res.json().catch(() => ({}));
           if (body?.detail === "BANNED") {
-            const uid = body?.user_id || session.user?.id;
+            const uid = body?.user_id;
             if (uid) router.replace(`/banned?user=${encodeURIComponent(uid)}`);
             else router.replace("/banned");
             return;
