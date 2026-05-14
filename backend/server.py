@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 import re
@@ -2114,8 +2115,49 @@ async def paperclip_status():
 
 
 # ─── Cron trigger endpoint ───
+#
+# Auth model: shared-secret HMAC-style token in `X-Aria-Cron-Token`
+# (or `Authorization: Bearer <secret>`). Mirrors the pattern used by
+# `/api/internal/security-review` (HMAC over body) and the inbox-router
+# `_check_agent_token` — a single env var (`ARIA_CRON_SECRET`) is the
+# only credential needed.
+#
+# OPERATOR NOTE: VPS cron job + GitHub Actions schedule both call this —
+# set `ARIA_CRON_SECRET` in `/opt/aria/.env` and inject as the
+# `X-Aria-Cron-Token` header on both invokers. If the var is unset AND
+# `ARIA_ENV=prod`, the endpoint fails closed with 503 so a forgotten
+# rotation can't accidentally re-open the public surface. In dev mode
+# (no ARIA_ENV set, or set to 'dev'/'local'), an unset secret allows
+# unauthenticated calls so local cron testing isn't blocked.
 @app.post("/api/cron/run-scheduled")
-async def cron_trigger():
+async def cron_trigger(request: Request):
+    secret = os.environ.get("ARIA_CRON_SECRET", "").strip()
+    env = os.environ.get("ARIA_ENV", "").lower()
+
+    if not secret:
+        if env in ("prod", "production"):
+            logger.error(
+                "ARIA_CRON_SECRET unset in ARIA_ENV=%s — refusing to run cron",
+                env,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="cron not configured: ARIA_CRON_SECRET required in production",
+            )
+        # Dev: allow through with a warning so the missing config is visible.
+        logger.warning("ARIA_CRON_SECRET unset; allowing cron trigger in dev mode")
+    else:
+        # Accept either the dedicated header or an Authorization bearer.
+        provided = request.headers.get("x-aria-cron-token", "").strip()
+        if not provided:
+            auth = request.headers.get("authorization", "").strip()
+            if auth.lower().startswith("bearer "):
+                provided = auth[7:].strip()
+        if not provided or not hmac.compare_digest(provided, secret):
+            client_host = request.client.host if request.client else "?"
+            logger.warning("cron-trigger token mismatch from %s", client_host)
+            raise HTTPException(status_code=401, detail="invalid cron token")
+
     results = await run_scheduled_agents()
 
     # Also run Gmail inbound reply sync for all connected tenants
