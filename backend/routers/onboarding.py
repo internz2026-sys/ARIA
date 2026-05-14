@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from backend.auth import get_current_user, get_verified_tenant, get_user_id_from_jwt
 from backend.config.loader import get_tenant_config, save_tenant_config
-from backend.onboarding_agent import OnboardingAgent, FIELD_QUESTIONS
+from backend.agents.onboarding_agent import OnboardingAgent, FIELD_QUESTIONS
 from backend.services.supabase import get_db as _get_supabase
 
 logger = logging.getLogger("aria.server")
@@ -473,7 +473,7 @@ async def save_config_direct(
     # Build GTMProfile from the flat gtm_profile extraction.
     gp_raw = extracted.get("gtm_profile", {})
     # Ensure generated fields are always populated
-    from backend.onboarding_agent import _ensure_generated_fields
+    from backend.agents.onboarding_agent import _ensure_generated_fields
     gp_raw = _ensure_generated_fields(gp_raw)
     gtm_profile = GTMProfile(
         business_name=gp_raw.get("business_name", extracted.get("business_name", "")),
@@ -650,7 +650,7 @@ async def update_onboarding(
     every downstream consumer.
     """
     from backend.config.brief import generate_agent_brief
-    from backend.onboarding_agent import _ensure_generated_fields
+    from backend.agents.onboarding_agent import _ensure_generated_fields
 
     try:
         config = get_tenant_config(tenant_id)
