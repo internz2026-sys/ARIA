@@ -1344,9 +1344,38 @@ def _get_backend_base_url(request: Request) -> str:
     return base
 
 
+# FRONTEND NOTE: callers must pass ?access_token=<supabase_jwt> as a query
+# param because top-level browser navigation (window.location.href) can't
+# send the Authorization header. The dashboard's "Connect Twitter" button
+# needs to be updated to include the token in the URL.
 @app.get("/api/auth/twitter/connect/{tenant_id}")
 async def twitter_connect(tenant_id: str, request: Request):
     """Start Twitter OAuth 2.0 PKCE flow — redirects user to X login."""
+    # Manual auth check — this endpoint sits under /api/auth/ which the
+    # middleware bypasses for legitimate OAuth callback URLs, so without
+    # this guard ANY caller who knows a victim's tenant_id could complete
+    # OAuth with their own Twitter account and have the callback bind the
+    # attacker's tokens to the victim's tenant (full account hijack).
+    from backend.auth import verify_jwt
+    access_token_jwt = request.query_params.get("access_token", "")
+    if not access_token_jwt:
+        raise HTTPException(status_code=401, detail="Missing access_token query param")
+    try:
+        user = verify_jwt(access_token_jwt)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
+    user_sub = user.get("sub", "")
+    try:
+        _cfg = get_tenant_config(tenant_id)
+        _owner = (_cfg.owner_email or "").lower().strip()
+        if _owner and _owner != user_email and str(_cfg.tenant_id) != user_sub:
+            raise HTTPException(status_code=403, detail="Access denied")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     from backend.tools import twitter_tool
     base_url = _get_backend_base_url(request)
     redirect_uri = f"{base_url}/api/auth/twitter/callback"
@@ -1422,9 +1451,38 @@ async def twitter_status(
 _linkedin_pending_auth: dict[str, tuple[str, float]] = {}
 
 
+# FRONTEND NOTE: callers must pass ?access_token=<supabase_jwt> as a query
+# param because top-level browser navigation (window.location.href) can't
+# send the Authorization header. The dashboard's "Connect LinkedIn" button
+# needs to be updated to include the token in the URL.
 @app.get("/api/auth/linkedin/connect/{tenant_id}")
 async def linkedin_connect(tenant_id: str, request: Request):
     """Start LinkedIn OAuth 2.0 flow — redirects user to LinkedIn login."""
+    # Manual auth check — this endpoint sits under /api/auth/ which the
+    # middleware bypasses for legitimate OAuth callback URLs, so without
+    # this guard ANY caller who knows a victim's tenant_id could complete
+    # OAuth with their own LinkedIn account and have the callback bind the
+    # attacker's tokens to the victim's tenant (full account hijack).
+    from backend.auth import verify_jwt
+    access_token_jwt = request.query_params.get("access_token", "")
+    if not access_token_jwt:
+        raise HTTPException(status_code=401, detail="Missing access_token query param")
+    try:
+        user = verify_jwt(access_token_jwt)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
+    user_sub = user.get("sub", "")
+    try:
+        _cfg = get_tenant_config(tenant_id)
+        _owner = (_cfg.owner_email or "").lower().strip()
+        if _owner and _owner != user_email and str(_cfg.tenant_id) != user_sub:
+            raise HTTPException(status_code=403, detail="Access denied")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     import secrets
     from starlette.responses import RedirectResponse
     from backend.tools import linkedin_tool
@@ -3371,9 +3429,40 @@ class GoogleTokens(BaseModel):
     google_refresh_token: str | None = None
 
 
+# FRONTEND NOTE: callers must pass ?access_token=<supabase_jwt> as a query
+# param because the middleware special-cases `path.endswith("/google-tokens")`
+# to bypass auth (line ~828). Without this manual check ANY caller who knows
+# a victim's tenant_id could overwrite their Google OAuth tokens with
+# attacker-controlled values (full Gmail hijack). The dashboard caller
+# needs to be updated to include the token in the URL.
 @app.post("/api/integrations/{tenant_id}/google-tokens")
-async def save_google_tokens(tenant_id: str, body: GoogleTokens):
+async def save_google_tokens(tenant_id: str, body: GoogleTokens, request: Request):
     """Store Google OAuth tokens for Gmail sending."""
+    # Manual auth check — middleware bypasses this path via the
+    # `path.endswith("/google-tokens")` special case, so we have to verify
+    # session + ownership here. Using a query-param JWT for parity with
+    # the OAuth init endpoints; an XHR caller could send Authorization
+    # instead but query-param keeps the call sites uniform.
+    from backend.auth import verify_jwt
+    access_token_jwt = request.query_params.get("access_token", "")
+    if not access_token_jwt:
+        raise HTTPException(status_code=401, detail="Missing access_token query param")
+    try:
+        user = verify_jwt(access_token_jwt)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
+    user_sub = user.get("sub", "")
+    try:
+        _cfg = get_tenant_config(tenant_id)
+        _owner = (_cfg.owner_email or "").lower().strip()
+        if _owner and _owner != user_email and str(_cfg.tenant_id) != user_sub:
+            raise HTTPException(status_code=403, detail="Access denied")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         config = get_tenant_config(tenant_id)
         config.integrations.google_access_token = body.google_access_token
@@ -3399,9 +3488,38 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_GMAIL_SCOPES = "https://www.googleapis.com/auth/gmail.send"
 
 
+# FRONTEND NOTE: callers must pass ?access_token=<supabase_jwt> as a query
+# param because top-level browser navigation (window.location.href) can't
+# send the Authorization header. The dashboard's "Connect Gmail" button
+# needs to be updated to include the token in the URL.
 @app.get("/api/auth/google/connect/{tenant_id}")
 async def google_connect(tenant_id: str, request: Request):
     """Redirect user to Google OAuth consent screen for Gmail access."""
+    # Manual auth check — this endpoint sits under /api/auth/ which the
+    # middleware bypasses for legitimate OAuth callback URLs, so without
+    # this guard ANY caller who knows a victim's tenant_id could complete
+    # OAuth with their own Google account and have the callback bind the
+    # attacker's tokens to the victim's tenant (full Gmail hijack).
+    from backend.auth import verify_jwt
+    access_token_jwt = request.query_params.get("access_token", "")
+    if not access_token_jwt:
+        raise HTTPException(status_code=401, detail="Missing access_token query param")
+    try:
+        user = verify_jwt(access_token_jwt)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
+    user_sub = user.get("sub", "")
+    try:
+        _cfg = get_tenant_config(tenant_id)
+        _owner = (_cfg.owner_email or "").lower().strip()
+        if _owner and _owner != user_email and str(_cfg.tenant_id) != user_sub:
+            raise HTTPException(status_code=403, detail="Access denied")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     from starlette.responses import RedirectResponse, HTMLResponse
     from urllib.parse import urlencode
 
