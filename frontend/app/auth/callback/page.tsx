@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -157,7 +157,11 @@ export default function AuthCallbackPage() {
       const email = session.user.email;
       if (email) {
         try {
-          const res = await fetch(`${API_URL}/api/tenant/by-email/${encodeURIComponent(email)}`);
+          // /api/tenant/by-email/ is no longer public — it requires a JWT
+          // whose email claim matches the requested address. We just
+          // completed Supabase OAuth so a session exists; authFetch
+          // grabs the access_token and adds the Bearer header.
+          const res = await authFetch(`${API_URL}/api/tenant/by-email/${encodeURIComponent(email)}`);
           const data = await res.json();
           if (data.tenant_id) {
             localStorage.setItem("aria_tenant_id", data.tenant_id);

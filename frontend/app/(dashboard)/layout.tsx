@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 import Sidebar from "@/components/shared/sidebar";
 import FloatingChat from "@/components/shared/FloatingChat";
 import OfficeKanban from "@/components/virtual-office/OfficeKanban";
@@ -141,9 +141,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       const email = session.user?.email;
       if (email) {
         try {
-          const headers: Record<string, string> = {};
-          if (session.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
-          const res = await fetch(`${API_URL}/api/tenant/by-email/${encodeURIComponent(email)}`, { headers });
+          // /api/tenant/by-email/ is no longer public — it requires a JWT
+          // whose email claim matches the requested address. authFetch
+          // adds the Bearer header from the active Supabase session.
+          const res = await authFetch(`${API_URL}/api/tenant/by-email/${encodeURIComponent(email)}`);
           const data = await res.json();
           if (data.tenant_id) {
             // Restore tenant_id from server — user already onboarded

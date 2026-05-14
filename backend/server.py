@@ -799,7 +799,10 @@ _PUBLIC_PREFIXES = (
     "/api/webhooks/",       # External webhooks (Stripe, SendGrid)
     "/api/inbox/",          # Inbox item creation (used by Paperclip agents)
     "/api/media/",          # Image generation (used by Paperclip Media Designer)
-    "/api/tenant/by-email/", # Tenant lookup during login (returns only tenant_id)
+    # /api/tenant/by-email/ removed from public prefixes — it was a public
+    # oracle for tenant_id discovery (anyone could enumerate emails and
+    # get back the tenant_id, making IDOR trivial). Now requires JWT +
+    # email-match (the caller's JWT email must equal the requested email).
     "/api/email/inbound",   # Inbound mail webhook (Postmark/Resend/SendGrid → /api/email/inbound)
     "/api/internal/",       # HMAC-gated internal endpoints (e.g. /security-review for GitHub Actions)
     # /docs + /openapi.json removed from public prefixes in #20 — the
@@ -2783,8 +2786,40 @@ class OnboardingStart(BaseModel):
 
 
 @app.get("/api/tenant/by-email/{email}")
-async def tenant_by_email(email: str):
-    """Look up a tenant config by owner email. Returns only the tenant_id (no sensitive data)."""
+async def tenant_by_email(
+    email: str,
+    user: dict = Depends(get_current_user),
+):
+    """Look up a tenant config by owner email. Returns only the tenant_id.
+
+    Caller must be authenticated AND the requested email must match the
+    JWT's email claim (case-insensitive). This used to be public, which
+    made tenant_id enumeration trivial — an attacker could submit any
+    address and learn whether it was registered + its tenant UUID.
+
+    Use case is the login flow: the frontend has just resolved a Supabase
+    session for email X, then calls this endpoint to fetch the tenant_id
+    for that same email. The JWT-email match is exactly the invariant we
+    want; nobody legitimately needs to query for somebody else's tenant.
+    """
+    user_email = (
+        user.get("email")
+        or user.get("user_metadata", {}).get("email")
+        or ""
+    ).lower().strip()
+    requested = (email or "").lower().strip()
+
+    # Dev-mode fallthrough: get_current_user returns email="dev@localhost"
+    # when JWT secret isn't configured. Allow the dev user to look up any
+    # email so local testing stays usable; production always has a secret
+    # set so this branch can't fire there.
+    if user.get("sub") != "dev-user" and user_email != requested:
+        logger.warning(
+            "tenant_by_email rejected: caller=%s requested=%s (mismatch)",
+            user_email or "<no-email>", requested,
+        )
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         sb = _get_supabase()
         result = sb.table("tenant_configs").select("tenant_id").eq("owner_email", email).limit(1).execute()

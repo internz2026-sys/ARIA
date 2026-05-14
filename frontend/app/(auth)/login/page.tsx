@@ -3,6 +3,7 @@
 import React, { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { authFetch } from "@/lib/api";
 
 function GoogleIcon() {
   return (
@@ -197,9 +198,15 @@ function LoginForm() {
     if (userEmail) {
       try {
         const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
-        const res = await fetch(
+        // /api/tenant/by-email/ is no longer public — it requires a JWT
+        // whose email claim matches the requested address. We just
+        // resolved Supabase signInWithPassword above so a session
+        // exists; authFetch pulls session.access_token and adds the
+        // Bearer header automatically (don't pass the token explicitly
+        // since data.session can be momentarily null while Supabase
+        // hydrates getSession() under the hood).
+        const res = await authFetch(
           `${apiBase}/api/tenant/by-email/${encodeURIComponent(userEmail)}`,
-          { headers: { Authorization: `Bearer ${data.session?.access_token || ""}` } },
         );
         if (res.status === 403) {
           const body = await res.json().catch(() => ({}));

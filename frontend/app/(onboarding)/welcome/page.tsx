@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
-import { API_URL } from "@/lib/api";
+import { API_URL, authFetch } from "@/lib/api";
 
 const steps = [
   { num: 1, title: "Chat with ARIA CEO", time: "~5 min", desc: "Describe your product, audience, and marketing goals" },
@@ -28,7 +28,11 @@ export default function WelcomePage() {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user?.email) {
-          const res = await fetch(`${API_URL}/api/tenant/by-email/${encodeURIComponent(session.user.email)}`);
+          // /api/tenant/by-email/ is no longer public — it requires a JWT
+          // whose email claim matches the requested address. authFetch
+          // grabs session.access_token from Supabase and adds the Bearer
+          // header automatically.
+          const res = await authFetch(`${API_URL}/api/tenant/by-email/${encodeURIComponent(session.user.email)}`);
           const data = await res.json();
           if (data.tenant_id) {
             setTenantId(data.tenant_id);
