@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -803,7 +804,7 @@ async def _cleanup_media_placeholder(tenant_id: str, keep_id: str | None) -> Non
 
 
 @router.post("/api/inbox/{tenant_id}/items")
-async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
+async def create_inbox_item(tenant_id: str, body: CreateInboxItem, request: Request):
     """Create an inbox item — used by Paperclip agents to store their output.
 
     Two paths can hit this endpoint:
@@ -823,7 +824,53 @@ async def create_inbox_item(tenant_id: str, body: CreateInboxItem):
     that row instead of creating a duplicate. The agent doesn't
     currently send paperclip_issue_id, but we accept it for the future
     when the skill MD is updated.
+
+    Auth gate: this endpoint sits under /api/inbox/ which is in
+    _PUBLIC_PREFIXES (JWT bypass) so the Paperclip-spawned Claude CLI
+    can curl it from inside the container — same pattern as
+    /api/media/.../generate. Without auth, anyone on the internet
+    could inject arbitrary content into any tenant's inbox. We gate
+    via a shared internal token (ARIA_INTERNAL_AGENT_TOKEN) sent in
+    the `X-Aria-Agent-Token` header. Production refuses requests when
+    the token isn't configured (fail-closed); dev still allows
+    unauth'd with a warning to keep local smoke tests working. This
+    mirrors the /api/media/{tenant_id}/generate gate in server.py.
+
+    FIXME: After this lands, the Paperclip `aria-backend-api` skill MD
+    needs to be updated (in Paperclip's instance — not in this repo)
+    to send `X-Aria-Agent-Token: <ARIA_INTERNAL_AGENT_TOKEN>` on every
+    POST. Until that update happens, Paperclip's inbox writes will 401
+    and Path A (skill-curl) will fail. Path B (poll_completed_issues
+    safety net in paperclip_office_sync.py) will still pull the agent
+    output back, so user-visible behavior degrades from "near-instant"
+    to "5-second poll" but doesn't break entirely.
     """
+    # ── Auth gate ─────────────────────────────────────────────────────
+    # Mirror /api/media/{tenant_id}/generate in server.py — same token,
+    # same env var, same dev-mode bypass. Keep these parallel so the
+    # next dev reading both sees they're the same.
+    expected_token = (os.environ.get("ARIA_INTERNAL_AGENT_TOKEN") or "").strip()
+    received_token = (request.headers.get("X-Aria-Agent-Token") or "").strip()
+    if expected_token:
+        if not received_token or received_token != expected_token:
+            logger.warning(
+                "[inbox-create] /api/inbox/%s/items rejected: bad/missing X-Aria-Agent-Token",
+                tenant_id,
+            )
+            raise HTTPException(status_code=401, detail="Invalid agent token")
+    elif (os.environ.get("ARIA_ENV") or os.environ.get("ENV") or "").lower() in ("prod", "production"):
+        logger.error(
+            "[inbox-create] ARIA_INTERNAL_AGENT_TOKEN not configured in production — refusing"
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Internal agent token not configured",
+        )
+    else:
+        logger.warning(
+            "[inbox-create] ARIA_INTERNAL_AGENT_TOKEN unset (dev mode) — accepting unauth'd request"
+        )
+
     # sio + _emit_task_completed already imported at module top from
     # services/realtime.py. The remaining four still live in server.py
     # pending future helper-extraction work.
