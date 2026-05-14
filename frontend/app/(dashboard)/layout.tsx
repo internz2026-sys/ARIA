@@ -186,11 +186,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     let cancelled = false;
     const fetchStatus = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session?.access_token) return;
-        const res = await fetch(`${API_URL}/api/profile/me`, {
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        });
+        const res = await authFetch(`${API_URL}/api/profile/me`);
         if (res.status === 403) {
           // Check if this is a ban signal
           const body = await res.json().catch(() => ({}));

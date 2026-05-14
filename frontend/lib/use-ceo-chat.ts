@@ -6,7 +6,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
-import { API_URL, getAuthHeaders, ceoChat as ceoChatApi } from "./api";
+import { API_URL, authFetch, ceoChat as ceoChatApi } from "./api";
 
 // ---- Types ----------------------------------------------------------------
 
@@ -170,10 +170,9 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       try {
-        const headers = await getAuthHeaders();
-        const res = await fetch(
+        const res = await authFetch(
           `${API_URL}/api/ceo/chat/${sessionId}/history`,
-          { headers, signal: controller.signal },
+          { signal: controller.signal },
         );
         if (!res.ok) {
           // Distinguish auth from generic server errors so the retry
@@ -212,12 +211,10 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
   const refreshSessions = useCallback(() => {
     const tid = getTenantId();
     if (!tid) return;
-    getAuthHeaders().then(headers => {
-      fetch(`${API_URL}/api/ceo/chat/sessions/${tid}`, { headers })
-        .then((r) => r.json())
-        .then((d) => { if (mountedRef.current) setSessions(d.sessions || []); })
-        .catch(() => {});
-    });
+    authFetch(`${API_URL}/api/ceo/chat/sessions/${tid}`)
+      .then((r) => r.json())
+      .then((d) => { if (mountedRef.current) setSessions(d.sessions || []); })
+      .catch(() => {});
   }, []);
 
   useEffect(() => { refreshSessions(); }, [refreshSessions]);
@@ -245,10 +242,8 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
       abortRef.current = controller;
 
       try {
-        const authHeaders = await getAuthHeaders();
-        const res = await fetch(`${API_URL}/api/ceo/chat`, {
+        const res = await authFetch(`${API_URL}/api/ceo/chat`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({ session_id: sessionId, message: trimmed, tenant_id: getTenantId() }),
           signal: controller.signal,
         });
@@ -298,10 +293,8 @@ export function CeoChatProvider({ children }: { children: React.ReactNode }) {
     if (!pendingConfirmation) return;
     setSending(true);
     try {
-      const authHeaders = await getAuthHeaders();
-      const res = await fetch(`${API_URL}/api/ceo/${getTenantId()}/action`, {
+      const res = await authFetch(`${API_URL}/api/ceo/${getTenantId()}/action`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({
           action: pendingConfirmation.action,
           params: pendingConfirmation.params,

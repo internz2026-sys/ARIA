@@ -80,12 +80,8 @@ export default function SelectAgentsPage() {
     if (!accessToken) return;
     const refreshToken = localStorage.getItem("aria_google_refresh_token");
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) return; // Can't authenticate — skip silently
-      const url = `${API_URL}/api/integrations/${tenantId}/google-tokens?access_token=${encodeURIComponent(session.access_token)}`;
-      await fetch(url, {
+      await authFetch(`${API_URL}/api/integrations/${tenantId}/google-tokens`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           google_access_token: accessToken,
           google_refresh_token: refreshToken || null,
@@ -160,9 +156,8 @@ export default function SelectAgentsPage() {
       // Fallback: use cached config from the review page
       if (cachedConfig) {
         try {
-          res = await fetch(`${API_URL}/api/onboarding/save-config-direct`, {
+          res = await authFetch(`${API_URL}/api/onboarding/save-config-direct`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               config: JSON.parse(cachedConfig),
               owner_email: ownerEmail,
@@ -190,7 +185,9 @@ export default function SelectAgentsPage() {
         // Clean up the server-side draft now that we have a real tenant
         if (user?.id) {
           try {
-            await fetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(user.id)}`, { method: "DELETE" });
+            // authFetch — JWT-bound DELETE; bare fetch 401'd which
+            // meant the draft row leaked across sessions.
+            await authFetch(`${API_URL}/api/onboarding/draft?user_id=${encodeURIComponent(user.id)}`, { method: "DELETE" });
           } catch { /* best-effort */ }
         }
         router.push("/dashboard");
