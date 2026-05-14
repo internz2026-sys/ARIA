@@ -204,13 +204,10 @@ async def generate_media_image(tenant_id: str, request: Request, payload: dict =
     # sees ONE row that transitions processing -> ready, not a stale
     # placeholder lingering next to the finished image row.
     if inbox_row and tenant_id:
-        # TODO(split): _cleanup_media_placeholder lives in
-        # backend/routers/inbox.py and isn't imported at the call site.
-        # Pre-existing latent NameError — preserved verbatim so behavior
-        # doesn't change during the mechanical refactor. The call site
-        # uses module-global lookup, so it'll fail the same way it would
-        # have before the split.
-        await _cleanup_media_placeholder(tenant_id, inbox_row.get("id"))  # noqa: F821
+        # _cleanup_media_placeholder lives in backend/routers/inbox.py.
+        # Inline-imported to avoid circular imports between sibling routers.
+        from backend.routers.inbox import _cleanup_media_placeholder
+        await _cleanup_media_placeholder(tenant_id, inbox_row.get("id"))
 
         # Push the finished row to the UI in real time
         try:

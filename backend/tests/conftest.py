@@ -360,10 +360,26 @@ _GET_DB_IMPORT_SITES = (
     "backend.routers.email",
     "backend.routers.inbox",
     "backend.routers.plans",
+    # Newly-split router modules — each captured a local reference to
+    # get_db at module load and must be patched alongside the source.
+    # Without these entries the routers bypass the mock and hit the real
+    # (unreachable) https://test.supabase.invalid URL. Detection method:
+    # `grep -rn "^from backend\.services\.supabase import get_db" backend`.
+    "backend.routers.agents_runtime",
+    "backend.routers.dashboard_analytics",
+    "backend.routers.notifications",
+    "backend.routers.onboarding",
+    "backend.routers.scheduling",
+    "backend.routers.social",
+    "backend.routers.login_rate_limit",
     "backend.agents.media_agent",
+    "backend.agents.content_writer_agent",
+    "backend.services.asset_lookup",
     "backend.services.campaigns",
     "backend.services.chat",
+    "backend.services.content_index",
     "backend.services.crm",
+    "backend.services.crm_import",
     "backend.services.content_library",
     "backend.services.email_inbound",
     "backend.services.email_sender",
@@ -503,9 +519,23 @@ def mock_tenant_lookup(monkeypatch: pytest.MonkeyPatch):
         "backend.routers.email",
         "backend.routers.inbox",
         "backend.routers.plans",
+        "backend.routers.tasks",
+        # Newly-split router modules — each captured a local reference to
+        # get_tenant_config at module load. Without patching these the
+        # bouncer's `get_tenant_config(tenant_id)` call inside the router
+        # module hits the REAL loader, which then tries the real Supabase
+        # URL and fails. Detection method:
+        # `grep -rn "^from backend\.config\.loader import .*get_tenant_config" backend`.
+        "backend.routers.agents_runtime",
+        "backend.routers.auth_oauth",
+        "backend.routers.dashboard_analytics",
+        "backend.routers.integrations",
+        "backend.routers.onboarding",
+        "backend.routers.social",
         "backend.tools.campaign_analyzer",
         "backend.agents.media_agent",
         "backend.services.email_sender",
+        "backend.services.plan_quotas",
     ):
         # raising=False: tolerate optional modules that don't import in a
         # slimmed test build.
