@@ -447,7 +447,7 @@ async def ceo_execute_action(
     _verified: dict = Depends(get_verified_tenant),
 ):
     """Execute a CEO business action with confirmation enforcement."""
-    from backend.ceo_actions import execute_action, is_forbidden_request  # noqa: F401
+    from backend.services.ceo_actions import execute_action, is_forbidden_request  # noqa: F401
 
     result = await execute_action(
         tenant_id=tenant_id,
@@ -465,7 +465,7 @@ async def ceo_execute_action(
     # Emit real-time update with entity type for targeted refresh
     action_def = None
     try:
-        from backend.ceo_actions import ACTION_REGISTRY
+        from backend.services.ceo_actions import ACTION_REGISTRY
         action_def = ACTION_REGISTRY.get(body.action, {})
     except Exception:
         pass

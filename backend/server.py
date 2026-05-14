@@ -3801,7 +3801,7 @@ async def _dispatch_paperclip_and_watch_to_inbox(
 # so cache at module load instead of rebuilding the list of strings on every
 # CEO chat call. Saves ~1ms + a bunch of garbage allocations per request.
 try:
-    from backend.ceo_actions import get_action_descriptions as _ceo_action_descriptions_fn
+    from backend.services.ceo_actions import get_action_descriptions as _ceo_action_descriptions_fn
     _CEO_ACTION_DESCRIPTIONS = _ceo_action_descriptions_fn()
 except Exception:
     _CEO_ACTION_DESCRIPTIONS = ""

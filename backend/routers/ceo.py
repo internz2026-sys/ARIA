@@ -1224,7 +1224,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     # already contain a refusal phrase. The double gate prevents the
     # naive substring match from nuking legitimate replies that happen
     # to mention sensitive words ("don't touch the database schema").
-    from backend.ceo_actions import is_forbidden_request, REFUSAL_MESSAGE
+    from backend.services.ceo_actions import is_forbidden_request, REFUSAL_MESSAGE
     if is_forbidden_request(body.message):
         refusal_markers = ("can't", "cannot", "don't have access", "i'm not able", "i won't")
         raw_lower = raw.lower()
@@ -1341,7 +1341,7 @@ Keep responses concise and actionable. You are their Chief Marketing Strategist.
     action_results = []
     pending_confirmations = []
     if ceo_actions and tenant_id:
-        from backend.ceo_actions import execute_action, ACTION_REGISTRY
+        from backend.services.ceo_actions import execute_action, ACTION_REGISTRY
         for a in ceo_actions:
             action_name = a.get("action", "")
             params = a.get("params", {})

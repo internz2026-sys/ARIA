@@ -351,7 +351,7 @@ class _MockSupabase(MagicMock):
 # at the real Supabase factory. Keep this list in sync with
 #     grep -rn "^from backend\.services\.supabase import get_db" backend
 _GET_DB_IMPORT_SITES = (
-    "backend.ceo_actions",
+    "backend.services.ceo_actions",
     "backend.services.paperclip_office_sync",
     "backend.orchestrator",
     "backend.routers.ceo",
@@ -511,7 +511,7 @@ def mock_tenant_lookup(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("backend.config.loader.get_tenant_config", fake_get_tenant_config)
     for module_path in (
         "backend.agents.base",
-        "backend.ceo_actions",
+        "backend.services.ceo_actions",
         "backend.orchestrator",
         "backend.server",
         "backend.routers.ceo",
