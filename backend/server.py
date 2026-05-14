@@ -1402,7 +1402,10 @@ async def twitter_callback(code: str = "", state: str = "", error: str = "", req
 
 
 @app.get("/api/integrations/{tenant_id}/twitter-status")
-async def twitter_status(tenant_id: str):
+async def twitter_status(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Check if Twitter is connected for a tenant."""
     config = get_tenant_config(tenant_id)
     connected = bool(config.integrations.twitter_access_token or config.integrations.twitter_refresh_token)
@@ -1494,7 +1497,10 @@ async def linkedin_callback(code: str = "", state: str = "", error: str = "", re
 
 
 @app.get("/api/integrations/{tenant_id}/linkedin-status")
-async def linkedin_status(tenant_id: str):
+async def linkedin_status(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Check if LinkedIn is connected for a tenant."""
     config = get_tenant_config(tenant_id)
     connected = bool(config.integrations.linkedin_access_token)
@@ -1507,7 +1513,10 @@ async def linkedin_status(tenant_id: str):
 
 
 @app.get("/api/linkedin/{tenant_id}/organizations")
-async def linkedin_organizations(tenant_id: str):
+async def linkedin_organizations(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """List company pages the user is admin of."""
     from backend.tools import linkedin_tool
 
@@ -1529,7 +1538,11 @@ class LinkedInPostTargetRequest(BaseModel):
 
 
 @app.post("/api/linkedin/{tenant_id}/set-target")
-async def linkedin_set_target(tenant_id: str, body: LinkedInPostTargetRequest):
+async def linkedin_set_target(
+    tenant_id: str,
+    body: LinkedInPostTargetRequest,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Set whether LinkedIn posts go to personal profile or a company page."""
     config = get_tenant_config(tenant_id)
     config.integrations.linkedin_org_urn = body.org_urn or None
@@ -1542,7 +1555,11 @@ async def linkedin_set_target(tenant_id: str, body: LinkedInPostTargetRequest):
 
 
 @app.post("/api/linkedin/{tenant_id}/post")
-async def publish_linkedin_post(tenant_id: str, body: dict):
+async def publish_linkedin_post(
+    tenant_id: str,
+    body: dict,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Publish a post to LinkedIn from the tenant's connected account.
 
     Requires confirmed=true — human must explicitly approve before publishing.
@@ -1599,7 +1616,10 @@ async def publish_linkedin_post(tenant_id: str, body: dict):
 
 
 @app.get("/api/integrations/{tenant_id}/whatsapp-status")
-async def whatsapp_status(tenant_id: str):
+async def whatsapp_status(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Check if WhatsApp is connected for a tenant."""
     config = get_tenant_config(tenant_id)
     connected = bool(config.integrations.whatsapp_access_token and config.integrations.whatsapp_phone_number_id)
@@ -1616,7 +1636,12 @@ class ThreadRequest(BaseModel):
 
 
 @app.post("/api/twitter/{tenant_id}/tweet")
-async def publish_tweet(tenant_id: str, body: TweetRequest, confirmed: bool = False):
+async def publish_tweet(
+    tenant_id: str,
+    body: TweetRequest,
+    confirmed: bool = False,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Post a single tweet from the tenant's connected X account.
 
     Requires confirmed=true — human must explicitly approve before posting.
@@ -1666,7 +1691,12 @@ async def publish_tweet(tenant_id: str, body: TweetRequest, confirmed: bool = Fa
 
 
 @app.post("/api/twitter/{tenant_id}/thread")
-async def publish_thread(tenant_id: str, body: ThreadRequest, confirmed: bool = False):
+async def publish_thread(
+    tenant_id: str,
+    body: ThreadRequest,
+    confirmed: bool = False,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Post a thread (multiple tweets) from the tenant's connected X account.
 
     Requires confirmed=true — human must explicitly approve before posting.
@@ -1778,7 +1808,11 @@ def _sanitize_social_post_text(raw: str) -> str:
 
 
 @app.post("/api/social/{tenant_id}/approve-publish")
-async def approve_and_publish_social(tenant_id: str, body: SocialApproveRequest):
+async def approve_and_publish_social(
+    tenant_id: str,
+    body: SocialApproveRequest,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Approve a social post from inbox and publish to connected platforms (Twitter/X)."""
     from backend.tools import twitter_tool
 
@@ -2030,7 +2064,12 @@ class WhatsAppSendRequest(BaseModel):
 
 
 @app.post("/api/whatsapp/{tenant_id}/send")
-async def whatsapp_send_message(tenant_id: str, body: WhatsAppSendRequest, confirmed: bool = False):
+async def whatsapp_send_message(
+    tenant_id: str,
+    body: WhatsAppSendRequest,
+    confirmed: bool = False,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Send a WhatsApp message from a tenant's connected number.
 
     Requires confirmed=true — human must explicitly approve before sending.
@@ -2069,7 +2108,11 @@ class WhatsAppConnectRequest(BaseModel):
 
 
 @app.post("/api/whatsapp/{tenant_id}/connect")
-async def whatsapp_connect(tenant_id: str, body: WhatsAppConnectRequest):
+async def whatsapp_connect(
+    tenant_id: str,
+    body: WhatsAppConnectRequest,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Save WhatsApp credentials for a tenant and verify connectivity."""
     from backend.tools import whatsapp_tool
 
@@ -2093,7 +2136,10 @@ async def whatsapp_connect(tenant_id: str, body: WhatsAppConnectRequest):
 
 
 @app.post("/api/whatsapp/{tenant_id}/disconnect")
-async def whatsapp_disconnect(tenant_id: str):
+async def whatsapp_disconnect(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Remove WhatsApp credentials for a tenant."""
     config = get_tenant_config(tenant_id)
     config.integrations.whatsapp_access_token = None
@@ -2104,7 +2150,10 @@ async def whatsapp_disconnect(tenant_id: str):
 
 
 @app.post("/api/integrations/{tenant_id}/gmail-disconnect")
-async def gmail_disconnect(tenant_id: str):
+async def gmail_disconnect(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Remove Gmail/Google credentials for a tenant."""
     config = get_tenant_config(tenant_id)
     config.integrations.google_access_token = None
@@ -2114,7 +2163,10 @@ async def gmail_disconnect(tenant_id: str):
 
 
 @app.post("/api/integrations/{tenant_id}/twitter-disconnect")
-async def twitter_disconnect(tenant_id: str):
+async def twitter_disconnect(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Remove Twitter/X credentials for a tenant."""
     config = get_tenant_config(tenant_id)
     config.integrations.twitter_access_token = None
@@ -2124,7 +2176,10 @@ async def twitter_disconnect(tenant_id: str):
 
 
 @app.post("/api/integrations/{tenant_id}/linkedin-disconnect")
-async def linkedin_disconnect(tenant_id: str):
+async def linkedin_disconnect(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Remove LinkedIn credentials for a tenant."""
     config = get_tenant_config(tenant_id)
     config.integrations.linkedin_access_token = None
@@ -2153,7 +2208,11 @@ class ScheduleTaskRequest(BaseModel):
 
 
 @app.post("/api/schedule/{tenant_id}/tasks")
-async def create_scheduled_task(tenant_id: str, body: ScheduleTaskRequest):
+async def create_scheduled_task(
+    tenant_id: str,
+    body: ScheduleTaskRequest,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Create a new scheduled task."""
     result = scheduler_service.create_task(
         tenant_id=tenant_id,
@@ -2228,13 +2287,18 @@ async def list_scheduled_tasks(
     to_date: str = "",
     page: int = 1,
     page_size: int = 50,
+    _verified: dict = Depends(get_verified_tenant),
 ):
     """List scheduled tasks with optional filters."""
     return scheduler_service.list_tasks(tenant_id, status, task_type, from_date, to_date, page, page_size)
 
 
 @app.get("/api/schedule/{tenant_id}/tasks/{task_id}")
-async def get_scheduled_task(tenant_id: str, task_id: str):
+async def get_scheduled_task(
+    tenant_id: str,
+    task_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Get a single scheduled task."""
     task = scheduler_service.get_task(tenant_id, task_id)
     if not task:
@@ -2251,7 +2315,12 @@ class UpdateScheduleRequest(BaseModel):
 
 
 @app.patch("/api/schedule/{tenant_id}/tasks/{task_id}")
-async def update_scheduled_task(tenant_id: str, task_id: str, body: UpdateScheduleRequest):
+async def update_scheduled_task(
+    tenant_id: str,
+    task_id: str,
+    body: UpdateScheduleRequest,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Update a scheduled task (reschedule, change title, etc.)."""
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if not updates:
@@ -2260,19 +2329,31 @@ async def update_scheduled_task(tenant_id: str, task_id: str, body: UpdateSchedu
 
 
 @app.post("/api/schedule/{tenant_id}/tasks/{task_id}/cancel")
-async def cancel_scheduled_task(tenant_id: str, task_id: str):
+async def cancel_scheduled_task(
+    tenant_id: str,
+    task_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Cancel a scheduled task."""
     return scheduler_service.cancel_task(tenant_id, task_id)
 
 
 @app.post("/api/schedule/{tenant_id}/tasks/{task_id}/approve")
-async def approve_scheduled_task(tenant_id: str, task_id: str):
+async def approve_scheduled_task(
+    tenant_id: str,
+    task_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Approve a pending scheduled task — moves to 'scheduled' for execution."""
     return scheduler_service.approve_task(tenant_id, task_id)
 
 
 @app.post("/api/schedule/{tenant_id}/tasks/{task_id}/reject")
-async def reject_scheduled_task(tenant_id: str, task_id: str):
+async def reject_scheduled_task(
+    tenant_id: str,
+    task_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Reject a pending scheduled task."""
     return scheduler_service.reject_task(tenant_id, task_id)
 
@@ -2283,13 +2364,22 @@ class RescheduleRequest(BaseModel):
 
 
 @app.post("/api/schedule/{tenant_id}/tasks/{task_id}/reschedule")
-async def reschedule_task(tenant_id: str, task_id: str, body: RescheduleRequest):
+async def reschedule_task(
+    tenant_id: str,
+    task_id: str,
+    body: RescheduleRequest,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Reschedule a task to a new time."""
     return scheduler_service.reschedule_task(tenant_id, task_id, body.scheduled_at, body.timezone)
 
 
 @app.post("/api/schedule/{tenant_id}/tasks/{task_id}/execute-now")
-async def execute_task_now(tenant_id: str, task_id: str):
+async def execute_task_now(
+    tenant_id: str,
+    task_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Execute a scheduled task immediately (bypass schedule)."""
     task = scheduler_service.get_task(tenant_id, task_id)
     if not task:
@@ -2301,7 +2391,12 @@ async def execute_task_now(tenant_id: str, task_id: str):
 
 
 @app.get("/api/schedule/{tenant_id}/calendar")
-async def get_calendar(tenant_id: str, start: str = "", end: str = ""):
+async def get_calendar(
+    tenant_id: str,
+    start: str = "",
+    end: str = "",
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Get scheduled tasks for the calendar view."""
     if not start or not end:
         now = datetime.now(timezone.utc)
@@ -2311,7 +2406,12 @@ async def get_calendar(tenant_id: str, start: str = "", end: str = ""):
 
 
 @app.get("/api/calendar/{tenant_id}/activity")
-async def get_calendar_activity(tenant_id: str, start: str = "", end: str = ""):
+async def get_calendar_activity(
+    tenant_id: str,
+    start: str = "",
+    end: str = "",
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Unified marketing activity feed for the calendar view.
 
     Returns events from multiple sources (scheduled tasks, inbox drafts,
@@ -3118,7 +3218,10 @@ async def delete_onboarding_draft(user_id: str = Depends(get_user_id_from_jwt)):
 # ─── Re-onboarding / Edit Mode ───
 
 @app.get("/api/tenant/{tenant_id}/onboarding-data")
-async def get_onboarding_data(tenant_id: str):
+async def get_onboarding_data(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Return existing onboarding answers mapped to the 8 onboarding fields."""
     try:
         config = get_tenant_config(tenant_id)
@@ -3196,7 +3299,11 @@ _ONBOARDING_EDITABLE_FIELDS = (
 
 
 @app.post("/api/tenant/{tenant_id}/update-onboarding")
-async def update_onboarding(tenant_id: str, body: UpdateOnboarding):
+async def update_onboarding(
+    tenant_id: str,
+    body: UpdateOnboarding,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Update specific onboarding fields on an existing tenant, regenerate
     derived gtm_profile fields and the agent brief so edits propagate to
     every downstream consumer.
@@ -3241,7 +3348,10 @@ async def update_onboarding(tenant_id: str, body: UpdateOnboarding):
 # ─── Agent Brief (re)generation ───
 
 @app.post("/api/tenants/{tenant_id}/regenerate-brief")
-async def regenerate_brief(tenant_id: str):
+async def regenerate_brief(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Regenerate the condensed agent brief for an existing tenant.
 
     Call this after the user updates their business info in settings,
@@ -3457,7 +3567,10 @@ async def google_callback(request: Request, code: str = "", state: str = "", err
 
 
 @app.get("/api/integrations/{tenant_id}/gmail-status")
-async def gmail_status(tenant_id: str):
+async def gmail_status(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Check if Gmail is connected for a tenant.
 
     Connected = has a valid access_token OR a refresh_token that can mint one.
@@ -3712,7 +3825,10 @@ async def _emit_sync_events(tenant_id: str, sync_result: dict):
 # ─── Notifications ───
 
 @app.get("/api/notifications/{tenant_id}/counts")
-async def notification_counts(tenant_id: str):
+async def notification_counts(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Return counts used by the sidebar badges.
 
     The sidebar's "Inbox" badge is meant to tell the user how many inbox
@@ -3757,7 +3873,13 @@ async def notification_counts(tenant_id: str):
 
 
 @app.get("/api/notifications/{tenant_id}")
-async def list_notifications(tenant_id: str, category: str = "", unread_only: bool = False, limit: int = 30):
+async def list_notifications(
+    tenant_id: str,
+    category: str = "",
+    unread_only: bool = False,
+    limit: int = 30,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """List recent notifications for a tenant."""
     sb = _get_supabase()
     query = sb.table("notifications").select("*").eq("tenant_id", tenant_id)
@@ -3774,7 +3896,11 @@ class MarkReadRequest(BaseModel):
 
 
 @app.post("/api/notifications/{tenant_id}/mark-read")
-async def mark_notifications_read(tenant_id: str, body: MarkReadRequest):
+async def mark_notifications_read(
+    tenant_id: str,
+    body: MarkReadRequest,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Mark specific notification IDs (or all) as read.
 
     Emits `notifications_read` via Socket.IO so other tabs / windows
@@ -3808,7 +3934,11 @@ async def mark_notifications_read(tenant_id: str, body: MarkReadRequest):
 
 
 @app.post("/api/notifications/{tenant_id}/mark-seen")
-async def mark_notifications_seen(tenant_id: str, body: MarkReadRequest):
+async def mark_notifications_seen(
+    tenant_id: str,
+    body: MarkReadRequest,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Mark specific notification IDs (or all) as seen."""
     sb = _get_supabase()
     now = datetime.now(timezone.utc).isoformat()
@@ -3973,13 +4103,20 @@ async def shopify_webhook(request: Request):
 
 # ─── Agent Management API ───
 @app.get("/api/agents/{tenant_id}")
-async def list_agents(tenant_id: str):
+async def list_agents(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     statuses = await get_agent_status(tenant_id)
     return {"tenant_id": tenant_id, "agents": statuses}
 
 
 @app.post("/api/agents/{tenant_id}/{agent_name}/run")
-async def run_agent(tenant_id: str, agent_name: str):
+async def run_agent(
+    tenant_id: str,
+    agent_name: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     # Agent starts working at desk
     await _emit_agent_status(tenant_id, agent_name, "working",
                              current_task=f"Running {agent_name} task",
@@ -4150,7 +4287,11 @@ async def generate_media_image(tenant_id: str, request: Request, payload: dict =
 
 
 @app.post("/api/agents/{tenant_id}/{agent_name}/pause")
-async def pause_agent(tenant_id: str, agent_name: str):
+async def pause_agent(
+    tenant_id: str,
+    agent_name: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     config = get_tenant_config(tenant_id)
     if agent_name in config.active_agents:
         config.active_agents.remove(agent_name)
@@ -4161,7 +4302,11 @@ async def pause_agent(tenant_id: str, agent_name: str):
 
 
 @app.post("/api/agents/{tenant_id}/{agent_name}/resume")
-async def resume_agent(tenant_id: str, agent_name: str):
+async def resume_agent(
+    tenant_id: str,
+    agent_name: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     config = get_tenant_config(tenant_id)
     if agent_name not in config.active_agents:
         config.active_agents.append(agent_name)
@@ -4173,7 +4318,10 @@ async def resume_agent(tenant_id: str, agent_name: str):
 
 # ─── Virtual Office API ───
 @app.get("/api/office/agents/{tenant_id}")
-async def virtual_office_agents(tenant_id: str):
+async def virtual_office_agents(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Return all virtual office agents with their current persisted status."""
     now = datetime.now(timezone.utc).isoformat()
     live = _live_agent_status.get(tenant_id, {})
@@ -4243,7 +4391,12 @@ async def virtual_office_agents(tenant_id: str):
 
 
 @app.get("/api/office/agents/{tenant_id}/{agent_id}/activity")
-async def virtual_office_agent_activity(tenant_id: str, agent_id: str, limit: int = 5):
+async def virtual_office_agent_activity(
+    tenant_id: str,
+    agent_id: str,
+    limit: int = 5,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Recent activity feed for a specific agent — powers the
     AgentInfoPanel's Recent Activity list. Pulls from agent_logs
     (every dispatched action) and recent inbox_items authored by the
@@ -4293,7 +4446,10 @@ async def virtual_office_agent_activity(tenant_id: str, agent_id: str, limit: in
 
 # ─── Dashboard API ───
 @app.get("/api/dashboard/{tenant_id}/config")
-async def dashboard_config(tenant_id: str):
+async def dashboard_config(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Return tenant business info for the dashboard."""
     try:
         config = get_tenant_config(tenant_id)
@@ -4316,7 +4472,10 @@ async def dashboard_config(tenant_id: str):
 
 
 @app.get("/api/dashboard/{tenant_id}/stats")
-async def dashboard_stats(tenant_id: str):
+async def dashboard_stats(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Real KPI counts from inbox_items + scheduled_tasks.
 
     All four queries run concurrently via asyncio.gather + to_thread,
@@ -4439,7 +4598,10 @@ async def dashboard_stats(tenant_id: str):
 
 
 @app.get("/api/dashboard/{tenant_id}/activity")
-async def dashboard_activity(tenant_id: str):
+async def dashboard_activity(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Return recent activity from inbox items and tasks."""
     sb = _get_supabase()
     activity = []
@@ -4478,7 +4640,10 @@ async def dashboard_activity(tenant_id: str):
 
 
 @app.get("/api/dashboard/{tenant_id}/inbox")
-async def dashboard_inbox(tenant_id: str):
+async def dashboard_inbox(
+    tenant_id: str,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Return inbox items for the dashboard (latest 5)."""
     try:
         sb = _get_supabase()
@@ -4491,7 +4656,11 @@ async def dashboard_inbox(tenant_id: str):
 
 
 @app.get("/api/analytics/{tenant_id}")
-async def analytics_data(tenant_id: str, date_range: str = "7d"):
+async def analytics_data(
+    tenant_id: str,
+    date_range: str = "7d",
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Aggregated analytics for the Analytics page.
 
     Pulls data from inbox_items, tasks, agent_logs, and scheduled_tasks
@@ -6371,7 +6540,11 @@ class CEOActionRequest(BaseModel):
 
 
 @app.post("/api/ceo/{tenant_id}/action")
-async def ceo_execute_action(tenant_id: str, body: CEOActionRequest):
+async def ceo_execute_action(
+    tenant_id: str,
+    body: CEOActionRequest,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Execute a CEO business action with confirmation enforcement."""
     from backend.ceo_actions import execute_action, is_forbidden_request
 
@@ -6639,7 +6812,12 @@ def _auto_title(session_id: str, first_message: str):
 
 # ─── Stagnation Monitor / "Buried Task" API ───
 @app.get("/api/projects/stale/{tenant_id}")
-async def list_stale_projects(tenant_id: str, hours: int = 24, limit: int = 20):
+async def list_stale_projects(
+    tenant_id: str,
+    hours: int = 24,
+    limit: int = 20,
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Return inbox drafts that have been waiting on the user for more
     than `hours` (default 24h), excluding rows that are currently
     snoozed. Powers the Priority Actions section on the Projects page
@@ -6664,7 +6842,12 @@ async def list_stale_projects(tenant_id: str, hours: int = 24, limit: int = 20):
 
 
 @app.post("/api/projects/{tenant_id}/snooze/{item_id}")
-async def snooze_stale_project(tenant_id: str, item_id: str, payload: dict = Body(default={})):
+async def snooze_stale_project(
+    tenant_id: str,
+    item_id: str,
+    payload: dict = Body(default={}),
+    _verified: dict = Depends(get_verified_tenant),
+):
     """Snooze a stale row for `hours` (default 24, capped at 168 = 1
     week so the user can't accidentally hide a draft forever). The row
     isn't marked done — just hidden from the stagnation feed until the
@@ -6687,6 +6870,42 @@ async def snooze_stale_project(tenant_id: str, item_id: str, payload: dict = Bod
 # ─── WebSocket for real-time chat ───
 @app.websocket("/ws/chat/{tenant_id}")
 async def websocket_chat(websocket: WebSocket, tenant_id: str):
+    # Manual auth + tenant ownership check BEFORE accept(). WebSockets
+    # don't run through the HTTP auth middleware (path is /ws/...), so
+    # without this any client could connect to any tenant's room and
+    # send/receive broadcasts. The JWT comes from the ?access_token=
+    # query param because browser WebSocket() can't set Authorization
+    # headers. Reject (close 4401) on missing/invalid token, 4403 on
+    # ownership mismatch — close codes >=4000 propagate the failure
+    # reason to the client without ambiguity.
+    from backend.auth import verify_jwt
+    from backend.config.loader import get_tenant_config
+
+    access_token = websocket.query_params.get("access_token", "")
+    if not access_token:
+        await websocket.close(code=4401, reason="Missing access_token")
+        return
+    try:
+        user = verify_jwt(access_token)
+    except HTTPException:
+        await websocket.close(code=4401, reason="Invalid or expired token")
+        return
+
+    user_email = (user.get("email") or user.get("user_metadata", {}).get("email") or "").lower().strip()
+    user_id = user.get("sub", "")
+    # Dev-mode bypass mirrors get_verified_tenant
+    if user_id != "dev-user":
+        try:
+            config = get_tenant_config(tenant_id)
+            owner_email = (config.owner_email or "").lower().strip()
+            owns = (owner_email and owner_email == user_email) or str(config.tenant_id) == user_id or not owner_email
+            if not owns:
+                await websocket.close(code=4403, reason="Access denied")
+                return
+        except Exception:
+            await websocket.close(code=4403, reason="Access denied")
+            return
+
     await websocket.accept()
     await sio.enter_room(websocket.client, tenant_id)
     try:
