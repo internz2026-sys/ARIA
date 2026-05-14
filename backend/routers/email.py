@@ -735,13 +735,22 @@ def _email_status_payload(tenant_id: str) -> dict:
 
 
 @router.get("/api/settings/email/status")
-async def get_email_settings_status(tenant_id: str):
+async def get_email_settings_status(request: Request, tenant_id: str):
     """Return the resolved email sender settings for a tenant.
 
     Frontend (Settings → Email tab) reads this on mount to populate
     the form + decide whether to render the "queued — domain not
     configured" banner.
+
+    Auth: tenant_id is a query param so the standard router-level
+    Depends(get_verified_tenant) can't bind it (FastAPI's dependency
+    resolver looks at the path/query by name, but for a Depends-only
+    declaration on a tenant_id arg we'd need the URL pattern). We
+    invoke get_verified_tenant inline instead, which raises 403 if
+    the JWT caller doesn't own the tenant. Mirrors the IDOR fix
+    pattern in routers/inbox.py:_verify_inbox_owner.
     """
+    await get_verified_tenant(request, tenant_id)
     return _email_status_payload(tenant_id)
 
 
@@ -756,12 +765,20 @@ async def get_email_settings_status_path(tenant_id: str):
 
 
 @router.patch("/api/settings/email")
-async def update_email_settings(body: EmailSettingsPatch):
+async def update_email_settings(request: Request, body: EmailSettingsPatch):
     """Update display name and/or sender local-part.
 
     Returns the same payload as GET /api/settings/email/status so
     the frontend can sync state without a follow-up fetch.
+
+    Auth: tenant_id lives on the request body (EmailSettingsPatch),
+    so the standard Depends(get_verified_tenant) can't bind it
+    automatically. We invoke it inline against body.tenant_id — same
+    IDOR-fix pattern as the GET above. Without this, any JWT could
+    PATCH another tenant's email sender_local / display_name, which
+    would let an attacker hijack outbound email branding.
     """
+    await get_verified_tenant(request, body.tenant_id)
     return _apply_email_settings_patch(body.tenant_id, body)
 
 
