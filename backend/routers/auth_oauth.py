@@ -63,10 +63,17 @@ async def twitter_connect(tenant_id: str, request: Request):
     # this guard ANY caller who knows a victim's tenant_id could complete
     # OAuth with their own Twitter account and have the callback bind the
     # attacker's tokens to the victim's tenant (full account hijack).
+    # Prefer Authorization header (set by authFetch); fall back to query
+    # param for top-level browser navigation that can't set headers.
     from backend.auth import verify_jwt
-    access_token_jwt = request.query_params.get("access_token", "")
+    auth_header = request.headers.get("Authorization", "")
+    access_token_jwt = ""
+    if auth_header.startswith("Bearer "):
+        access_token_jwt = auth_header[7:].strip()
     if not access_token_jwt:
-        raise HTTPException(status_code=401, detail="Missing access_token query param")
+        access_token_jwt = request.query_params.get("access_token", "")
+    if not access_token_jwt:
+        raise HTTPException(status_code=401, detail="Missing access_token")
     try:
         user = verify_jwt(access_token_jwt)
     except HTTPException:
@@ -156,10 +163,17 @@ async def linkedin_connect(tenant_id: str, request: Request):
     # this guard ANY caller who knows a victim's tenant_id could complete
     # OAuth with their own LinkedIn account and have the callback bind the
     # attacker's tokens to the victim's tenant (full account hijack).
+    # Prefer Authorization header (set by authFetch); fall back to query
+    # param for top-level browser navigation that can't set headers.
     from backend.auth import verify_jwt
-    access_token_jwt = request.query_params.get("access_token", "")
+    auth_header = request.headers.get("Authorization", "")
+    access_token_jwt = ""
+    if auth_header.startswith("Bearer "):
+        access_token_jwt = auth_header[7:].strip()
     if not access_token_jwt:
-        raise HTTPException(status_code=401, detail="Missing access_token query param")
+        access_token_jwt = request.query_params.get("access_token", "")
+    if not access_token_jwt:
+        raise HTTPException(status_code=401, detail="Missing access_token")
     try:
         user = verify_jwt(access_token_jwt)
     except HTTPException:
@@ -272,8 +286,15 @@ async def google_connect(tenant_id: str, request: Request):
     # this guard ANY caller who knows a victim's tenant_id could complete
     # OAuth with their own Google account and have the callback bind the
     # attacker's tokens to the victim's tenant (full Gmail hijack).
+    # Prefer Authorization header (set by authFetch); fall back to query
+    # param for top-level browser navigation that can't set headers.
     from backend.auth import verify_jwt
-    access_token_jwt = request.query_params.get("access_token", "")
+    auth_header = request.headers.get("Authorization", "")
+    access_token_jwt = ""
+    if auth_header.startswith("Bearer "):
+        access_token_jwt = auth_header[7:].strip()
+    if not access_token_jwt:
+        access_token_jwt = request.query_params.get("access_token", "")
     if not access_token_jwt:
         raise HTTPException(status_code=401, detail="Missing access_token query param")
     try:

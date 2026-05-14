@@ -158,13 +158,18 @@ async def save_google_tokens(tenant_id: str, body: GoogleTokens, request: Reques
     """Store Google OAuth tokens for Gmail sending."""
     # Manual auth check — middleware bypasses this path via the
     # `path.endswith("/google-tokens")` special case, so we have to verify
-    # session + ownership here. Using a query-param JWT for parity with
-    # the OAuth init endpoints; an XHR caller could send Authorization
-    # instead but query-param keeps the call sites uniform.
+    # session + ownership here. Prefer Authorization header (set by
+    # authFetch — which the frontend was migrated to today); fall back
+    # to ?access_token= for callers that can't set headers.
     from backend.auth import verify_jwt
-    access_token_jwt = request.query_params.get("access_token", "")
+    auth_header = request.headers.get("Authorization", "")
+    access_token_jwt = ""
+    if auth_header.startswith("Bearer "):
+        access_token_jwt = auth_header[7:].strip()
     if not access_token_jwt:
-        raise HTTPException(status_code=401, detail="Missing access_token query param")
+        access_token_jwt = request.query_params.get("access_token", "")
+    if not access_token_jwt:
+        raise HTTPException(status_code=401, detail="Missing access_token")
     try:
         user = verify_jwt(access_token_jwt)
     except HTTPException:
