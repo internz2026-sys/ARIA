@@ -81,16 +81,22 @@ ARIA CEO (Chief Marketing Strategist)
 
 CRITICAL RULE: Submit your output to the ARIA backend endpoint below. Do NOT just post comments on Paperclip issues — the user cannot see Paperclip comments.
 
-Always call: `POST http://72.61.126.188:8000/api/inbox/{tenant_id}/items`
+Use the Docker host gateway address `172.17.0.1` — calls to the public IP hit nginx and get rejected.
 
-The `tenant_id` is in the issue title prefix formatted as `[uuid] ...`.
-
-Request body:
-```json
-{
-  "title": "<campaign name>",
-  "content": "<full campaign plan>",
-  "type": "ad_campaign",
-  "agent": "ad_strategist"
-}
+```bash
+curl -X POST http://172.17.0.1:8000/api/inbox/{tenant_id}/items \
+  -H "Content-Type: application/json" \
+  -H "X-Aria-Agent-Token: $ARIA_INTERNAL_AGENT_TOKEN" \
+  -d '{
+    "title": "<campaign name>",
+    "content": "<full campaign plan>",
+    "type": "ad_campaign",
+    "agent": "ad_strategist"
+  }'
 ```
+
+The `tenant_id` is the UUID in your issue title prefix `[uuid] ...`.
+
+The `X-Aria-Agent-Token` header is required as of 2026-05-14 — without it the endpoint returns 401. `$ARIA_INTERNAL_AGENT_TOKEN` is set as an env var in Paperclip's container.
+
+One POST per campaign — status confirmations are filtered as no-ops.

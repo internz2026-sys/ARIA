@@ -56,16 +56,22 @@ ARIA CEO (Chief Marketing Strategist)
 
 CRITICAL RULE: Submit your output to the ARIA backend endpoint below. Do NOT just post comments on Paperclip issues — the user cannot see Paperclip comments.
 
-Always call: `POST http://72.61.126.188:8000/api/inbox/{tenant_id}/items`
+Use the Docker host gateway address `172.17.0.1` — calls to the public IP hit nginx and get rejected.
 
-The `tenant_id` is in the issue title prefix formatted as `[uuid] ...`.
-
-Request body:
-```json
-{
-  "title": "<headline>",
-  "content": "<full written content>",
-  "type": "<blog_post|landing_page|article>",
-  "agent": "content_writer"
-}
+```bash
+curl -X POST http://172.17.0.1:8000/api/inbox/{tenant_id}/items \
+  -H "Content-Type: application/json" \
+  -H "X-Aria-Agent-Token: $ARIA_INTERNAL_AGENT_TOKEN" \
+  -d '{
+    "title": "<headline>",
+    "content": "<full written content>",
+    "type": "<blog_post|landing_page|article>",
+    "agent": "content_writer"
+  }'
 ```
+
+The `tenant_id` is the UUID in your issue title prefix `[uuid] ...`.
+
+The `X-Aria-Agent-Token` header is required as of 2026-05-14 — without it the endpoint returns 401 and your work is lost on Path A (ARIA's safety-net poller still picks it up from your issue comments within ~5s, but the user sees the work later than they would have). `$ARIA_INTERNAL_AGENT_TOKEN` is set as an env var in Paperclip's container; if it's empty, tell the user.
+
+Do NOT post a second time after the first 200 — duplicate confirmation messages (✅, "Saved to ARIA Inbox", "Task complete") are filtered as no-ops. One POST per task.

@@ -68,16 +68,32 @@ ARIA CEO (Chief Marketing Strategist)
 
 CRITICAL RULE: Submit your output to the ARIA backend endpoint below. Do NOT just post comments on Paperclip issues — the user cannot see Paperclip comments.
 
-Always call: `POST http://72.61.126.188:8000/api/inbox/{tenant_id}/items`
+Use the Docker host gateway address `172.17.0.1` — calls to the public IP hit nginx and get rejected.
 
-The `tenant_id` is in the issue title prefix formatted as `[uuid] ...`.
-
-Request body:
-```json
-{
-  "title": "Email: <subject>",
-  "content": "<full HTML body>",
-  "type": "email_sequence",
-  "agent": "email_marketer"
-}
+```bash
+curl -X POST http://172.17.0.1:8000/api/inbox/{tenant_id}/items \
+  -H "Content-Type: application/json" \
+  -H "X-Aria-Agent-Token: $ARIA_INTERNAL_AGENT_TOKEN" \
+  -d '{
+    "title": "Email: <subject>",
+    "content": "<short summary of the email purpose, NOT the full HTML>",
+    "type": "email_sequence",
+    "agent": "email_marketer",
+    "email_draft": {
+      "to": "<recipient or {placeholder}>",
+      "subject": "<full subject line>",
+      "html_body": "<complete HTML body>",
+      "text_body": "<plain-text fallback>",
+      "preview_snippet": "<40-90 char preview>",
+      "status": "draft_pending_approval"
+    }
+  }'
 ```
+
+The `tenant_id` is the UUID in your issue title prefix `[uuid] ...`.
+
+The `X-Aria-Agent-Token` header is required as of 2026-05-14 — without it the endpoint returns 401. `$ARIA_INTERNAL_AGENT_TOKEN` is set as an env var in Paperclip's container.
+
+Field rules:
+- `html_body` goes inside `email_draft`, NOT inside the top-level `content` field. The frontend's email editor only renders from `email_draft.html_body`. Putting the HTML in `content` shows it as raw markup, not a styled email.
+- One POST per draft. Status confirmations (✅, "Saved to ARIA Inbox", "Email draft saved") are filtered as no-ops.

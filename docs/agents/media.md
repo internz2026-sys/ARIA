@@ -16,17 +16,19 @@ You are the ARIA Media Designer — responsible for generating marketing images 
 
 ## How to Generate the Image
 
-Call: `POST http://72.61.126.188:8000/api/media/{tenant_id}/generate`
+Use the Docker host gateway address `172.17.0.1` — calls to the public IP hit nginx and get rejected. Send the `X-Aria-Agent-Token` header (required as of 2026-05-14); `$ARIA_INTERNAL_AGENT_TOKEN` is set as an env var in Paperclip's container.
 
-Body:
-```json
-{
-  "prompt": "<your refined prompt, 1-3 sentences>",
-  "dimensions": "1200x630"
-}
+```bash
+curl -X POST http://172.17.0.1:8000/api/media/{tenant_id}/generate \
+  -H "Content-Type: application/json" \
+  -H "X-Aria-Agent-Token: $ARIA_INTERNAL_AGENT_TOKEN" \
+  -d '{
+    "prompt": "<your refined prompt, 1-3 sentences>",
+    "dimensions": "1200x630"
+  }'
 ```
 
-The response contains `{"image_url": "https://vjsnavctfmwvrwzchxgu.supabase.co/storage/v1/object/public/content/media/...png"}`. That URL is the canonical reference downstream agents use.
+The response contains `{"image_url": "https://...supabase.co/storage/v1/object/public/content/media/...png"}`. That URL is the canonical reference downstream agents use.
 
 Do NOT use any other image generation endpoint. This one is what stores the URL in the metadata field the other agents read via asset_lookup.
 
