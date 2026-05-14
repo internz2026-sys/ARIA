@@ -55,14 +55,43 @@ router = APIRouter(prefix="/api/ceo/chat", tags=["CEO Chat"])
 
 
 @router.get("/{session_id}/history")
-async def ceo_chat_history(session_id: str):
+async def ceo_chat_history(request: Request, session_id: str):
     """Get chat history for a session — loads from DB.
 
     Cache-first: if the session is already in the in-memory cache
     (because a recent chat turn loaded or wrote to it), return that
     directly. Falls through to a chat_messages SELECT otherwise and
     populates the cache so the next call hits the fast path.
+
+    Auth: the URL keys on session_id, not tenant_id, so the
+    router-level Depends(get_verified_tenant) can't apply. We look
+    up the chat_sessions row to find its tenant_id, then invoke
+    get_verified_tenant(request, tenant_id) inline — raises 403 if
+    the JWT caller doesn't own the session's tenant. Without this
+    check, anyone who guessed or leaked a session UUID could read
+    the whole chat transcript (which often contains GTM strategy +
+    customer details + delegated draft content).
     """
+    try:
+        sb = get_db()
+        session_row = await asyncio.to_thread(
+            lambda: sb.table("chat_sessions")
+            .select("tenant_id")
+            .eq("id", session_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("[ceo] session ownership lookup failed for %s: %s", session_id, e)
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not session_row.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    tenant_id = session_row.data[0].get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=500, detail="Session missing tenant_id")
+    # Raises 403 if caller doesn't own this tenant.
+    await get_verified_tenant(request, str(tenant_id))
+
     if session_id in chat_sessions and chat_sessions[session_id]:
         return {"session_id": session_id, "messages": chat_sessions[session_id]}
     try:
