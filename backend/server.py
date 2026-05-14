@@ -32,7 +32,7 @@ logger = logging.getLogger("aria.server")
 # _safe_oauth_error moved to backend/routers/auth_oauth.py.
 
 
-from backend.approval import requires_approval, validate_execution, ACTION_POLICIES
+from backend.services.approval import requires_approval, validate_execution, ACTION_POLICIES
 from backend.config.loader import get_tenant_config, save_tenant_config
 from backend.services.supabase import get_db as _get_supabase
 # OnboardingAgent + FIELD_QUESTIONS now imported inside backend/routers/onboarding.py
