@@ -343,7 +343,7 @@ async def delete_inbox_item(item_id: str, request: Request, permanent: bool = Fa
     if paperclip_issue_id:
         try:
             from backend.orchestrator import _urllib_request
-            from backend.paperclip_office_sync import _add_processed
+            from backend.services.paperclip_office_sync import _add_processed
             _urllib_request("PATCH", f"/api/issues/{paperclip_issue_id}", data={
                 "status": "cancelled",
             })

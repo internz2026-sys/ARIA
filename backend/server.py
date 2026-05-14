@@ -52,7 +52,7 @@ from backend.orchestrator import (
 from backend.orchestrator import is_connected as paperclip_connected
 from backend.agents import AGENT_REGISTRY
 from backend.services.paperclip_chat import normalize_comments, pick_agent_output
-from backend.paperclip_office_sync import (
+from backend.services.paperclip_office_sync import (
     _is_finished,
     _is_failed,
     _add_processed,

@@ -352,7 +352,7 @@ class _MockSupabase(MagicMock):
 #     grep -rn "^from backend\.services\.supabase import get_db" backend
 _GET_DB_IMPORT_SITES = (
     "backend.ceo_actions",
-    "backend.paperclip_office_sync",
+    "backend.services.paperclip_office_sync",
     "backend.orchestrator",
     "backend.routers.ceo",
     "backend.routers.crm",
