@@ -24,44 +24,76 @@ ARIA deploys 5 agents in a marketing team hierarchy:
 
 ```
 ARIA/
-├── backend/                    # FastAPI server + all agent logic
-│   ├── server.py               # Main FastAPI app (port 8000)
-│   ├── orchestrator.py         # CEO brain — dispatches all agents + Paperclip lookup helpers
-│   ├── paperclip_office_sync.py # 5s loop: scrape completed Paperclip issues -> inbox; sync agent statuses to Virtual Office
-│   ├── onboarding_agent.py     # Conversational GTM strategy builder
-│   ├── agents/                 # 5 agent modules
-│   │   ├── __init__.py         # AGENT_REGISTRY + DEPARTMENT_MAP
-│   │   ├── ceo_agent.py        # Chief Marketing Strategist
-│   │   ├── content_writer_agent.py  # Content creation
-│   │   ├── email_marketer_agent.py  # Email campaigns
-│   │   ├── social_manager_agent.py  # Social media
-│   │   └── ad_strategist_agent.py   # Paid ads advisor
-│   ├── tools/                  # API wrappers + Claude CLI
-│   │   └── claude_cli.py       # Local Claude Code CLI wrapper (no API key needed)
+├── backend/                          # FastAPI server + all agent logic
+│   ├── server.py                     # Main FastAPI app entrypoint (port 8000)
+│   ├── auth.py                       # JWT verify + get_verified_tenant + rate limit
+│   ├── orchestrator.py               # Agent dispatch + Paperclip lookup helpers
+│   ├── schemas.py                    # Shared Pydantic request/response models
+│   ├── routers/                      # All HTTP routes (server.py was split here 2026-05-14)
+│   │   ├── inbox.py                  # /api/inbox/* (Path A skill curl is here)
+│   │   ├── ceo.py                    # /api/ceo/* incl. chat handler
+│   │   ├── campaigns.py
+│   │   ├── onboarding.py             # /api/onboarding/*
+│   │   ├── notifications.py
+│   │   ├── integrations.py           # /api/integrations/{tid}/*-status + disconnect
+│   │   ├── auth_oauth.py             # /api/auth/{twitter,linkedin,google}/connect
+│   │   ├── scheduling.py             # /api/schedule/* + /api/calendar/*
+│   │   ├── social.py                 # /api/{twitter,linkedin,whatsapp,social}/*
+│   │   ├── agents_runtime.py         # /api/agents/{tid}/{name}/{run,pause,resume}
+│   │   ├── dashboard_analytics.py    # /api/dashboard/*, /api/analytics/*, /api/projects/*
+│   │   ├── email.py                  # /api/email/* incl. inbound webhook
+│   │   ├── tasks.py                  # /api/tasks/* (project board CRUD)
+│   │   └── security_review.py        # /api/internal/security-review (HMAC-gated)
+│   ├── agents/
+│   │   ├── __init__.py               # AGENT_REGISTRY + DEPARTMENT_MAP (6 agents)
+│   │   ├── ceo_agent.py
+│   │   ├── content_writer_agent.py
+│   │   ├── email_marketer_agent.py
+│   │   ├── social_manager_agent.py
+│   │   ├── ad_strategist_agent.py
+│   │   ├── media_agent.py            # 6th agent: image generation via Pollinations
+│   │   └── onboarding_agent.py       # Conversational GTM intake (moved here 2026-05-14)
+│   ├── services/                     # Business logic shared between routers + agents
+│   │   ├── ceo_actions.py            # CEO CRUD action dispatcher (moved here 2026-05-14)
+│   │   ├── paperclip_office_sync.py  # 5s loop poller (moved here 2026-05-14)
+│   │   ├── paperclip_chat.py
+│   │   ├── approval.py               # Action approval gates (moved here 2026-05-14)
+│   │   ├── inbox.py / crm.py / scheduler.py / profiles.py / ...
+│   │   └── _postgrest_util.py        # safe_or_value() for PostgREST .or_() / .filter()
+│   ├── tools/
+│   │   └── claude_cli.py             # Local Claude Code CLI wrapper
 │   ├── config/
-│   │   ├── loader.py           # Supabase CRUD for tenant configs
-│   │   └── tenant_schema.py    # Pydantic models (TenantConfig, etc.)
-│   ├── tasks/
-│   │   └── task_definitions.py # WORKFLOW_TEMPLATES + CRON_SCHEDULES
+│   │   ├── loader.py                 # Supabase CRUD for tenant_configs
+│   │   └── tenant_schema.py          # Pydantic models
+│   ├── migrations/                   # ALL .sql files live here (consolidated 2026-05-14)
+│   ├── tasks/task_definitions.py
+│   ├── tests/                        # pytest suite (181 passing as of 2026-05-15)
 │   └── requirements.txt
-├── frontend/                   # Next.js 14 app (port 3000)
+├── frontend/                         # Next.js 14 (port 3000)
 │   ├── app/
-│   │   ├── (marketing)/        # Public landing pages
-│   │   ├── (auth)/             # login/, signup/ (email + GitHub OAuth)
-│   │   ├── (onboarding)/       # welcome/, select-agents/, connect/, review/
-│   │   └── (dashboard)/        # dashboard/, agents/, analytics/, inbox/, settings/
-│   ├── components/
-│   │   ├── ui/                 # Shadcn/UI base components
-│   │   └── shared/             # kpi-card, agent-status-badge, chat-widget, sidebar
-│   ├── lib/
-│   │   └── supabase.ts         # Supabase client
-│   └── .env.local              # Frontend env vars (NEXT_PUBLIC_*)
-├── CEO.md                      # Orchestrator blueprint and org chart
-├── HEARTBEAT.md                # CEO agent instructions (read by Paperclip)
-├── CLAUDE.md                   # This file
-├── README.md                   # Full project documentation
-├── railway.toml                # Railway deployment config
-└── .env                        # Backend env vars (never commit)
+│   │   ├── (marketing)/  (auth)/  (onboarding)/  (dashboard)/  auth/callback/  banned/
+│   │   └── ...
+│   ├── components/ui/  components/shared/  components/virtual-office/
+│   ├── lib/                          # api.ts (authFetch), supabase.ts, hooks
+│   └── .env.local                    # NEXT_PUBLIC_*
+├── docs/
+│   ├── ARIA_log.md                   # Project change log (moved from root 2026-05-14)
+│   ├── ARIA_SYSTEM_REFERENCE.md
+│   ├── agents/                       # Per-agent instructions loaded via --append-system-prompt-file
+│   │   ├── ceo.md  content_writer.md  email_marketer.md  social_manager.md  ad_strategist.md  media.md
+│   │   └── ceo/HEARTBEAT.md          # Active CEO heartbeat checklist (legacy root copies removed)
+│   └── branding/                     # ARIA logos, brand PNGs
+├── scripts/                          # Backup + utility scripts (off-VPS daily pg_dump etc.)
+├── tests/playwright/                 # Playwright reports + fixtures
+├── CLAUDE.md                         # This file
+├── README.md                         # Project docs
+├── STAGING_SETUP.md                  # Staging environment setup notes
+├── docker-compose.yml                # Prod docker stack
+├── docker-compose.staging.yml        # Staging stack (inherits /opt/aria/.env)
+├── deploy-staging.sh                 # Plink-triggered staging deploy
+├── nginx.conf                        # Prod nginx config
+├── .env                              # Backend env vars (never commit)
+└── .env.example                      # Template
 ```
 
 ---
